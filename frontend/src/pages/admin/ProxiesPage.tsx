@@ -223,11 +223,14 @@ export default function ProxiesPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="http">HTTP</SelectItem>
-                  <SelectItem value="https">HTTPS</SelectItem>
+                  <SelectItem value="http">HTTP 代理</SelectItem>
+                  <SelectItem value="https">HTTPS 代理（连代理走 TLS）</SelectItem>
                   <SelectItem value="socks5">SOCKS5</SelectItem>
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">
+                访问 https 网站三种都可以。只有代理本身是 TLS（常见 443 端口）才选 HTTPS
+              </p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="proxy-host">主机</Label>

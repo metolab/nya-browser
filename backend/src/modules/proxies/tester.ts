@@ -68,7 +68,9 @@ export async function testProxy(proxy: ProxyRecord): Promise<ProxyTestResult> {
   try {
     const url = proxyUrl(proxy);
     const agent =
-      proxy.type === 'socks5' ? new SocksProxyAgent(url) : new HttpsProxyAgent(url);
+      proxy.type === 'socks5'
+        ? new SocksProxyAgent(url)
+        : new HttpsProxyAgent(url, { rejectUnauthorized: false });
     const { status, body } = await requestText(TEST_URL, agent);
     const latencyMs = Date.now() - started;
     if (status < 200 || status >= 300) {

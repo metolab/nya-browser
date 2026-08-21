@@ -526,7 +526,13 @@ async function startLocalProxy(slot, proxy) {
       ) {
         throw new ProxyChain.RequestError('Localhost is not reachable from sessions', 403);
       }
-      return { upstreamProxyUrl: upstream };
+      // HTTPS proxies often present a self-signed cert. Chrome CONNECT fails with
+      // ERR_TUNNEL / 599 DEPTH_ZERO_SELF_SIGNED_CERT unless we skip verification.
+      const httpsUpstream = String(upstream).startsWith('https:');
+      return {
+        upstreamProxyUrl: upstream,
+        ignoreUpstreamProxyCertificate: httpsUpstream,
+      };
     },
   });
   await server.listen();
