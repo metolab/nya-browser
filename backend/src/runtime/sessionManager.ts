@@ -831,7 +831,13 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     args.push(`--enable-features=${enabledFeatures.join(',')}`);
   }
   if (backend === 'vulkan') {
-    args.push('--use-gl=angle', '--use-angle=vulkan', '--enable-gpu-rasterization', '--enable-zero-copy');
+    args.push(
+      '--use-gl=angle',
+      '--use-angle=vulkan',
+      '--disable-vulkan-surface',
+      '--enable-gpu-rasterization',
+      '--enable-zero-copy',
+    );
   } else if (backend === 'egl' || backend === 'gl-egl') {
     args.push('--use-gl=angle', '--use-angle=gl-egl', '--enable-gpu-rasterization');
   } else if (backend === 'gles-egl') {
