@@ -756,9 +756,18 @@ function parseWh(spec, fallbackW = 1920, fallbackH = 1080) {
   };
 }
 
+function gpuBackend() {
+  const explicit = String(process.env.NYA_GPU_BACKEND || '').trim().toLowerCase();
+  if (explicit) return explicit;
+  const raw = String(process.env.NYA_GPU || '').toLowerCase();
+  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'nvidia') return 'vulkan';
+  return 'swiftshader';
+}
+
 function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpPort = null, fingerprint = null, inProcessGpu = false, startUrl = null) {
   const profile = chromeProfileDir(sessionId);
   const homeUrl = sessionHomeUrl(sessionId, startUrl);
+  const backend = gpuBackend();
   const disabledFeatures = [
     'TranslateUI',
     'InfiniteSessionRestore',
@@ -775,6 +784,10 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     'WebGPU',
     'DirectSockets',
   ];
+  const enabledFeatures = [];
+  if (backend === 'vulkan') {
+    enabledFeatures.push('Vulkan', 'VulkanFromANGLE', 'DefaultANGLEVulkan');
+  }
   const args = [
     `--user-data-dir=${profile}`,
     '--profile-directory=Default',
@@ -807,17 +820,30 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     `--homepage=${homeUrl}`,
     '--disable-dev-shm-usage',
     '--no-sandbox',
-    '--use-gl=angle',
-    '--use-angle=swiftshader',
-    '--enable-unsafe-swiftshader',
     '--ignore-gpu-blocklist',
     '--enable-webgl',
     '--enable-webgl2',
     '--disable-ipv6',
     '--nya-x11-multi-display',
     '--in-process-gpu',
-    '--disable-gpu-compositing',
   ];
+  if (enabledFeatures.length) {
+    args.push(`--enable-features=${enabledFeatures.join(',')}`);
+  }
+  if (backend === 'vulkan') {
+    args.push('--use-gl=angle', '--use-angle=vulkan', '--enable-gpu-rasterization', '--enable-zero-copy');
+  } else if (backend === 'egl' || backend === 'gl-egl') {
+    args.push('--use-gl=angle', '--use-angle=gl-egl', '--enable-gpu-rasterization');
+  } else if (backend === 'gles-egl') {
+    args.push('--use-gl=angle', '--use-angle=gles-egl', '--enable-gpu-rasterization');
+  } else {
+    args.push(
+      '--use-gl=angle',
+      '--use-angle=swiftshader',
+      '--enable-unsafe-swiftshader',
+      '--disable-gpu-compositing',
+    );
+  }
 
   if (fingerprint?.seed) {
     args.push(`--nya-fp-seed=${fingerprint.seed}`);
@@ -981,6 +1007,7 @@ async function startChrome(runtime) {
   runtime.allowRecover = true;
   runtime.chromeStartedAt = Date.now();
   runtime.chromeHasInProcessGpu = Boolean(runtime.inProcessGpu);
+  console.log(`[chrome ${runtime.id}] gpu backend=${gpuBackend()}`);
   runtime.chrome = runAsSession(runtime, CHROME_BIN, args, {
     logFile,
     onExit: (code, signal) => {

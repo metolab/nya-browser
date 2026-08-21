@@ -61,6 +61,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxdamage1 \
       libxrandr2 \
       libgbm1 \
+      libegl1 \
+      libgles2 \
+      libgl1 \
+      libglvnd0 \
+      libvulkan1 \
       libasound2 \
       libpangocairo-1.0-0 \
       libcups2 \

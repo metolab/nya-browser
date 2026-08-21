@@ -13,6 +13,12 @@ docker compose up -d
 
 镜像：`ghcr.io/metolab/nya-browser:latest`。默认端口 `8080`，数据目录 `./data`。
 
+NVIDIA 机器上打开硬件加速（Xvfb 出图，GL/WebGL 走 GPU）：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
 ## 本地构建镜像
 
 ```bash
