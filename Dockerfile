@@ -118,8 +118,7 @@ RUN --mount=type=secret,id=github_token,required=false \
 COPY --from=build /app/package.json /app/package.json
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/shared /app/shared
-COPY --from=build /app/backend/package.json /app/backend/package.json
-COPY --from=build /app/backend/dist /app/backend/dist
+COPY --from=build /app/backend /app/backend
 COPY --from=build /app/frontend/dist /app/frontend/dist
 COPY scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
