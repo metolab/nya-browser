@@ -2,15 +2,18 @@
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
 # Requires nvidia-container-toolkit on the host. Chromium still presents
-# through Xvfb; GL/WebGL is rendered on the GPU via ANGLE.
+# through Xvfb; GL/WebGL is rendered on the GPU via ANGLE (gl-egl).
+# The nvidia runtime is required so NVIDIA EGL/GL libraries are injected;
+# compose `gpus: all` alone only exposes the device for compute.
 
 services:
   nya-browser:
+    runtime: nvidia
     gpus: all
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
       NYA_GPU: "1"
-      NYA_GPU_BACKEND: ${NYA_GPU_BACKEND:-vulkan}
+      NYA_GPU_BACKEND: ${NYA_GPU_BACKEND:-gl-egl}
     devices:
       - /dev/dri

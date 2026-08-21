@@ -760,7 +760,7 @@ function gpuBackend() {
   const explicit = String(process.env.NYA_GPU_BACKEND || '').trim().toLowerCase();
   if (explicit) return explicit;
   const raw = String(process.env.NYA_GPU || '').toLowerCase();
-  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'nvidia') return 'vulkan';
+  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'nvidia') return 'gl-egl';
   return 'swiftshader';
 }
 
