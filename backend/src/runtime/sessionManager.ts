@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { spawn, execFile, execFileSync } from 'child_process';
 import crypto from 'crypto';
+import https from 'https';
 import net from 'net';
 import fs from 'fs';
 import os from 'os';
@@ -506,11 +507,30 @@ function buildUpstreamUrl(proxy) {
   return `${scheme}://${auth}${proxy.host}:${proxy.port}`;
 }
 
+function destroyHttpsAgent(agent) {
+  if (!agent) return;
+  try {
+    agent.destroy();
+  } catch {
+    /* ignore */
+  }
+}
+
 async function startLocalProxy(slot, proxy) {
   const port = LOCAL_PROXY_BASE + slot;
   const upstream = buildUpstreamUrl(proxy);
   if (!upstream) {
-    return { port: null, server: null, upstream: null };
+    return { port: null, server: null, upstream: null, httpsAgent: null };
+  }
+  // proxy-chain CONNECT sets Host to the destination (e.g. example.com:443).
+  // Node then uses that Host as TLS SNI, so a multi-vhost HTTPS proxy serves
+  // its default (often self-signed) cert instead of the proxy hostname cert.
+  let httpsAgent = null;
+  if (String(upstream).startsWith('https:')) {
+    httpsAgent = new https.Agent({
+      servername: new URL(upstream).hostname,
+      keepAlive: true,
+    });
   }
   const server = new ProxyChain.Server({
     port,
@@ -526,17 +546,14 @@ async function startLocalProxy(slot, proxy) {
       ) {
         throw new ProxyChain.RequestError('Localhost is not reachable from sessions', 403);
       }
-      // HTTPS proxies often present a self-signed cert. Chrome CONNECT fails with
-      // ERR_TUNNEL / 599 DEPTH_ZERO_SELF_SIGNED_CERT unless we skip verification.
-      const httpsUpstream = String(upstream).startsWith('https:');
       return {
         upstreamProxyUrl: upstream,
-        ignoreUpstreamProxyCertificate: httpsUpstream,
+        ...(httpsAgent ? { httpsAgent } : {}),
       };
     },
   });
   await server.listen();
-  return { port, server, upstream };
+  return { port, server, upstream, httpsAgent };
 }
 
 async function restartLocalProxy(runtime, proxy) {
@@ -549,10 +566,13 @@ async function restartLocalProxy(runtime, proxy) {
     runtime.proxyServer = null;
     runtime.localProxyPort = null;
   }
+  destroyHttpsAgent(runtime.httpsAgent);
+  runtime.httpsAgent = null;
   const started = await startLocalProxy(runtime.slot, proxy);
   runtime.proxyServer = started.server;
   runtime.localProxyPort = started.port;
   runtime.upstream = started.upstream;
+  runtime.httpsAgent = started.httpsAgent;
   return started;
 }
 
@@ -1175,6 +1195,7 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
       authFile,
       localProxyPort: null,
       proxyServer: null,
+      httpsAgent: null,
       upstream: null,
       xvfb: null,
       openbox: null,
@@ -1236,6 +1257,7 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
     runtime.proxyServer = proxy.server;
     runtime.localProxyPort = proxy.port;
     runtime.upstream = proxy.upstream;
+    runtime.httpsAgent = proxy.httpsAgent;
     applyUidLoopbackFilter(runtime);
 
     // Start VNC before Chrome so the session is reachable even while Chrome boots.
@@ -1340,6 +1362,8 @@ async function forceCleanupRuntime(runtime) {
       /* ignore */
     }
   }
+  destroyHttpsAgent(runtime.httpsAgent);
+  runtime.httpsAgent = null;
 }
 
 export async function stopSession(sessionId) {
