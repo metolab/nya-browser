@@ -15,7 +15,7 @@ RUN npm ci
 COPY shared ./shared
 COPY backend ./backend
 COPY frontend ./frontend
-RUN npm run build && npm prune --omit=dev
+RUN npm run build
 
 FROM debian:bookworm-slim
 
