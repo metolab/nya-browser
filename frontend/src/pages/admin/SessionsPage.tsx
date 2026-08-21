@@ -182,6 +182,7 @@ export default function SessionsPage() {
         initialProxyId={edit?.proxyId}
         initialTimezone={edit?.timezone || DEFAULT_TIMEZONE}
         initialHomeUrl={edit?.homeUrl}
+        initialIdleTimeoutMinutes={edit?.idleTimeoutMinutes ?? 0}
         onCancel={() => setEdit(null)}
         onSubmit={async (data) => {
           if (!edit) return;

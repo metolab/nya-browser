@@ -37,6 +37,7 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
     fingerprint: session.fingerprint,
     timezone: session.timezone,
     homeUrl: session.homeUrl,
+    idleTimeoutMinutes: session.idleTimeoutMinutes,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     runtime,

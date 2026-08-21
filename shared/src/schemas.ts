@@ -55,6 +55,11 @@ export const createProxySchema = z.object({
 
 export const updateProxySchema = createProxySchema.partial();
 
+/** Idle auto-stop timeout stored on each session. Unit is minutes; 0 disables. */
+export const IDLE_TIMEOUT_MINUTES_MAX = 7 * 24 * 60;
+
+export const idleTimeoutMinutesSchema = z.number().int().min(0).max(IDLE_TIMEOUT_MINUTES_MAX);
+
 export const createSessionSchema = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional().default(''),
@@ -62,6 +67,7 @@ export const createSessionSchema = z.object({
   proxyId: z.string().min(1).nullable().optional(),
   timezone: z.enum(TIMEZONE_LIST).optional(),
   homeUrl: z.string().max(2000).optional(),
+  idleTimeoutMinutes: idleTimeoutMinutesSchema.optional().default(0),
 });
 
 export const updateSessionSchema = z.object({
@@ -71,6 +77,7 @@ export const updateSessionSchema = z.object({
   proxyId: z.string().min(1).nullable().optional(),
   timezone: z.enum(TIMEZONE_LIST).optional(),
   homeUrl: z.string().max(2000).optional(),
+  idleTimeoutMinutes: idleTimeoutMinutesSchema.optional(),
 });
 
 export const createGroupSchema = z.object({

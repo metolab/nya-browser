@@ -104,6 +104,7 @@ export function migrateJsonSessions() {
         proxyId,
         timezone,
         homeUrl,
+        idleTimeoutMinutes: 0,
         fingerprint: JSON.stringify(normalizeFingerprint(s.fingerprint)),
         createdAt: s.createdAt || now,
         updatedAt: s.updatedAt || now,

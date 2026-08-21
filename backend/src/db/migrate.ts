@@ -85,6 +85,7 @@ export function migrate() {
   try {
     for (const sql of STATEMENTS) sqlite.exec(sql);
     ensureColumn('sessions', 'group_id', 'TEXT');
+    ensureColumn('sessions', 'idle_timeout_minutes', 'INTEGER NOT NULL DEFAULT 0');
     sqlite.exec('CREATE INDEX IF NOT EXISTS idx_sessions_group ON sessions(group_id)');
     sqlite.exec('DROP TABLE IF EXISTS session_assignments');
     sqlite.exec('COMMIT');

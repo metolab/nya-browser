@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import { and, asc, eq } from 'drizzle-orm';
 import {
   DEFAULT_HOME_URL,
+  IDLE_TIMEOUT_MINUTES_MAX,
   emptyProxy,
   normalizeTimezone,
   type FingerprintConfig,
@@ -58,6 +59,12 @@ export function normalizeHomeUrl(input: unknown) {
     throw new Error('Start URL must be http or https');
   }
   return parsed.toString();
+}
+
+export function normalizeIdleTimeoutMinutes(input: unknown) {
+  const n = Number(input);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(IDLE_TIMEOUT_MINUTES_MAX, Math.floor(n));
 }
 
 export function normalizeProxyConfig(input: Partial<ProxyConfig> | null | undefined): ProxyConfig {
@@ -224,6 +231,7 @@ export type SessionRecord = {
   fingerprint: FingerprintConfig;
   timezone: string;
   homeUrl: string;
+  idleTimeoutMinutes: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -240,6 +248,7 @@ function hydrateSession(row: typeof sessionsTable.$inferSelect): SessionRecord {
     fingerprint: parseFingerprint(row.fingerprint),
     timezone: normalizeTimezone(row.timezone),
     homeUrl: normalizeHomeUrl(row.homeUrl),
+    idleTimeoutMinutes: normalizeIdleTimeoutMinutes(row.idleTimeoutMinutes),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -261,6 +270,7 @@ export function createSession(input: {
   proxyId?: string | null;
   timezone?: string;
   homeUrl?: string;
+  idleTimeoutMinutes?: number;
   fingerprint?: FingerprintConfig;
   id?: string;
 }): SessionRecord {
@@ -280,6 +290,7 @@ export function createSession(input: {
     fingerprint: input.fingerprint ? normalizeFingerprint(input.fingerprint) : createFingerprint(),
     timezone: normalizeTimezone(input.timezone),
     homeUrl: normalizeHomeUrl(input.homeUrl),
+    idleTimeoutMinutes: normalizeIdleTimeoutMinutes(input.idleTimeoutMinutes),
     createdAt: now,
     updatedAt: now,
   };
@@ -293,6 +304,7 @@ export function createSession(input: {
       proxyId: session.proxyId,
       timezone: session.timezone,
       homeUrl: session.homeUrl,
+      idleTimeoutMinutes: session.idleTimeoutMinutes,
       fingerprint: JSON.stringify(session.fingerprint),
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
@@ -310,6 +322,7 @@ export function updateSession(
     proxyId: string | null;
     timezone: string;
     homeUrl: string;
+    idleTimeoutMinutes: number;
     fingerprint: FingerprintConfig;
   }>,
 ): SessionRecord | null {
@@ -329,6 +342,10 @@ export function updateSession(
     timezone:
       patch.timezone !== undefined ? normalizeTimezone(patch.timezone) : current.timezone,
     homeUrl: patch.homeUrl !== undefined ? normalizeHomeUrl(patch.homeUrl) : current.homeUrl,
+    idleTimeoutMinutes:
+      patch.idleTimeoutMinutes !== undefined
+        ? normalizeIdleTimeoutMinutes(patch.idleTimeoutMinutes)
+        : current.idleTimeoutMinutes,
     fingerprint: JSON.stringify(
       patch.fingerprint !== undefined
         ? normalizeFingerprint(patch.fingerprint)

@@ -7,6 +7,8 @@ import {
   createGroupSchema,
   putUserGrantsSchema,
   putTargetGrantsSchema,
+  createSessionSchema,
+  IDLE_TIMEOUT_MINUTES_MAX,
 } from './schemas.js';
 import { normalizeTimezone, DEFAULT_TIMEZONE } from './timezones.js';
 import { emptyProxy } from './types.js';
@@ -56,6 +58,22 @@ describe('schemas', () => {
       port: 1080,
     });
     expect(p.port).toBe(1080);
+  });
+
+  it('defaults idle timeout to 0', () => {
+    const s = createSessionSchema.parse({ name: 's1' });
+    expect(s.idleTimeoutMinutes).toBe(0);
+  });
+
+  it('accepts idle timeout minutes', () => {
+    const s = createSessionSchema.parse({ name: 's1', idleTimeoutMinutes: 5 });
+    expect(s.idleTimeoutMinutes).toBe(5);
+  });
+
+  it('rejects oversized idle timeout', () => {
+    expect(() =>
+      createSessionSchema.parse({ name: 's1', idleTimeoutMinutes: IDLE_TIMEOUT_MINUTES_MAX + 1 }),
+    ).toThrow();
   });
 });
 

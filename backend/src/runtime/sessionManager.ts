@@ -16,7 +16,8 @@ import {
   normalizeHomeUrl,
   sessionDir,
 } from '../store.js';
-import { DISPLAY_LIMITS, clampDisplayGeom, normalizeTimezone } from '@nya/shared';
+import { DISPLAY_LIMITS, clampDisplayGeom, normalizeTimezone, AUDIT_ACTIONS } from '@nya/shared';
+import { writeAudit } from '../modules/audit/service.js';
 
 const DISPLAY_BASE = Number(process.env.DISPLAY_BASE || 100);
 const SUB_DISPLAY_BASE = Number(process.env.SUB_DISPLAY_BASE || 2000);
@@ -1247,6 +1248,7 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
     await sleep(1000);
 
     runtimes.set(sessionId, runtime);
+    syncIdleWatch(sessionId);
     return getRuntimePublic(sessionId);
   } catch (err) {
     if (runtime) {
@@ -1335,6 +1337,7 @@ async function forceCleanupRuntime(runtime) {
 }
 
 export async function stopSession(sessionId) {
+  clearIdleWatch(sessionId);
   const runtime = runtimes.get(sessionId);
   if (!runtime) return false;
   runtime.stopping = true;
@@ -1994,6 +1997,72 @@ export function getRuntimePublic(sessionId) {
 const vncCounts = new Map();
 /** @type {Map<string, Set<import('ws').WebSocket>>} */
 const vncClients = new Map();
+/** @type {Map<string, ReturnType<typeof setTimeout>>} */
+const idleTimers = new Map();
+
+function totalVncConnections(sessionId) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) return 0;
+  let n = getVncCount(sessionId, null);
+  for (const sub of runtime.subs || []) {
+    n += getVncCount(sessionId, sub.id);
+  }
+  return n;
+}
+
+function clearIdleWatch(sessionId) {
+  const timer = idleTimers.get(sessionId);
+  if (!timer) return;
+  clearTimeout(timer);
+  idleTimers.delete(sessionId);
+}
+
+export function syncIdleWatch(sessionId) {
+  clearIdleWatch(sessionId);
+  const runtime = runtimes.get(sessionId);
+  if (!runtime || runtime.stopping) return;
+  const minutes = Number(getSession(sessionId)?.idleTimeoutMinutes) || 0;
+  if (minutes <= 0) {
+    runtime.idleSince = null;
+    return;
+  }
+  if (totalVncConnections(sessionId) > 0) {
+    runtime.idleSince = null;
+    return;
+  }
+  if (!runtime.idleSince) runtime.idleSince = Date.now();
+  const remain = minutes * 60 * 1000 - (Date.now() - runtime.idleSince);
+  const timer = setTimeout(() => {
+    idleTimers.delete(sessionId);
+    void stopIdleSession(sessionId);
+  }, Math.max(0, remain));
+  idleTimers.set(sessionId, timer);
+}
+
+async function stopIdleSession(sessionId) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime || runtime.stopping) return;
+  if (totalVncConnections(sessionId) > 0) {
+    syncIdleWatch(sessionId);
+    return;
+  }
+  const minutes = Number(getSession(sessionId)?.idleTimeoutMinutes) || 0;
+  if (minutes <= 0) return;
+  const since = runtime.idleSince || 0;
+  if (Date.now() - since < minutes * 60 * 1000 - 100) {
+    syncIdleWatch(sessionId);
+    return;
+  }
+  console.log(`[idle] session=${sessionId} no VNC for ${minutes}m, stopping`);
+  writeAudit({
+    action: AUDIT_ACTIONS.sessionStop,
+    resourceType: 'session',
+    resourceId: sessionId,
+    success: true,
+    detail: { reason: 'idle_timeout', idleTimeoutMinutes: minutes },
+  });
+  await stopSession(sessionId);
+}
 
 function newOccupancy() {
   return crypto.randomBytes(12).toString('hex');
@@ -2006,10 +2075,12 @@ export function vncKey(sessionId, subId = null) {
 export function addVncConnection(sessionId, subId = null) {
   const k = vncKey(sessionId, subId);
   vncCounts.set(k, (vncCounts.get(k) || 0) + 1);
+  syncIdleWatch(sessionId);
   return () => {
     const n = (vncCounts.get(k) || 1) - 1;
     if (n <= 0) vncCounts.delete(k);
     else vncCounts.set(k, n);
+    syncIdleWatch(sessionId);
   };
 }
 

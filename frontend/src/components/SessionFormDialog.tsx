@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ProxyRecord, SessionGroup } from '@nya/shared';
-import { DEFAULT_TIMEZONE, TIMEZONES } from '@nya/shared';
+import { DEFAULT_TIMEZONE, IDLE_TIMEOUT_MINUTES_MAX, TIMEZONES } from '@nya/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -28,6 +28,7 @@ export type SessionFormValues = {
   proxyId: string | null;
   timezone: string;
   homeUrl: string;
+  idleTimeoutMinutes: number;
 };
 
 type Props = {
@@ -39,6 +40,7 @@ type Props = {
   initialGroupId?: string | null;
   initialTimezone?: string;
   initialHomeUrl?: string;
+  initialIdleTimeoutMinutes?: number;
   proxies: ProxyRecord[];
   groups?: SessionGroup[];
   submitLabel: string;
@@ -57,6 +59,7 @@ export default function SessionFormDialog({
   initialGroupId = null,
   initialTimezone = DEFAULT_TIMEZONE,
   initialHomeUrl = 'https://www.google.com/',
+  initialIdleTimeoutMinutes = 0,
   proxies,
   groups,
   submitLabel,
@@ -70,6 +73,7 @@ export default function SessionFormDialog({
   const [description, setDescription] = useState(initialDescription);
   const [timezone, setTimezone] = useState(initialTimezone);
   const [homeUrl, setHomeUrl] = useState(initialHomeUrl);
+  const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState(String(initialIdleTimeoutMinutes ?? 0));
   const [proxyId, setProxyId] = useState(initialProxyId || NONE_KEY);
   const [groupId, setGroupId] = useState(initialGroupId || NONE_KEY);
 
@@ -79,6 +83,7 @@ export default function SessionFormDialog({
     setDescription(initialDescription);
     setTimezone(initialTimezone || DEFAULT_TIMEZONE);
     setHomeUrl(initialHomeUrl || 'https://www.google.com/');
+    setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? 0));
     setProxyId(initialProxyId || NONE_KEY);
     setGroupId(initialGroupId || NONE_KEY);
     setBusy(false);
@@ -90,6 +95,7 @@ export default function SessionFormDialog({
     initialGroupId,
     initialTimezone,
     initialHomeUrl,
+    initialIdleTimeoutMinutes,
   ]);
 
   return (
@@ -109,6 +115,11 @@ export default function SessionFormDialog({
               description,
               timezone: timezone || DEFAULT_TIMEZONE,
               homeUrl: homeUrl || 'https://www.google.com/',
+              idleTimeoutMinutes: (() => {
+                const n = Number.parseInt(String(idleTimeoutMinutes), 10);
+                if (!Number.isFinite(n) || n <= 0) return 0;
+                return Math.min(IDLE_TIMEOUT_MINUTES_MAX, n);
+              })(),
               proxyId: proxyId === NONE_KEY ? null : proxyId,
               groupId: groupId === NONE_KEY ? null : groupId,
             })
@@ -187,6 +198,21 @@ export default function SessionFormDialog({
                 />
                 <p className="text-xs text-muted-foreground">
                   打开窗口时使用，也可以临时填写别的地址
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="session-idle">空闲超时（分钟）</Label>
+                <Input
+                  id="session-idle"
+                  type="number"
+                  min={0}
+                  max={IDLE_TIMEOUT_MINUTES_MAX}
+                  step={1}
+                  value={idleTimeoutMinutes}
+                  onChange={(e) => setIdleTimeoutMinutes(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  所有窗口都没有 VNC 连接达到该时间后自动停止会话。0 表示不限制
                 </p>
               </div>
             </>

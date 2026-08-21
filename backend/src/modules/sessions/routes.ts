@@ -33,6 +33,7 @@ import {
   startSession,
   stopSession,
   stopSub,
+  syncIdleWatch,
   takeoverOwnedWindow,
 } from '../../runtime/sessionManager.js';
 import { sessionIoRouter } from './io.js';
@@ -63,6 +64,7 @@ sessionsRouter.post(
         proxyId: parsed.data.proxyId ?? null,
         timezone: parsed.data.timezone,
         homeUrl: parsed.data.homeUrl,
+        idleTimeoutMinutes: parsed.data.idleTimeoutMinutes,
       });
     } catch (err) {
       return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -101,6 +103,9 @@ sessionsRouter.patch(
       getRuntimePublic(session.id)
     ) {
       await restartBrowser(session.id);
+    }
+    if (parsed.data.idleTimeoutMinutes !== undefined) {
+      syncIdleWatch(session.id);
     }
     auditFromReq(req, {
       action: AUDIT_ACTIONS.sessionUpdate,

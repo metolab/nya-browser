@@ -83,6 +83,7 @@ backupRouter.get(
       description: session.description,
       timezone: session.timezone,
       homeUrl: session.homeUrl,
+      idleTimeoutMinutes: session.idleTimeoutMinutes,
       fingerprint: session.fingerprint,
       proxy: {
         id: session.proxyId,
@@ -173,6 +174,7 @@ backupRouter.post(
       description: manifest.description,
       timezone: manifest.timezone,
       homeUrl: manifest.homeUrl,
+      idleTimeoutMinutes: manifest.idleTimeoutMinutes,
       fingerprint: manifest.fingerprint,
       proxyId,
     });

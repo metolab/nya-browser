@@ -63,6 +63,7 @@ export const api = {
     proxyId?: string | null;
     timezone?: string;
     homeUrl?: string;
+    idleTimeoutMinutes?: number;
   }) =>
     request<{ session: Session }>('/api/sessions', {
       method: 'POST',
@@ -77,6 +78,7 @@ export const api = {
       proxyId: string | null;
       timezone: string;
       homeUrl: string;
+      idleTimeoutMinutes: number;
     }>,
   ) =>
     request<{ session: Session }>(`/api/sessions/${id}`, {

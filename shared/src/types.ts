@@ -107,6 +107,7 @@ export interface Session {
   fingerprint?: FingerprintConfig;
   timezone: string;
   homeUrl: string;
+  idleTimeoutMinutes: number;
   createdAt: string;
   updatedAt: string;
   runtime: RuntimeInfo;
@@ -171,6 +172,7 @@ export interface BackupManifest {
   description: string;
   timezone: string;
   homeUrl: string;
+  idleTimeoutMinutes?: number;
   fingerprint: FingerprintConfig;
   proxy: {
     id: string | null;
