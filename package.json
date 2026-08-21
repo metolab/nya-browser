@@ -1,0 +1,28 @@
+{
+  "name": "nya-browser",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontend",
+    "e2e"
+  ],
+  "scripts": {
+    "build": "npm run build -w @nya/shared && npm run build -w nya-browser-backend && npm run build -w nya-browser-frontend",
+    "build:shared": "npm run build -w @nya/shared",
+    "dev:backend": "npm run dev -w nya-browser-backend",
+    "dev:frontend": "npm run dev -w nya-browser-frontend",
+    "test:e2e": "npm run test -w nya-browser-e2e",
+    "test:unit": "npm run test -w @nya/shared",
+    "chromium:stage": "bash scripts/stage-chromium.sh",
+    "chromium:publish": "bash scripts/publish-chromium.sh"
+  },
+  "allowScripts": {
+    "argon2@0.41.1": true,
+    "better-sqlite3@11.10.0": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
+  }
+}

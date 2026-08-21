@@ -1,0 +1,2 @@
+# Extra GN args appended after ungoogled flags.linux.gn
+is_chrome_branded=false

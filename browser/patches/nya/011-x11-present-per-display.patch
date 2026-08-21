@@ -1,0 +1,164 @@
+diff --git a/ui/gfx/x/connection.h b/ui/gfx/x/connection.h
+--- a/ui/gfx/x/connection.h
++++ b/ui/gfx/x/connection.h
+@@ -6,6 +6,7 @@
+ #define UI_GFX_X_CONNECTION_H_
+ 
+ #include <array>
++#include <cstdint>
+ #include <optional>
+ #include <string>
+ #include <vector>
+@@ -180,6 +181,14 @@
+   // Drops an extra connection opened by GetOrCreate(). No-op for Primary().
+   static void Remove(const std::string& display);
+ 
++  // Maps an X window id to the display string it was created on. Used by the
++  // GPU/compositor thread to open its own connection to that server.
++  static void RegisterWidget(uint32_t widget, const std::string& display);
++  static void UnregisterWidget(uint32_t widget);
++  static std::string DisplayForWidget(uint32_t widget);
++  static Connection* ForWidget(uint32_t widget);
++
+   // Temporarily make Get() return |connection| on this thread. Does not take
+   // ownership. Pass nullptr to clear the override.
+   static void Bind(Connection* connection);
+diff --git a/ui/gfx/x/connection.cc b/ui/gfx/x/connection.cc
+--- a/ui/gfx/x/connection.cc
++++ b/ui/gfx/x/connection.cc
+@@ -20,6 +20,7 @@
+ #include "base/strings/string_split.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/string_view_util.h"
++#include "base/synchronization/lock.h"
+ #include "base/threading/thread_local.h"
+@@ -67,11 +68,28 @@
+ }
+ 
+ std::map<std::string, std::unique_ptr<Connection>>& ExtraConnections() {
+-  static base::NoDestructor<std::map<std::string, std::unique_ptr<Connection>>>
+-      extra;
+-  return *extra;
++  // Per-thread: the GPU/compositor thread must not share xcb connections
++  // with the UI thread (sequence checker + xcb is not thread-safe).
++  using ExtraMap = std::map<std::string, std::unique_ptr<Connection>>;
++  static base::NoDestructor<base::ThreadLocalOwnedPointer<ExtraMap>> tls;
++  auto& slot = *tls;
++  if (!slot.Get()) {
++    slot.Set(std::make_unique<ExtraMap>());
++  }
++  return *slot.Get();
++}
++
++struct WidgetDisplayMap {
++  base::Lock lock;
++  std::map<uint32_t, std::string> widget_to_display;
++};
++
++WidgetDisplayMap& GetWidgetDisplayMap() {
++  static base::NoDestructor<WidgetDisplayMap> map;
++  return *map;
+ }
+ 
+ void DefaultErrorHandler(const Error* error, const char* request_name) {
+   LOG(WARNING) << "X error received.  Request: " << request_name
+                << "Request, Error: " << error->ToString();
+@@ -209,6 +227,38 @@
+   ExtraConnections().erase(display);
+ }
+ 
++void Connection::RegisterWidget(uint32_t widget, const std::string& display) {
++  auto& map = GetWidgetDisplayMap();
++  base::AutoLock lock(map.lock);
++  map.widget_to_display[widget] = display;
++}
++
++void Connection::UnregisterWidget(uint32_t widget) {
++  auto& map = GetWidgetDisplayMap();
++  base::AutoLock lock(map.lock);
++  map.widget_to_display.erase(widget);
++}
++
++std::string Connection::DisplayForWidget(uint32_t widget) {
++  auto& map = GetWidgetDisplayMap();
++  base::AutoLock lock(map.lock);
++  auto it = map.widget_to_display.find(widget);
++  if (it == map.widget_to_display.end()) {
++    return std::string();
++  }
++  return it->second;
++}
++
++Connection* Connection::ForWidget(uint32_t widget) {
++  const std::string display = DisplayForWidget(widget);
++  if (!display.empty()) {
++    if (Connection* extra = GetOrCreate(display)) {
++      return extra;
++    }
++  }
++  return Get();
++}
++
+ ScopedConnectionBind::ScopedConnectionBind(Connection* connection)
+     : previous_(OverrideSlot()) {
+   OverrideSlot() = connection;
+diff --git a/ui/ozone/platform/x11/x11_window.cc b/ui/ozone/platform/x11/x11_window.cc
+--- a/ui/ozone/platform/x11/x11_window.cc
++++ b/ui/ozone/platform/x11/x11_window.cc
+@@ -283,6 +283,8 @@
+   // At this point, the X window is created.  Register it and notify the
+   // platform window delegate.
+   X11WindowManager::GetInstance()->AddWindow(this);
++  x11::Connection::RegisterWidget(static_cast<uint32_t>(GetWidget()),
++                                  connection_->DisplayString());
+ 
+   connection_->AddEventObserver(this);
+   DCHECK(X11EventSource::HasInstance());
+@@ -516,6 +518,7 @@
+   }
+ 
+   X11WindowManager::GetInstance()->RemoveWindow(this);
++  x11::Connection::UnregisterWidget(static_cast<uint32_t>(GetWidget()));
+ 
+   is_shutting_down_ = true;
+ 
+diff --git a/ui/ozone/platform/x11/x11_canvas_surface.cc b/ui/ozone/platform/x11/x11_canvas_surface.cc
+--- a/ui/ozone/platform/x11/x11_canvas_surface.cc
++++ b/ui/ozone/platform/x11/x11_canvas_surface.cc
+@@ -14,8 +14,20 @@
+ 
+ namespace ui {
+ 
++namespace {
++
++x11::Connection& ConnectionForCanvas(gfx::AcceleratedWidget widget) {
++  if (auto* conn = x11::Connection::ForWidget(static_cast<uint32_t>(widget))) {
++    return *conn;
++  }
++  return *x11::Connection::Get();
++}
++
++}  // namespace
++
+ X11CanvasSurface::X11CanvasSurface(gfx::AcceleratedWidget widget)
+-    : x11_software_bitmap_presenter_(*x11::Connection::Get(), widget, true) {}
++    : x11_software_bitmap_presenter_(ConnectionForCanvas(widget), widget, true) {
++}
+ 
+ X11CanvasSurface::~X11CanvasSurface() = default;
+ 
+diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
+--- a/ui/views/widget/widget.cc
++++ b/ui/views/widget/widget.cc
+@@ -496,6 +496,11 @@
+     params.x11_display = parent_->x11_display();
+   }
+   x11_display_ = params.x11_display;
++  // GPU/EGL is bound to the process DISPLAY. Extra X servers must present
++  // through the software canvas on a per-display xcb connection.
++  if (!x11_display_.empty()) {
++    params.force_software_compositing = true;
++  }
+ #endif
+ 
+   // Subscripbe to parent's paint-as-active change.

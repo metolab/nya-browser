@@ -1,0 +1,22 @@
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -24,6 +24,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <inttypes.h>
+ 
+@@ -5346,8 +5347,11 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
+     if (!binder.Succeeded()) {
+       return;
+     }
+     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
+   }
++  if (data && buffer_size.IsValid()) {
++    nya::FarbleBytes(data, static_cast<size_t>(buffer_size.ValueOrDie()));
++  }
+ }
+ 
+ void WebGLRenderingContextBase::RenderbufferStorageImpl(

@@ -1,0 +1,53 @@
+const LOC_ZH: Record<string, string> = {
+  AE: '阿联酋',
+  AR: '阿根廷',
+  AT: '奥地利',
+  AU: '澳大利亚',
+  BE: '比利时',
+  BR: '巴西',
+  CA: '加拿大',
+  CH: '瑞士',
+  CL: '智利',
+  CN: '中国',
+  CZ: '捷克',
+  DE: '德国',
+  DK: '丹麦',
+  EG: '埃及',
+  ES: '西班牙',
+  FI: '芬兰',
+  FR: '法国',
+  GB: '英国',
+  HK: '香港',
+  ID: '印度尼西亚',
+  IE: '爱尔兰',
+  IL: '以色列',
+  IN: '印度',
+  IT: '意大利',
+  JP: '日本',
+  KR: '韩国',
+  MO: '澳门',
+  MX: '墨西哥',
+  MY: '马来西亚',
+  NL: '荷兰',
+  NO: '挪威',
+  NZ: '新西兰',
+  PH: '菲律宾',
+  PL: '波兰',
+  RU: '俄罗斯',
+  SA: '沙特',
+  SE: '瑞典',
+  SG: '新加坡',
+  TH: '泰国',
+  TR: '土耳其',
+  TW: '台湾',
+  US: '美国',
+  VN: '越南',
+  ZA: '南非',
+};
+
+export function regionFromLoc(loc?: string | null): string | null {
+  if (!loc) return null;
+  const code = loc.trim().toUpperCase();
+  if (!code) return null;
+  return LOC_ZH[code] || code;
+}

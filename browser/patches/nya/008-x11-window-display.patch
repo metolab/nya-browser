@@ -1,0 +1,129 @@
+diff --git a/ui/platform_window/platform_window_init_properties.h b/ui/platform_window/platform_window_init_properties.h
+--- a/ui/platform_window/platform_window_init_properties.h
++++ b/ui/platform_window/platform_window_init_properties.h
+@@ -134,6 +134,10 @@
+ 
+   raw_ptr<X11ExtensionDelegate> x11_extension_delegate = nullptr;
+ 
++  // X11 display string (e.g. ":201") this window should be created on.
++  // Empty means the process DISPLAY / primary connection.
++  std::string x11_display;
++
+   // Wayland specific.  Holds the application ID that is used by the window
+   // manager to match the desktop entry and group windows.
+   std::string wayland_app_id;
+diff --git a/ui/ozone/platform/x11/ozone_platform_x11.cc b/ui/ozone/platform/x11/ozone_platform_x11.cc
+--- a/ui/ozone/platform/x11/ozone_platform_x11.cc
++++ b/ui/ozone/platform/x11/ozone_platform_x11.cc
+@@ -31,6 +31,7 @@
+ #include "ui/gfx/native_ui_types.h"
+ #include "ui/gfx/switches.h"
+ #include "ui/gfx/x/atom_cache.h"
++#include "ui/gfx/x/connection.h"
+ #include "ui/gfx/x/visual_manager.h"
+ #include "ui/linux/linux_ui_delegate.h"
+ #include "ui/ozone/common/stub_overlay_manager.h"
+@@ -102,6 +103,16 @@
+   std::unique_ptr<PlatformWindow> CreatePlatformWindow(
+       PlatformWindowDelegate* delegate,
+       PlatformWindowInitProperties properties) override {
++    x11::Connection* conn = x11::Connection::Get();
++    if (!properties.x11_display.empty()) {
++      if (auto* extra = x11::Connection::GetOrCreate(properties.x11_display)) {
++        conn = extra;
++      }
++    }
++    x11::ScopedConnectionBind bind(conn);
++    if (ui::X11EventSource::HasInstance()) {
++      ui::X11EventSource::GetInstance()->WatchConnection(conn);
++    }
+     auto window = std::make_unique<X11Window>(delegate);
+     window->Initialize(std::move(properties));
+     return std::move(window);
+diff --git a/ui/views/widget/widget.h b/ui/views/widget/widget.h
+--- a/ui/views/widget/widget.h
++++ b/ui/views/widget/widget.h
+@@ -497,6 +497,9 @@
+     std::string wm_class_name;
+     std::string wm_class_class;
+ 
++    // X11 display this widget should be created on (e.g. ":201"). Empty = primary.
++    std::string x11_display;
++
+     // Only used by Wayland, for root level windows.
+     std::string wayland_app_id;
+ #endif  // BUILDFLAG(IS_LINUX)
+@@ -1291,6 +1294,10 @@
+   // with it. TYPE_CONTROL and TYPE_TOOLTIP is not considered top level.
+   bool is_top_level() const { return is_top_level_; }
+ 
++#if BUILDFLAG(IS_LINUX)
++  const std::string& x11_display() const { return x11_display_; }
++#endif
++
+   // True if the window size will follow the content preferred size.
+   bool is_autosized() const { return is_autosized_; }
+ 
+@@ -1742,6 +1749,10 @@
+   // See |is_top_level()| accessor.
+   bool is_top_level_ = false;
+ 
++#if BUILDFLAG(IS_LINUX)
++  std::string x11_display_;
++#endif
++
+   // Tracks whether native widget has been initialized.
+   bool native_widget_initialized_ = false;
+ 
+diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
+--- a/ui/views/widget/widget.cc
++++ b/ui/views/widget/widget.cc
+@@ -492,6 +492,13 @@
+     parent_ = GetWidgetForNativeView(params.parent)->GetWeakPtr();
+   }
+ 
++#if BUILDFLAG(IS_LINUX)
++  if (params.x11_display.empty() && parent_) {
++    params.x11_display = parent_->x11_display();
++  }
++  x11_display_ = params.x11_display;
++#endif
++
+   // Subscripbe to parent's paint-as-active change.
+   if (parent_) {
+     parent_paint_as_active_subscription_ =
+diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc
+--- a/ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc
++++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc
+@@ -487,6 +487,7 @@
+   properties->wm_class_name = params.wm_class_name;
+   properties->wm_class_class = params.wm_class_class;
+   properties->wm_role_name = params.wm_role_name;
++  properties->x11_display = params.x11_display;
+ 
+   properties->wayland_app_id = params.wayland_app_id;
+ 
+diff --git a/chrome/browser/ui/browser.h b/chrome/browser/ui/browser.h
+--- a/chrome/browser/ui/browser.h
++++ b/chrome/browser/ui/browser.h
+@@ -243,6 +243,9 @@
+     // using this ID.  In response, the desktop will stop playing the "waiting
+     // for startup" animation (if any).
+     std::string startup_id;
++
++    // X11 display this browser window should be created on (e.g. ":201").
++    std::string nya_x11_display;
+ #endif
+ 
+ #if BUILDFLAG(IS_OZONE)
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
+--- a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
++++ b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
+@@ -58,6 +58,7 @@
+   params.wm_role_name = browser_view()->browser()->is_type_normal()
+                             ? std::string(kX11WindowRoleBrowser)
+                             : std::string(kX11WindowRolePopup);
++  params.x11_display = browser.create_params().nya_x11_display;
+   params.remove_standard_frame = UseCustomFrame();
+   params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+ 

@@ -1,0 +1,46 @@
+# nested lockfiles from pre-workspace layout
+backend/package-lock.json
+
+# dependencies
+node_modules/
+
+# workspace build outputs
+shared/dist/
+backend/dist/
+frontend/dist/
+*.tsbuildinfo
+
+# runtime data
+data/
+*.log
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# chromium build tree (cloned upstream + unpacked source)
+browser/.portablelinux/
+
+# chromium packed binaries (uploaded to GitHub Releases)
+browser/dist/*
+!browser/dist/.gitkeep
+
+# optional local docker cache of the chromium tarball
+cache/*
+!cache/.gitkeep
+
+# tests
+e2e/test-results/
+e2e/playwright-report/
+test-results/
+coverage/
+playwright-report/
+blob-report/
+
+# editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

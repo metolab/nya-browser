@@ -1,0 +1,550 @@
+diff --git a/ui/gfx/x/connection.h b/ui/gfx/x/connection.h
+--- a/ui/gfx/x/connection.h
++++ b/ui/gfx/x/connection.h
+@@ -7,6 +7,8 @@
+ 
+ #include <array>
+ #include <optional>
++#include <string>
++#include <vector>
+ 
+ #include "base/compiler_specific.h"
+ #include "base/component_export.h"
+@@ -165,6 +167,26 @@
+   // Sets the thread local connection instance.
+   static void Set(std::unique_ptr<Connection> connection);
+ 
++  // Owned TLS connection for this thread (the process DISPLAY), ignoring any
++  // ScopedConnectionBind override.
++  static Connection* Primary();
++
++  // Returns an existing connection for |display| or opens a new one. Empty
++  // |display| returns Primary(). Does not change the TLS binding.
++  static Connection* GetOrCreate(const std::string& display);
++
++  // Display names of Primary() plus every extra connection.
++  static std::vector<std::string> List();
++
++  // Drops an extra connection opened by GetOrCreate(). No-op for Primary().
++  static void Remove(const std::string& display);
++
++  // Temporarily make Get() return |connection| on this thread. Does not take
++  // ownership. Pass nullptr to clear the override.
++  static void Bind(Connection* connection);
++
++  static Connection* GetOverride();
++
+   template <typename T>
+   T GenerateId() {
+     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+@@ -639,6 +661,18 @@
+   raw_ptr<x11::Connection> connection_;
+ };
+ 
++// RAII TLS bind. Restores the previous override (or none) on destruction.
++class COMPONENT_EXPORT(X11) ScopedConnectionBind {
++ public:
++  explicit ScopedConnectionBind(Connection* connection);
++  ScopedConnectionBind(const ScopedConnectionBind&) = delete;
++  ScopedConnectionBind& operator=(const ScopedConnectionBind&) = delete;
++  ~ScopedConnectionBind();
++
++ private:
++  raw_ptr<Connection> previous_;
++};
++
+ }  // namespace x11
+ 
+ namespace base {
+diff --git a/ui/gfx/x/connection.cc b/ui/gfx/x/connection.cc
+--- a/ui/gfx/x/connection.cc
++++ b/ui/gfx/x/connection.cc
+@@ -8,11 +8,14 @@
+ #include <xcb/xcbext.h>
+ 
+ #include <algorithm>
++#include <map>
+ #include <string>
++#include <vector>
+ 
+ #include "base/auto_reset.h"
+ #include "base/command_line.h"
+ #include "base/compiler_specific.h"
++#include "base/logging.h"
+ #include "base/memory/ptr_util.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/no_destructor.h"
+@@ -57,6 +60,17 @@
+   return *tls;
+ }
+ 
++base::ThreadLocalPointer<Connection>& GetConnectionOverrideTLS() {
++  static base::NoDestructor<base::ThreadLocalPointer<Connection>> tls;
++  return *tls;
++}
++
++std::map<std::string, std::unique_ptr<Connection>>& ExtraConnections() {
++  static base::NoDestructor<std::map<std::string, std::unique_ptr<Connection>>>
++      extra;
++  return *extra;
++}
++
+ void DefaultErrorHandler(const Error* error, const char* request_name) {
+   LOG(WARNING) << "X error received.  Request: " << request_name
+                << "Request, Error: " << error->ToString();
+@@ -116,6 +130,14 @@
+ 
+ // static
+ Connection* Connection::Get() {
++  if (Connection* override_conn = GetConnectionOverrideTLS().Get()) {
++    return override_conn;
++  }
++  return Primary();
++}
++
++// static
++Connection* Connection::Primary() {
+   auto& tls = GetConnectionTLS();
+   if (Connection* connection = tls.Get()) {
+     return connection;
+@@ -134,6 +156,67 @@
+   tls.Set(std::move(connection));
+ }
+ 
++// static
++void Connection::Bind(Connection* connection) {
++  GetConnectionOverrideTLS().Set(connection);
++}
++
++// static
++Connection* Connection::GetOverride() {
++  return GetConnectionOverrideTLS().Get();
++}
++
++// static
++Connection* Connection::GetOrCreate(const std::string& display) {
++  Connection* primary = Primary();
++  if (display.empty() || display == primary->DisplayString()) {
++    return primary;
++  }
++  auto& extra = ExtraConnections();
++  auto it = extra.find(display);
++  if (it != extra.end()) {
++    return it->second.get();
++  }
++  auto connection = std::make_unique<Connection>(display);
++  if (!connection->Ready()) {
++    LOG(ERROR) << "Failed to open X display " << display;
++    return nullptr;
++  }
++  Connection* raw = connection.get();
++  extra[display] = std::move(connection);
++  return raw;
++}
++
++// static
++std::vector<std::string> Connection::List() {
++  std::vector<std::string> names;
++  if (Connection* primary = Primary()) {
++    names.push_back(primary->DisplayString());
++  }
++  for (const auto& entry : ExtraConnections()) {
++    names.push_back(entry.first);
++  }
++  return names;
++}
++
++// static
++void Connection::Remove(const std::string& display) {
++  Connection* primary = Primary();
++  if (display.empty() || (primary && display == primary->DisplayString())) {
++    return;
++  }
++  ExtraConnections().erase(display);
++}
++
++ScopedConnectionBind::ScopedConnectionBind(Connection* connection)
++    : previous_(GetConnectionOverrideTLS().Get()) {
++  GetConnectionOverrideTLS().Set(connection);
++}
++
++ScopedConnectionBind::~ScopedConnectionBind() {
++  GetConnectionOverrideTLS().Set(previous_);
++}
++
+ Connection::Connection(const std::string& address)
+     : XProto(this),
+       display_string_(
+diff --git a/ui/events/platform/x11/x11_event_source.h b/ui/events/platform/x11/x11_event_source.h
+--- a/ui/events/platform/x11/x11_event_source.h
++++ b/ui/events/platform/x11/x11_event_source.h
+@@ -9,6 +9,8 @@
+ 
+ #include <memory>
+ #include <optional>
++#include <set>
++#include <vector>
+ 
+ #include "base/memory/raw_ptr.h"
+ #include "ui/events/events_export.h"
+@@ -67,6 +69,10 @@
+ 
+   x11::Connection* connection() { return connection_; }
+ 
++  // Watch |connection| for events in addition to the primary DISPLAY.
++  // Safe to call repeatedly. No-op if |connection| is null or already watched.
++  void WatchConnection(x11::Connection* connection);
++
+   // Returns the timestamp of the event currently being dispatched.  Falls back
+   // on GetCurrentServerTime() if there's no event being dispatched, or if the
+   // current event does not have a timestamp.
+@@ -97,6 +103,10 @@
+ 
+   std::unique_ptr<X11EventWatcher> watcher_;
+ 
++  // Extra pumps for connections opened after startup (nya multi-display).
++  std::vector<std::unique_ptr<X11EventWatcher>> extra_watchers_;
++  std::set<raw_ptr<x11::Connection>> watched_connections_;
++
+   // The connection to the X11 server used to receive the events.
+   raw_ptr<x11::Connection> connection_;
+ 
+diff --git a/ui/events/platform/x11/x11_event_source.cc b/ui/events/platform/x11/x11_event_source.cc
+--- a/ui/events/platform/x11/x11_event_source.cc
++++ b/ui/events/platform/x11/x11_event_source.cc
+@@ -4,6 +4,7 @@
+ 
+ #include <algorithm>
+ #include <memory>
++#include <set>
+ #include <type_traits>
+ 
+ #include "base/logging.h"
+@@ -162,12 +163,25 @@
+ }
+ 
+ X11EventSource::~X11EventSource() {
++  extra_watchers_.clear();
+   if (dummy_initialized_) {
+     connection_->DestroyWindow({dummy_window_});
+   }
+   connection_->RemoveEventObserver(this);
+ }
+ 
++void X11EventSource::WatchConnection(x11::Connection* connection) {
++  if (!connection || connection == connection_ ||
++      watched_connections_.contains(connection)) {
++    return;
++  }
++  watched_connections_.insert(connection);
++  InitializeXkb(connection);
++  extra_watchers_.push_back(
++      std::make_unique<X11EventWatcherImpl>(this, connection));
++  extra_watchers_.back()->StartWatching();
++}
++
+ // static
+ bool X11EventSource::HasInstance() {
+   return GetInstance();
+diff --git a/ui/events/platform/x11/x11_event_watcher_glib.h b/ui/events/platform/x11/x11_event_watcher_glib.h
+--- a/ui/events/platform/x11/x11_event_watcher_glib.h
++++ b/ui/events/platform/x11/x11_event_watcher_glib.h
+@@ -9,6 +9,7 @@
+ 
+ #include "base/memory/raw_ptr.h"
+ #include "ui/events/platform/x11/x11_event_source.h"
++#include "ui/gfx/x/connection.h"
+ 
+ using GPollFD = struct _GPollFD;
+ using GSource = struct _GSource;
+@@ -20,7 +21,8 @@
+ // thread when use_glib GN flag is set (i.e: MessagePumpGlib is in place).
+ class X11EventWatcherGlib : public X11EventWatcher {
+  public:
+-  explicit X11EventWatcherGlib(X11EventSource* source);
++  explicit X11EventWatcherGlib(X11EventSource* source,
++                               x11::Connection* connection = nullptr);
+ 
+   X11EventWatcherGlib(const X11EventWatcherGlib&) = delete;
+   X11EventWatcherGlib& operator=(const X11EventWatcherGlib&) = delete;
+@@ -33,6 +35,7 @@
+ 
+  private:
+   raw_ptr<X11EventSource> event_source_;
++  raw_ptr<x11::Connection> connection_ = nullptr;
+ 
+   // The GLib event source for X events.
+   raw_ptr<GSource> x_source_ = nullptr;
+diff --git a/ui/events/platform/x11/x11_event_watcher_glib.cc b/ui/events/platform/x11/x11_event_watcher_glib.cc
+--- a/ui/events/platform/x11/x11_event_watcher_glib.cc
++++ b/ui/events/platform/x11/x11_event_watcher_glib.cc
+@@ -23,28 +23,16 @@
+   // Set an infinite timeout.
+   *timeout_ms = -1;
+ 
+-  // This function is called before polling the FD, so a flush is mandatory
+-  // in case:
+-  //   1. This is the first message loop iteration and we have unflushed
+-  //      requests.
+-  //   2. A request was made after XSourceDispatch() when running tasks from
+-  //      the task queue.
+   auto* connection = static_cast<GLibX11Source*>(source)->connection.get();
++  x11::ScopedConnectionBind bind(connection);
+   connection->Flush();
+-
+-  // Read a pre-buffered response if available to prevent a deadlock where we
+-  // poll() for data that will never arrive since we already have data in our
+-  // read buffer.
+   connection->ReadResponse(true);
+-
+-  // Return true if we can determine that event processing is necessary without
+-  // polling the FD.
+   return connection->HasPendingResponses();
+ }
+ 
+ gboolean XSourceCheck(GSource* source) {
+-  // Only read a response if poll() determined the FD is readable.
+   GLibX11Source* gxsource = static_cast<GLibX11Source*>(source);
++  x11::ScopedConnectionBind bind(gxsource->connection.get());
+   if (gxsource->poll_fd->revents & G_IO_IN)
+     gxsource->connection->ReadResponse(false);
+   return gxsource->connection->HasPendingResponses();
+@@ -54,15 +42,9 @@
+                          GSourceFunc unused_func,
+                          gpointer data) {
+   auto* connection = static_cast<GLibX11Source*>(source)->connection.get();
++  x11::ScopedConnectionBind bind(connection);
+   connection->Dispatch();
+-
+-  // Flushing here is not strictly required, but when this function returns,
+-  // tasks from the task queue will be run, which may take some time.  Flushing
+-  // now will ensure screen updates occur right away.  Fortunately, this won't
+-  // do any syscalls if it's not necessary.
+   connection->Flush();
+-
+-  // Don't remove the GLibX11Source from the main loop.
+   return G_SOURCE_CONTINUE;
+ }
+ 
+@@ -77,8 +59,9 @@
+ 
+ }  // namespace
+ 
+-X11EventWatcherGlib::X11EventWatcherGlib(X11EventSource* source)
+-    : event_source_(source) {}
++X11EventWatcherGlib::X11EventWatcherGlib(X11EventSource* source,
++                                         x11::Connection* connection)
++    : event_source_(source), connection_(connection) {}
+ 
+ X11EventWatcherGlib::~X11EventWatcherGlib() {
+   StopWatching();
+@@ -88,7 +71,8 @@
+   if (started_)
+     return;
+ 
+-  auto* connection = event_source_->connection();
++  auto* connection =
++      connection_ ? connection_.get() : event_source_->connection();
+   if (!connection->Ready())
+     return;
+ 
+@@ -99,7 +83,7 @@
+ 
+   GLibX11Source* glib_x_source = static_cast<GLibX11Source*>(
+       g_source_new(&XSourceFuncs, sizeof(GLibX11Source)));
+-  glib_x_source->connection = x11::Connection::Get();
++  glib_x_source->connection = connection;
+   glib_x_source->poll_fd = x_poll_.get();
+ 
+   x_source_ = glib_x_source;
+diff --git a/ui/events/platform/x11/x11_event_watcher_fdwatch.h b/ui/events/platform/x11/x11_event_watcher_fdwatch.h
+--- a/ui/events/platform/x11/x11_event_watcher_fdwatch.h
++++ b/ui/events/platform/x11/x11_event_watcher_fdwatch.h
+@@ -8,6 +8,7 @@
+ #include "base/memory/raw_ptr_exclusion.h"
+ #include "base/message_loop/message_pump_for_ui.h"
+ #include "ui/events/platform/x11/x11_event_source.h"
++#include "ui/gfx/x/connection.h"
+ 
+ namespace ui {
+ 
+@@ -16,7 +17,8 @@
+ class X11EventWatcherFdWatch : public X11EventWatcher,
+                                public base::MessagePumpForUI::FdWatcher {
+  public:
+-  explicit X11EventWatcherFdWatch(X11EventSource* source);
++  explicit X11EventWatcherFdWatch(X11EventSource* source,
++                                  x11::Connection* connection = nullptr);
+ 
+   X11EventWatcherFdWatch(const X11EventWatcherFdWatch&) = delete;
+   X11EventWatcherFdWatch& operator=(const X11EventWatcherFdWatch&) = delete;
+@@ -33,6 +35,7 @@
+   void OnFileCanWriteWithoutBlocking(int fd) override;
+ 
+   raw_ptr<X11EventSource> event_source_;
++  raw_ptr<x11::Connection> connection_ = nullptr;
+ 
+   int pipe_[2] = {-1, -1};
+   base::MessagePumpForUI::FdWatchController connection_watcher_;
+diff --git a/ui/events/platform/x11/x11_event_watcher_fdwatch.cc b/ui/events/platform/x11/x11_event_watcher_fdwatch.cc
+--- a/ui/events/platform/x11/x11_event_watcher_fdwatch.cc
++++ b/ui/events/platform/x11/x11_event_watcher_fdwatch.cc
+@@ -12,8 +12,10 @@
+ 
+ namespace ui {
+ 
+-X11EventWatcherFdWatch::X11EventWatcherFdWatch(X11EventSource* source)
++X11EventWatcherFdWatch::X11EventWatcherFdWatch(X11EventSource* source,
++                                               x11::Connection* connection)
+     : event_source_(source),
++      connection_(connection),
+       connection_watcher_(FROM_HERE),
+       pipe_watcher_(FROM_HERE) {}
+ 
+@@ -25,9 +27,11 @@
+   if (started_ || !base::CurrentThread::Get())
+     return;
+ 
+-  DCHECK(event_source_->connection()) << "Unable to get connection to X server";
++  auto* connection =
++      connection_ ? connection_.get() : event_source_->connection();
++  DCHECK(connection) << "Unable to get connection to X server";
+ 
+-  int fd = event_source_->connection()->GetFd();
++  int fd = connection->GetFd();
+   base::CurrentUIThread::Get()->WatchFileDescriptor(
+       fd, true, base::MessagePumpForUI::WATCH_READ, &connection_watcher_, this);
+ 
+@@ -58,8 +62,9 @@
+   }
+   PCHECK(errno == EAGAIN);
+ 
+-  // Dispatch a single event.
+-  auto* connection = event_source_->connection();
++  auto* connection =
++      connection_ ? connection_.get() : event_source_->connection();
++  x11::ScopedConnectionBind bind(connection);
+   if (!connection->HasPendingResponses())
+     connection->ReadResponses();
+   connection->Dispatch();
+diff --git a/ui/ozone/platform/x11/x11_window_manager.h b/ui/ozone/platform/x11/x11_window_manager.h
+--- a/ui/ozone/platform/x11/x11_window_manager.h
++++ b/ui/ozone/platform/x11/x11_window_manager.h
+@@ -8,6 +8,7 @@
+ #include "base/containers/flat_map.h"
+ #include "base/memory/raw_ptr.h"
+ #include "ui/gfx/native_ui_types.h"
++#include "ui/gfx/x/connection.h"
+ 
+ namespace ui {
+ 
+@@ -44,6 +45,9 @@
+ 
+   void MouseOnWindow(X11Window* delegate);
+ 
++  void SetLastActiveWindow(X11Window* window);
++  X11Window* last_active_window() const { return last_active_window_; }
++
+   const X11Window* window_mouse_currently_on_for_test() const {
+     return window_mouse_currently_on_;
+   }
+@@ -51,9 +55,10 @@
+  private:
+   raw_ptr<X11Window> located_events_grabber_ = nullptr;
+   raw_ptr<X11Window> window_mouse_currently_on_ = nullptr;
++  raw_ptr<X11Window> last_active_window_ = nullptr;
+ 
+-  base::flat_map<gfx::AcceleratedWidget, raw_ptr<X11Window, CtnExperimental>>
+-      windows_;
++  using WindowKey = std::pair<x11::Connection*, gfx::AcceleratedWidget>;
++  base::flat_map<WindowKey, raw_ptr<X11Window, CtnExperimental>> windows_;
+ };
+ 
+ }  // namespace ui
+diff --git a/ui/ozone/platform/x11/x11_window_manager.cc b/ui/ozone/platform/x11/x11_window_manager.cc
+--- a/ui/ozone/platform/x11/x11_window_manager.cc
++++ b/ui/ozone/platform/x11/x11_window_manager.cc
+@@ -66,14 +66,16 @@
+   DCHECK(window);
+   auto widget = window->GetWidget();
+   DCHECK_NE(gfx::kNullAcceleratedWidget, widget);
+-  DCHECK(!windows_.contains(widget));
+-  windows_.emplace(widget, window);
++  WindowKey key{&window->connection(), widget};
++  DCHECK(!windows_.contains(key));
++  windows_.emplace(key, window);
+ }
+ 
+ void X11WindowManager::RemoveWindow(X11Window* window) {
+   DCHECK(window);
+   auto widget = window->GetWidget();
+-  auto it = windows_.find(widget);
++  WindowKey key{&window->connection(), widget};
++  auto it = windows_.find(key);
+   // The XWindow might not have been initialized due to some errors.
+   if (widget == gfx::kNullAcceleratedWidget) {
+     DCHECK(it == windows_.end());
+@@ -81,13 +83,27 @@
+     CHECK(it != windows_.end());
+     if (window_mouse_currently_on_ == it->second)
+       window_mouse_currently_on_ = nullptr;
++    if (last_active_window_ == it->second)
++      last_active_window_ = nullptr;
+     windows_.erase(it);
+   }
+ }
+ 
+ X11Window* X11WindowManager::GetWindow(gfx::AcceleratedWidget widget) const {
+-  auto it = windows_.find(widget);
+-  return it != windows_.end() ? it->second : nullptr;
++  auto* conn = x11::Connection::Get();
++  auto it = windows_.find(WindowKey{conn, widget});
++  if (it != windows_.end())
++    return it->second;
++  // Fallback when TLS is not bound: unique widget across all connections.
++  X11Window* found = nullptr;
++  int matches = 0;
++  for (const auto& entry : windows_) {
++    if (entry.first.second == widget) {
++      found = entry.second;
++      ++matches;
++    }
++  }
++  return matches == 1 ? found : nullptr;
+ }
+ 
+ void X11WindowManager::MouseOnWindow(X11Window* window) {
+@@ -98,4 +114,8 @@
+   window->OnCursorUpdate();
+ }
+ 
++void X11WindowManager::SetLastActiveWindow(X11Window* window) {
++  last_active_window_ = window;
++}
++
+ }  // namespace ui
+diff --git a/ui/ozone/platform/x11/x11_window.h b/ui/ozone/platform/x11/x11_window.h
+--- a/ui/ozone/platform/x11/x11_window.h
++++ b/ui/ozone/platform/x11/x11_window.h
+@@ -79,6 +79,8 @@
+   void OnCursorUpdate();
+ 
+   gfx::AcceleratedWidget GetWidget() const;
++  x11::Connection& connection() { return connection_.get(); }
++  const x11::Connection& connection() const { return connection_.get(); }
+   gfx::Rect GetOuterBounds() const;
+   void SetTransientWindow(x11::Window window);
+ 
+diff --git a/ui/ozone/platform/x11/x11_window.cc b/ui/ozone/platform/x11/x11_window.cc
+--- a/ui/ozone/platform/x11/x11_window.cc
++++ b/ui/ozone/platform/x11/x11_window.cc
+@@ -1608,6 +1608,9 @@
+ }
+ 
+ void X11Window::OnXWindowIsActiveChanged(bool active) {
++  if (active) {
++    X11WindowManager::GetInstance()->SetLastActiveWindow(this);
++  }
+   platform_window_delegate_->OnActivationChanged(active);
+ }
+ 

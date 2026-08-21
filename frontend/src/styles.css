@@ -1,0 +1,166 @@
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+.nya-app {
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.desk-board {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.desk-win {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #000;
+}
+
+.desk-win.is-focused {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+  z-index: 4;
+}
+
+.desk-win.is-dragging {
+  opacity: 0.92;
+  z-index: 6;
+}
+
+.desk-win-hit-top {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 9;
+  height: 14px;
+}
+
+.desk-win-chrome {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: grab;
+  user-select: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.desk-win-hit-top:hover ~ .desk-win-chrome,
+.desk-win-chrome:hover,
+.desk-win.is-dragging .desk-win-chrome {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.desk-win-body {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  min-width: 0;
+  background: #000;
+}
+
+.desk-win-handle {
+  position: absolute;
+  z-index: 8;
+}
+
+.desk-win-handle-n,
+.desk-win-handle-s {
+  left: 10px;
+  right: 10px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.desk-win-handle-e,
+.desk-win-handle-w {
+  top: 8px;
+  bottom: 8px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.desk-win-handle-n { top: 0; }
+.desk-win-handle-s { bottom: 0; }
+.desk-win-handle-e { right: 0; }
+.desk-win-handle-w { left: 0; }
+
+.desk-win-handle-ne,
+.desk-win-handle-nw,
+.desk-win-handle-se,
+.desk-win-handle-sw {
+  z-index: 12;
+  width: 12px;
+  height: 12px;
+}
+
+.desk-win-handle-ne { top: 0; right: 0; cursor: nesw-resize; }
+.desk-win-handle-nw { top: 0; left: 0; cursor: nwse-resize; }
+.desk-win-handle-se { bottom: 0; right: 0; cursor: nwse-resize; }
+.desk-win-handle-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+
+.vnc-root,
+.vnc-host {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+  background: #000;
+}
+
+.vnc-host {
+  position: absolute;
+  inset: 0;
+}
+
+.vnc-host > div {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  background: #000 !important;
+}
+
+.vnc-host canvas {
+  pointer-events: auto !important;
+}
+
+#noVNC_mouse_capture_elem {
+  pointer-events: none !important;
+}

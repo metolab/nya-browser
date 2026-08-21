@@ -1,0 +1,117 @@
+--- a/third_party/blink/renderer/modules/webaudio/audio_buffer.h
++++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.h
+@@ -118,10 +118,12 @@ class MODULES_EXPORT AudioBuffer final : public ScriptWrappable {
+ 
+  private:
+   bool CreatedSuccessfully(unsigned desired_number_of_channels) const;
++  void EnsureNyaFarbling();
+ 
+   float sample_rate_;
+   uint32_t length_;
+ 
+   HeapVector<Member<DOMFloat32Array>> channels_;
++  bool nya_farbled_ = false;
+ };
+ 
+--- a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
++++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+@@ -27,6 +27,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/modules/webaudio/audio_buffer.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <memory>
+ 
+@@ -201,7 +202,21 @@ AudioBuffer::AudioBuffer(AudioBus* bus)
+     channels_.push_back(channel_data_array);
+   }
+ }
+ 
++void AudioBuffer::EnsureNyaFarbling() {
++  if (nya_farbled_ || !nya::HasSeed()) {
++    return;
++  }
++  nya_farbled_ = true;
++  for (Member<DOMFloat32Array>& channel : channels_) {
++    if (!channel) {
++      continue;
++    }
++    auto span = channel->AsSpan();
++    nya::FarbleAudio(span.data(), span.size());
++  }
++}
++
+ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(
+     unsigned channel_index,
+     ExceptionState& exception_state) {
+@@ -213,10 +228,11 @@ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(
+                 ") exceeds number of channels (",
+                 String::Number(channels_.size()), ")"}));
+     return NotShared<DOMFloat32Array>(nullptr);
+   }
+ 
++  EnsureNyaFarbling();
+   return getChannelData(channel_index);
+ }
+ 
+ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(unsigned channel_index) {
+   if (channel_index >= channels_.size()) {
+     return NotShared<DOMFloat32Array>(nullptr);
+   }
+@@ -235,6 +251,7 @@ void AudioBuffer::copyFromChannel(NotShared<DOMFloat32Array> destination,
+                                   int32_t channel_number,
+                                   size_t buffer_offset,
+                                   ExceptionState& exception_state) {
++  EnsureNyaFarbling();
+   if (!destination->length()) {
+     return;
+   }
+--- a/third_party/blink/renderer/modules/webaudio/analyser_node.cc
++++ b/third_party/blink/renderer/modules/webaudio/analyser_node.cc
+@@ -26,6 +26,7 @@
+ #include "third_party/blink/renderer/modules/webaudio/analyser_node.h"
+ 
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_analyser_options.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/modules/webaudio/analyser_handler.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_graph_tracer.h"
+ #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
+@@ -119,21 +120,37 @@ double AnalyserNode::smoothingTimeConstant() const {
+ }
+ 
+ void AnalyserNode::getFloatFrequencyData(NotShared<DOMFloat32Array> array) {
+   GetAnalyserHandler().GetFloatFrequencyData(array.Get(),
+                                              context()->currentTime());
++  if (DOMFloat32Array* dest = array.Get()) {
++    auto span = dest->AsSpan();
++    nya::FarbleAudio(span.data(), span.size());
++  }
+ }
+ 
+ void AnalyserNode::getByteFrequencyData(NotShared<DOMUint8Array> array) {
+   GetAnalyserHandler().GetByteFrequencyData(array.Get(),
+                                             context()->currentTime());
++  if (DOMUint8Array* dest = array.Get()) {
++    auto span = dest->AsSpan();
++    nya::FarbleBytes(span.data(), span.size());
++  }
+ }
+ 
+ void AnalyserNode::getFloatTimeDomainData(NotShared<DOMFloat32Array> array) {
+   GetAnalyserHandler().GetFloatTimeDomainData(array.Get());
++  if (DOMFloat32Array* dest = array.Get()) {
++    auto span = dest->AsSpan();
++    nya::FarbleAudio(span.data(), span.size());
++  }
+ }
+ 
+ void AnalyserNode::getByteTimeDomainData(NotShared<DOMUint8Array> array) {
+   GetAnalyserHandler().GetByteTimeDomainData(array.Get());
++  if (DOMUint8Array* dest = array.Get()) {
++    auto span = dest->AsSpan();
++    nya::FarbleBytes(span.data(), span.size());
++  }
+ }
+ 
+ void AnalyserNode::ReportDidCreate() {

@@ -1,0 +1,17 @@
+name: nya-browser
+
+# Local image build. Use together with the production compose file:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# Chromium is downloaded from GitHub Releases (or cache/ if staged).
+
+services:
+  nya-browser:
+    image: nya-browser:dev
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NYA_GITHUB_REPO: ${NYA_GITHUB_REPO:-metolab/nya-browser}
+        CHROMIUM_URL: ${CHROMIUM_URL:-}

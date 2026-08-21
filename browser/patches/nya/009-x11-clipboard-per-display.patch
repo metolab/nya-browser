@@ -1,0 +1,228 @@
+diff --git a/ui/ozone/platform/x11/x11_clipboard_ozone.h b/ui/ozone/platform/x11/x11_clipboard_ozone.h
+--- a/ui/ozone/platform/x11/x11_clipboard_ozone.h
++++ b/ui/ozone/platform/x11/x11_clipboard_ozone.h
+@@ -5,13 +5,16 @@
+ #ifndef UI_OZONE_PLATFORM_X11_X11_CLIPBOARD_OZONE_H_
+ #define UI_OZONE_PLATFORM_X11_X11_CLIPBOARD_OZONE_H_
+ 
++#include <map>
+ #include <memory>
+ #include <string>
+ #include <vector>
+ 
+ #include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
+ #include "ui/base/clipboard/clipboard_buffer.h"
+ #include "ui/base/x/selection_utils.h"
++#include "ui/gfx/x/connection.h"
+ #include "ui/ozone/public/platform_clipboard.h"
+ 
+ #if BUILDFLAG(IS_LINUX)
+@@ -56,6 +59,12 @@
+  private:
+   void OnSelectionChanged(ClipboardBuffer buffer);
+ 
++  x11::Connection* ActiveConnection() const;
++  XClipboardHelper* Helper();
++
++  std::map<raw_ptr<x11::Connection>, std::unique_ptr<XClipboardHelper>>
++      helpers_;
++
+ #if BUILDFLAG(IS_LINUX)
+   void OnPortalKeyRead(PlatformClipboard::RequestDataClosure callback,
+                        SelectionData selection_data);
+@@ -69,8 +78,6 @@
+       const std::vector<std::string>& mime_types);
+ #endif
+ 
+-  const std::unique_ptr<XClipboardHelper> helper_;
+-
+   ClipboardDataChangedCallback clipboard_changed_callback_;
+ 
+ #if BUILDFLAG(IS_LINUX)
+diff --git a/ui/ozone/platform/x11/x11_clipboard_ozone.cc b/ui/ozone/platform/x11/x11_clipboard_ozone.cc
+--- a/ui/ozone/platform/x11/x11_clipboard_ozone.cc
++++ b/ui/ozone/platform/x11/x11_clipboard_ozone.cc
+@@ -13,6 +13,9 @@
+ #include "build/build_config.h"
+ #include "ui/base/clipboard/clipboard_constants.h"
+ #include "ui/base/x/x11_clipboard_helper.h"
++#include "ui/gfx/x/connection.h"
++#include "ui/ozone/platform/x11/x11_window.h"
++#include "ui/ozone/platform/x11/x11_window_manager.h"
+ 
+ #if BUILDFLAG(IS_LINUX)
+ #include "base/strings/string_view_util.h"
+@@ -22,23 +25,45 @@
+ 
+ namespace ui {
+ 
+-X11ClipboardOzone::X11ClipboardOzone()
+-    : helper_(std::make_unique<XClipboardHelper>(
+-          base::BindRepeating(&X11ClipboardOzone::OnSelectionChanged,
+-                              base::Unretained(this)))) {
+-  DCHECK(helper_);
++X11ClipboardOzone::X11ClipboardOzone() {
++  Helper();
+ }
+ 
+ X11ClipboardOzone::~X11ClipboardOzone() = default;
+ 
++x11::Connection* X11ClipboardOzone::ActiveConnection() const {
++  if (auto* wm = X11WindowManager::GetInstance()) {
++    if (auto* win = wm->last_active_window()) {
++      return &win->connection();
++    }
++  }
++  return x11::Connection::Get();
++}
++
++XClipboardHelper* X11ClipboardOzone::Helper() {
++  x11::Connection* conn = ActiveConnection();
++  x11::ScopedConnectionBind bind(conn);
++  auto it = helpers_.find(conn);
++  if (it != helpers_.end()) {
++    return it->second.get();
++  }
++  auto helper = std::make_unique<XClipboardHelper>(base::BindRepeating(
++      &X11ClipboardOzone::OnSelectionChanged, base::Unretained(this)));
++  XClipboardHelper* raw = helper.get();
++  helpers_[conn] = std::move(helper);
++  return raw;
++}
++
+ void X11ClipboardOzone::OfferClipboardData(
+     ClipboardBuffer buffer,
+     const PlatformClipboard::DataMap& data_map) {
+-  helper_->CreateNewClipboardData();
++  x11::ScopedConnectionBind bind(ActiveConnection());
++  auto* helper = Helper();
++  helper->CreateNewClipboardData();
+   for (const auto& item : data_map)
+-    helper_->InsertMapping(item.first, item.second);
++    helper->InsertMapping(item.first, item.second);
+ 
+-  helper_->TakeOwnershipOfSelection(buffer);
++  helper->TakeOwnershipOfSelection(buffer);
+ }
+ 
+ void X11ClipboardOzone::RequestClipboardData(
+@@ -46,16 +71,17 @@
+     const std::string& mime_type,
+     PlatformClipboard::RequestDataClosure callback) {
+   DCHECK(!callback.is_null());
++  x11::ScopedConnectionBind bind(ActiveConnection());
+ 
+ #if BUILDFLAG(IS_LINUX)
+   if (mime_type == kMimeTypeUriList) {
+-    auto uri_list_atoms = helper_->GetAtomsForFormat(
++    auto uri_list_atoms = Helper()->GetAtomsForFormat(
+         ClipboardFormatType::CustomPlatformType(kMimeTypeUriList));
+     std::vector<x11::Atom> portal_atoms = {
+         x11::GetAtom(kMimeTypePortalFileTransfer),
+         x11::GetAtom(kMimeTypePortalFiles)};
+ 
+-    helper_->GetAvailableMimeTypesAsync(
++    Helper()->GetAvailableMimeTypesAsync(
+         buffer,
+         base::BindOnce(&X11ClipboardOzone::OnGetAvailableMimeTypesForPortal,
+                        weak_factory_.GetWeakPtr(), buffer,
+@@ -66,10 +92,10 @@
+ #endif
+ 
+   auto atoms = mime_type == kMimeTypePlainText
+-                   ? helper_->GetTextAtoms()
+-                   : helper_->GetAtomsForFormat(
++                   ? Helper()->GetTextAtoms()
++                   : Helper()->GetAtomsForFormat(
+                          ClipboardFormatType::CustomPlatformType(mime_type));
+-  helper_->ReadAsync(buffer, atoms,
++  Helper()->ReadAsync(buffer, atoms,
+                      base::BindOnce(
+                          [](PlatformClipboard::RequestDataClosure callback,
+                             SelectionData selection_data) {
+@@ -112,12 +138,14 @@
+     ClipboardBuffer buffer,
+     PlatformClipboard::GetMimeTypesClosure callback) {
+   DCHECK(!callback.is_null());
+-  helper_->GetAvailableMimeTypesAsync(buffer, std::move(callback));
++  x11::ScopedConnectionBind bind(ActiveConnection());
++  Helper()->GetAvailableMimeTypesAsync(buffer, std::move(callback));
+ }
+ 
+ void X11ClipboardOzone::IsSelectionOwner(ClipboardBuffer buffer,
+                                          IsSelectionOwnerClosure callback) {
+-  helper_->IsSelectionOwnerAsync(buffer, std::move(callback));
++  x11::ScopedConnectionBind bind(ActiveConnection());
++  Helper()->IsSelectionOwnerAsync(buffer, std::move(callback));
+ }
+ 
+ void X11ClipboardOzone::SetClipboardDataChangedCallback(
+@@ -149,12 +177,12 @@
+   }
+ 
+   if (has_portal) {
+-    helper_->ReadAsync(
++    Helper()->ReadAsync(
+         buffer, portal_atoms,
+         base::BindOnce(&X11ClipboardOzone::OnPortalKeyRead,
+                        weak_factory_.GetWeakPtr(), std::move(callback)));
+   } else {
+-    helper_->ReadAsync(
++    Helper()->ReadAsync(
+         buffer, uri_list_atoms,
+         base::BindOnce(
+             [](PlatformClipboard::RequestDataClosure callback,
+diff --git a/ui/base/x/x11_clipboard_helper.cc b/ui/base/x/x11_clipboard_helper.cc
+--- a/ui/base/x/x11_clipboard_helper.cc
++++ b/ui/base/x/x11_clipboard_helper.cc
+@@ -97,10 +97,10 @@
+   }
+ }
+ 
+-void GetSelectionOwner(x11::Atom selection,
++void GetSelectionOwner(x11::Connection* connection,
++                       x11::Atom selection,
+                        base::OnceCallback<void(x11::Window)> callback) {
+-  x11::Connection::Get()
+-      ->GetSelectionOwner({selection})
++  connection->GetSelectionOwner({selection})
+       .OnResponse(base::BindOnce(
+           [](base::OnceCallback<void(x11::Window)> callback,
+              x11::GetSelectionOwnerResponse response) {
+@@ -191,7 +191,7 @@
+     const std::vector<x11::Atom>& types,
+     base::OnceCallback<void(SelectionData)> callback) {
+   x11::Atom selection_name = LookupSelectionForClipboardBuffer(buffer);
+-  GetSelectionOwner(selection_name,
++  GetSelectionOwner(&connection_.get(), selection_name,
+                     base::BindOnce(&XClipboardHelper::OnReadAsync, GetWeakPtr(),
+                                    buffer, types, std::move(callback)));
+ }
+@@ -298,7 +298,7 @@
+           std::move(available_types), std::move(final_callback)));
+ 
+   for (x11::Atom target : targets) {
+-    x11::Connection::Get()->GetAtomName({target}).OnResponse(base::BindOnce(
++    connection_->GetAtomName({target}).OnResponse(base::BindOnce(
+         [](base::OnceCallback<void(std::string)> callback,
+            x11::GetAtomNameResponse response) {
+           std::move(callback).Run(response ? std::string(response->name)
+@@ -331,7 +331,7 @@
+     ClipboardBuffer buffer,
+     base::OnceCallback<void(bool)> callback) const {
+   x11::Atom selection = LookupSelectionForClipboardBuffer(buffer);
+-  GetSelectionOwner(selection, base::BindOnce(
++  GetSelectionOwner(&connection_.get(), selection, base::BindOnce(
+                                    [](base::OnceCallback<void(bool)> callback,
+                                       x11::Window x_window, x11::Window owner) {
+                                      std::move(callback).Run(owner == x_window);
+@@ -360,7 +360,7 @@
+     ClipboardBuffer buffer,
+     base::OnceCallback<void(TargetList)> callback) {
+   x11::Atom selection_name = LookupSelectionForClipboardBuffer(buffer);
+-  GetSelectionOwner(selection_name,
++  GetSelectionOwner(&connection_.get(), selection_name,
+                     base::BindOnce(&XClipboardHelper::OnGetTargetList,
+                                    GetWeakPtr(), buffer, std::move(callback)));
+ }

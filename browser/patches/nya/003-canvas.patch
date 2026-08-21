@@ -1,0 +1,83 @@
+--- a/third_party/blink/renderer/platform/graphics/image_data_buffer.cc
++++ b/third_party/blink/renderer/platform/graphics/image_data_buffer.cc
+@@ -32,9 +32,11 @@
+  */
+ 
+ #include "third_party/blink/renderer/platform/graphics/image_data_buffer.h"
++#include <cstring>
+ 
+ #include "base/compiler_specific.h"
+ #include "base/memory/ptr_util.h"
+ #include "third_party/blink/renderer/platform/image-encoders/image_encoder_utils.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+@@ -97,12 +99,33 @@ ImageDataBuffer::ImageDataBuffer(scoped_refptr<StaticBitmapImage> image) {
+     MSAN_CHECK_MEM_IS_INITIALIZED(pixmap_.addr(), pixmap_.computeByteSize());
+   }
+   is_valid_ = true;
++  if (nya::HasSeed() && pixmap_.addr() && pixmap_.computeByteSize() > 0) {
++    const SkImageInfo info = pixmap_.info();
++    const size_t row_bytes = pixmap_.rowBytes();
++    const size_t size = pixmap_.computeByteSize();
++    sk_sp<SkData> data = SkData::MakeUninitialized(size);
++    memcpy(data->writable_data(), pixmap_.addr(), size);
++    nya::FarbleBytes(static_cast<uint8_t*>(data->writable_data()), size);
++    pixmap_.reset(info, data->writable_data(), row_bytes);
++    retained_image_ = SkImages::RasterFromData(info, std::move(data), row_bytes);
++  }
+ }
+ 
+ ImageDataBuffer::ImageDataBuffer(const SkPixmap& pixmap)
+     : pixmap_(pixmap),
+       is_valid_(pixmap_.addr() &&
+-                !gfx::Size(pixmap.width(), pixmap.height()).IsEmpty()) {}
++                !gfx::Size(pixmap.width(), pixmap.height()).IsEmpty()) {
++  if (is_valid_ && nya::HasSeed() && pixmap_.computeByteSize() > 0) {
++    const SkImageInfo info = pixmap_.info();
++    const size_t row_bytes = pixmap_.rowBytes();
++    const size_t size = pixmap_.computeByteSize();
++    sk_sp<SkData> data = SkData::MakeUninitialized(size);
++    memcpy(data->writable_data(), pixmap_.addr(), size);
++    nya::FarbleBytes(static_cast<uint8_t*>(data->writable_data()), size);
++    pixmap_.reset(info, data->writable_data(), row_bytes);
++    retained_image_ = SkImages::RasterFromData(info, std::move(data), row_bytes);
++  }
++}
+ 
+ std::unique_ptr<ImageDataBuffer> ImageDataBuffer::Create(
+     scoped_refptr<StaticBitmapImage> image) {
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@ -107,6 +107,7 @@
+ // https://github.com/include-what-you-use/include-what-you-use/issues/1122
+ // IWYU pragma: no_include "base/numerics/clamped_math.h"
+ 
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ 
+@@ -498,6 +499,11 @@ ImageData* BaseRenderingContext2D::getIm
+       // If the readback area is completely out of bounds just return a zero
+       // initialized buffer. No point in trying to perform out of bounds read.
+       CHECK(validate_and_create_params.zero_initialize);
++      {
++        SkPixmap nya_pixmap = image_data->GetSkPixmap();
++        nya::FarbleBytes(static_cast<uint8_t*>(nya_pixmap.writable_addr()),
++                         nya_pixmap.computeByteSize());
++      }
+       return image_data;
+     }
+ 
+@@ -517,6 +523,11 @@ ImageData* BaseRenderingContext2D::getIm
+     if (read_pixels_successful && RuntimeEnabledFeatures::FingerprintingCanvasImageDataNoiseEnabled()) {
+       StaticBitmapImage::ShuffleSubchannelColorData(image_data_pixmap.addr(), image_data_pixmap.info(), sx, sy);
+     }
+   }
++  if (image_data) {
++    SkPixmap nya_pixmap = image_data->GetSkPixmap();
++    nya::FarbleBytes(static_cast<uint8_t*>(nya_pixmap.writable_addr()),
++                     nya_pixmap.computeByteSize());
++  }
+ 
+   return image_data;
