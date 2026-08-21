@@ -4,6 +4,7 @@ import { asyncHandler } from '../../http/util.js';
 import { assertSessionAccess, handleHttpError, HttpError } from '../../http/access.js';
 import {
   canAccessWindow,
+  getChromeTitle,
   getClipboard,
   resizeDisplay,
   setClipboard,
@@ -50,6 +51,32 @@ sessionIoRouter.post(
         req.params.subId,
       );
       res.json({ ok: true, geometry: geom });
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.get(
+  '/title',
+  asyncHandler(async (req, res) => {
+    try {
+      gateWindow(req, 'main');
+      const title = await getChromeTitle(req.params.id);
+      res.json({ title });
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.get(
+  '/subs/:subId/title',
+  asyncHandler(async (req, res) => {
+    try {
+      gateWindow(req, req.params.subId);
+      const title = await getChromeTitle(req.params.id, req.params.subId);
+      res.json({ title });
     } catch (err) {
       handleHttpError(err, res);
     }

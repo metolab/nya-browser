@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
+  CircleStopIcon,
   ClipboardIcon,
   FolderIcon,
   LogOutIcon,
+  MonitorIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
 } from 'lucide-react';
@@ -12,13 +14,15 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 
 const BADGE_KEY = 'nya.desk.badge';
 const COLLAPSED = 42;
-const POPUP_H = 260;
+const POPUP_H = 340;
 
 type Dir = 'left' | 'right';
 type PopupSide = 'top' | 'bottom';
@@ -27,10 +31,14 @@ type Props = {
   username: string;
   isAdmin: boolean;
   hasSession: boolean;
+  sessionName?: string;
+  sizeLabel?: string;
   onAdmin: () => void;
   onLogout: () => void;
   onClipboard: () => void;
   onFiles: () => void;
+  onDisplay: () => void;
+  onStop: () => void;
 };
 
 function loadBadgePos() {
@@ -67,10 +75,14 @@ export default function DeskLauncher({
   username,
   isAdmin,
   hasSession,
+  sessionName,
+  sizeLabel,
   onAdmin,
   onLogout,
   onClipboard,
   onFiles,
+  onDisplay,
+  onStop,
 }: Props) {
   const [hover, setHover] = useState(false);
   const [control, setControl] = useState(false);
@@ -160,10 +172,30 @@ export default function DeskLauncher({
         <DropdownMenuContent
           side={popupSide}
           align={dir === 'left' ? 'end' : 'start'}
-          className="z-[80] min-w-40"
+          className="z-[80] min-w-44"
           onMouseEnter={onEnter}
           onPointerDown={(e: ReactPointerEvent) => e.stopPropagation()}
         >
+          {hasSession ? (
+            <DropdownMenuLabel className="max-w-52 font-normal">
+              <div className="truncate text-foreground">{sessionName}</div>
+              {sizeLabel ? <div className="truncate">{sizeLabel}</div> : null}
+            </DropdownMenuLabel>
+          ) : (
+            <DropdownMenuLabel>未打开会话</DropdownMenuLabel>
+          )}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            disabled={!hasSession}
+            onSelect={(event: Event) => {
+              event.preventDefault();
+              setControl(false);
+              onDisplay();
+            }}
+          >
+            <MonitorIcon />
+            显示设置
+          </DropdownMenuItem>
           <DropdownMenuItem
             disabled={!hasSession}
             onSelect={(event: Event) => {
@@ -185,6 +217,19 @@ export default function DeskLauncher({
           >
             <FolderIcon />
             文件管理
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            disabled={!hasSession}
+            variant="destructive"
+            onSelect={(event: Event) => {
+              event.preventDefault();
+              setControl(false);
+              onStop();
+            }}
+          >
+            <CircleStopIcon />
+            停止会话
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

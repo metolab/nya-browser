@@ -169,6 +169,12 @@ export const api = {
     }
     return { ok: true, geometry: data.geometry };
   },
+  getChromeTitle: (id: string, subId?: string | null) =>
+    request<{ title: string }>(
+      subId
+        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/title`
+        : `/api/sessions/${id}/title`,
+    ),
   getClipboard: (id: string, subId?: string | null) =>
     request<{ text: string }>(
       subId

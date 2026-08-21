@@ -12,23 +12,26 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../auth';
 import { api } from '../../api/client';
+import { formatManagementTitle, useDocumentTitle } from '../../lib/title';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 
 const items = [
-  { key: '/admin/sessions', icon: LaptopIcon, label: '会话' },
-  { key: '/admin/live', icon: MonitorIcon, label: '在线' },
-  { key: '/admin/users', icon: UsersIcon, label: '用户' },
-  { key: '/admin/proxies', icon: GlobeIcon, label: '代理' },
-  { key: '/admin/audit', icon: ScrollTextIcon, label: '审计' },
-  { key: '/admin/monitor', icon: ActivityIcon, label: '监控' },
-  { key: '/admin/backups', icon: CloudIcon, label: '备份' },
+  { key: '/admin/sessions', icon: LaptopIcon, label: '会话', title: '会话管理' },
+  { key: '/admin/live', icon: MonitorIcon, label: '在线', title: '在线会话' },
+  { key: '/admin/users', icon: UsersIcon, label: '用户', title: '用户管理' },
+  { key: '/admin/proxies', icon: GlobeIcon, label: '代理', title: '代理管理' },
+  { key: '/admin/audit', icon: ScrollTextIcon, label: '审计', title: '审计日志' },
+  { key: '/admin/monitor', icon: ActivityIcon, label: '监控', title: '系统监控' },
+  { key: '/admin/backups', icon: CloudIcon, label: '备份', title: '备份与恢复' },
 ];
 
 export default function AdminLayout() {
   const loc = useLocation();
   const { user } = useAuth();
+  const page = items.find((it) => it.key === loc.pathname)?.title || '管理控制台';
+  useDocumentTitle(formatManagementTitle(page));
 
   return (
     <div className="flex h-full min-h-0 bg-background">

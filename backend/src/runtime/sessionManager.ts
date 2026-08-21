@@ -1477,6 +1477,31 @@ async function restrictChromeWindowControls(display, id) {
   }
 }
 
+const BROWSER_TITLE_SUFFIX = /\s+[-–—]\s+(Google Chrome|Chromium|Chrome)\s*$/i;
+
+export function stripBrowserTitleSuffix(title) {
+  return String(title || '').replace(BROWSER_TITLE_SUFFIX, '').trim();
+}
+
+export async function getChromeTitle(sessionId, subId = null) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) return '';
+  let display;
+  try {
+    display = subId ? getSubOrThrow(runtime, subId).display : runtime.display;
+  } catch {
+    return '';
+  }
+  const id = await findMainChromeWindow(display, 1200);
+  if (!id) return '';
+  try {
+    const name = await runOnDisplay(display, 'xdotool', ['getwindowname', id], 1200);
+    return stripBrowserTitleSuffix(name);
+  } catch {
+    return '';
+  }
+}
+
 async function findMainChromeWindow(display, timeoutMs = 2500) {
   try {
     const ids = await xdotoolChromeIds(display, timeoutMs);

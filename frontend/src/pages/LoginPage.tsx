@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { api } from '../api/client';
+import { APP_NAME, useDocumentTitle } from '../lib/title';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -10,6 +11,7 @@ export default function LoginPage({ onOk }: { onOk: () => void }) {
   const [busy, setBusy] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  useDocumentTitle(`登录 - ${APP_NAME}`);
 
   return (
     <div className="flex h-full items-center justify-center bg-background p-6">

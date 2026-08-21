@@ -11,6 +11,9 @@ import { SessionTree } from '../components/SessionTree';
 import DeskFloat from '../desk/DeskFloat';
 import DeskLauncher from '../desk/DeskLauncher';
 import DeskStage from '../desk/DeskStage';
+import DisplaySettings from '../desk/DisplaySettings';
+import { defaultDisplayPolicy, formatSize, resolveRemoteSize, type DisplayPolicy, type Size } from '../desk/display';
+import { formatDeskTitle, useDocumentTitle } from '../lib/title';
 import { vncWindowExtra } from '../lib/vnc';
 import {
   AlertDialog,
@@ -42,6 +45,18 @@ export default function DeskPage() {
   const [takeover, setTakeover] = useState<Session | null>(null);
   const [clipOpen, setClipOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [displayOpen, setDisplayOpen] = useState(false);
+  const [display, setDisplay] = useState<DisplayPolicy>(defaultDisplayPolicy);
+  const [sizeTick, setSizeTick] = useState(0);
+  const [pane, setPane] = useState<Size>({ w: 1280, h: 720 });
+  const [tabTitle, setTabTitle] = useState('');
+
+  const remote = resolveRemoteSize(pane, display);
+  useDocumentTitle(formatDeskTitle(active?.session.name, tabTitle));
+
+  const onPaneChange = useCallback((next: Size) => {
+    setPane(next);
+  }, []);
 
   const refresh = useCallback(async () => {
     const [s, g] = await Promise.all([api.listSessions(), api.listGroups()]);
@@ -65,6 +80,36 @@ export default function DeskPage() {
     return () => window.clearInterval(t);
   }, [refresh]);
 
+  useEffect(() => {
+    if (active) return;
+    setClipOpen(false);
+    setFilesOpen(false);
+    setDisplayOpen(false);
+    setTabTitle('');
+  }, [active]);
+
+  useEffect(() => {
+    if (!active) {
+      setTabTitle('');
+      return undefined;
+    }
+    let cancelled = false;
+    const pull = async () => {
+      try {
+        const data = await api.getChromeTitle(active.session.id, vncWindowExtra(active.windowId));
+        if (!cancelled) setTabTitle(data.title || '');
+      } catch {
+        /* session may have stopped */
+      }
+    };
+    void pull();
+    const t = window.setInterval(() => void pull(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [active?.session.id, active?.windowId]);
+
   const openSession = async (session: Session, takeoverWindow = false) => {
     if (openingLock.current) return;
     openingLock.current = true;
@@ -74,6 +119,9 @@ export default function DeskPage() {
       const created = await api.createWindow(session.id, { takeover: takeoverWindow || undefined });
       const windowId = created.window?.id;
       if (!windowId) throw new Error('窗口创建失败');
+      setDisplay(defaultDisplayPolicy());
+      setSizeTick(0);
+      setDisplayOpen(false);
       setActive({
         session,
         windowId,
@@ -99,6 +147,8 @@ export default function DeskPage() {
     setActive(null);
     setClipOpen(false);
     setFilesOpen(false);
+    setDisplayOpen(false);
+    setTabTitle('');
     if (cur?.session.id && cur.windowId) {
       await api.closeWindow(cur.session.id, cur.windowId).catch(() => undefined);
     }
@@ -112,7 +162,9 @@ export default function DeskPage() {
           windowId={active.windowId}
           occupancyId={active.occupancyId}
           busy={busy}
-          onClose={() => void closeActive()}
+          display={display}
+          sizeTick={sizeTick}
+          onPaneChange={onPaneChange}
         />
       ) : (
         <div className="flex h-full items-center justify-center p-6">
@@ -146,9 +198,25 @@ export default function DeskPage() {
         username={user.username}
         isAdmin={user.role === 'admin'}
         hasSession={Boolean(active)}
+        sessionName={active?.session.name}
+        sizeLabel={active ? formatSize(remote) : undefined}
         onAdmin={() => nav('/admin/sessions')}
         onLogout={() => {
           void api.logout().then(() => window.location.reload());
+        }}
+        onDisplay={() => {
+          if (!active) {
+            toast.warning('请先打开一个会话');
+            return;
+          }
+          setDisplayOpen(true);
+        }}
+        onStop={() => {
+          if (!active) {
+            toast.warning('请先打开一个会话');
+            return;
+          }
+          void closeActive();
         }}
         onClipboard={() => {
           if (!active) {
@@ -165,6 +233,25 @@ export default function DeskPage() {
           setFilesOpen(true);
         }}
       />
+
+      {active && displayOpen ? (
+        <DeskFloat
+          title="显示设置"
+          subtitle={`${active.session.name} · ${formatSize(remote)}`}
+          onClose={() => setDisplayOpen(false)}
+          className="right-3 top-16"
+          bodyClassName="max-h-[min(28rem,70vh)] overflow-auto"
+        >
+          <DisplaySettings
+            policy={display}
+            pane={pane}
+            onChange={(next) => {
+              setDisplay(next);
+              setSizeTick((n) => n + 1);
+            }}
+          />
+        </DeskFloat>
+      ) : null}
 
       {active && clipOpen ? (
         <DeskFloat
