@@ -156,18 +156,3 @@ diff --git a/ui/ozone/platform/x11/x11_canvas_surface.cc b/ui/ozone/platform/x11
  
  X11CanvasSurface::~X11CanvasSurface() = default;
  
-diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
---- a/ui/views/widget/widget.cc
-+++ b/ui/views/widget/widget.cc
-@@ -496,6 +496,11 @@
-     params.x11_display = parent_->x11_display();
-   }
-   x11_display_ = params.x11_display;
-+  // GPU/EGL is bound to the process DISPLAY. Extra X servers must present
-+  // through the software canvas on a per-display xcb connection.
-+  if (!x11_display_.empty()) {
-+    params.force_software_compositing = true;
-+  }
- #endif
- 
-   // Subscripbe to parent's paint-as-active change.

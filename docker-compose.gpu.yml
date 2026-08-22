@@ -1,8 +1,9 @@
 # NVIDIA GPU overlay. Use with the production compose file:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
-# Requires nvidia-container-toolkit on the host. Chromium still presents
-# through Xvfb; GL/WebGL is rendered on the GPU via ANGLE (gl-egl).
+# Requires nvidia-container-toolkit on the host. GL/WebGL rasterize on the
+# GPU via ANGLE gl-egl. Present to Xvfb is EGL readback + X PutImage:
+# Xvfb has no NVIDIA eglCreateWindowSurface configs.
 # The nvidia runtime is required so NVIDIA EGL/GL libraries are injected;
 # compose `gpus: all` alone only exposes the device for compute.
 

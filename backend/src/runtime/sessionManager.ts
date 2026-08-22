@@ -900,6 +900,10 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
       '--enable-zero-copy',
     );
   } else if (backend === 'egl' || backend === 'gl-egl') {
+    // Raster/WebGL on NVIDIA EGL. Window present is EGL readback + X
+    // PutImage (Xvfb has no eglCreateWindowSurface configs). Do not add
+    // --disable-gpu-compositing: that path is the MIT-SHM presenter that
+    // stalls after a lost completion event.
     args.push('--use-gl=angle', '--use-angle=gl-egl', '--enable-gpu-rasterization', '--enable-zero-copy');
   } else if (backend === 'gles-egl') {
     args.push('--use-gl=angle', '--use-angle=gles-egl', '--enable-gpu-rasterization');

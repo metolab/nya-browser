@@ -1,0 +1,62 @@
+diff --git a/ui/ozone/platform/x11/x11_surface_factory.cc b/ui/ozone/platform/x11/x11_surface_factory.cc
+--- a/ui/ozone/platform/x11/x11_surface_factory.cc
++++ b/ui/ozone/platform/x11/x11_surface_factory.cc
+@@ -65,13 +65,6 @@
+ 
+   ~GLOzoneEGLX11() override = default;
+ 
+-  // GLOzone:
+-  bool InitializeStaticGLBindings(
+-      const gl::GLImplementationParts& implementation) override {
+-    is_swiftshader_ = gl::IsSoftwareGLImplementation(implementation);
+-    return GLOzoneEGL::InitializeStaticGLBindings(implementation);
+-  }
+-
+   bool CanImportNativePixmap(viz::SharedImageFormat format) override {
+     if (GetNativePixmapSupportType() == NativePixmapSupportType::kNone) {
+       return false;
+@@ -91,32 +84,16 @@
+   scoped_refptr<gl::GLSurface> CreateViewGLSurface(
+       gl::GLDisplay* display,
+       gfx::AcceleratedWidget window) override {
+-    if (is_swiftshader_) {
+-      return gl::InitializeGLSurface(
+-          base::MakeRefCounted<GLSurfaceEglReadbackX11>(
+-              display->GetAs<gl::GLDisplayEGL>(), window));
+-    } else {
+-      switch (gl::GetGLImplementation()) {
+-        case gl::kGLImplementationEGLGLES2:
+-          DCHECK(window != gfx::kNullAcceleratedWidget);
+-          return gl::InitializeGLSurface(new gl::NativeViewGLSurfaceEGLX11GLES2(
+-              display->GetAs<gl::GLDisplayEGL>(),
+-              static_cast<x11::Window>(window)));
+-        case gl::kGLImplementationEGLANGLE:
+-          DCHECK(window != gfx::kNullAcceleratedWidget);
+-          return gl::InitializeGLSurface(new gl::NativeViewGLSurfaceEGLX11(
+-              display->GetAs<gl::GLDisplayEGL>(),
+-              static_cast<x11::Window>(window)));
+-        default:
+-          NOTREACHED();
+-      }
+-    }
++    // Xvfb has no hardware EGL window-system integration. Native
++    // eglCreateWindowSurface fails ("No suitable EGL configs found") and
++    // Chrome falls back to the MIT-SHM software presenter, which stalls
++    // the compositor: frozen UI, white menus, leftover pointer grab.
++    return gl::InitializeGLSurface(
++        base::MakeRefCounted<GLSurfaceEglReadbackX11>(
++            display->GetAs<gl::GLDisplayEGL>(), window));
+   }
+ 
+   scoped_refptr<gl::GLSurface> CreateOffscreenGLSurface(
+       gl::GLDisplay* display,
+       const gfx::Size& size) override {
+@@ -168,8 +145,6 @@
+         return nullptr;
+     }
+   }
+-
+-  bool is_swiftshader_ = false;
+ };
+ 
+ }  // namespace
