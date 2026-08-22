@@ -72,6 +72,22 @@ if [ -z "${found}" ] || [ ! -s "${DEST_TAR}" ]; then
   exit 1
 fi
 
+expected="${CHROMIUM_SHA256:-}"
+if [ -z "${expected}" ] && [ -f /tmp/CHROMIUM.sha256 ]; then
+  expected="$(awk 'NF && $1 !~ /^#/ { print $1; exit }' /tmp/CHROMIUM.sha256)"
+fi
+expected="${expected#sha256:}"
+if [ -z "${expected}" ]; then
+  echo "CHROMIUM_SHA256 or /tmp/CHROMIUM.sha256 is required" >&2
+  exit 1
+fi
+actual="$(sha256sum "${DEST_TAR}" | awk '{print $1}')"
+if [ "${actual}" != "${expected}" ]; then
+  echo "Chromium tarball sha256 mismatch (expected ${expected}, got ${actual})" >&2
+  exit 1
+fi
+echo "Verified Chromium sha256 ${actual}"
+
 rm -rf "${CHROMIUM_PREFIX}" /opt/nya-chromium-"${CHROMIUM_VERSION}"-linux64
 mkdir -p /opt
 tar -xJf "${DEST_TAR}" -C /opt

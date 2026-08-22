@@ -34,4 +34,8 @@ else
     --notes "${NOTES}"
 fi
 
+SHA_FILE="${_nya_root}/browser/CHROMIUM.sha256"
+sha256sum "${CHROMIUM_DIST_TAR}" | awk -v name="${CHROMIUM_ASSET}" '{print $1 "  " name}' > "${SHA_FILE}"
+echo "Updated ${SHA_FILE}"
+echo "Commit browser/CHROMIUM.sha256 so Image CI busts the Chromium layer."
 echo "Published ${CHROMIUM_ASSET} to ${REPO}@${CHROMIUM_RELEASE_TAG}"

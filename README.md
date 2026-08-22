@@ -27,11 +27,12 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 ## Chromium
 
-版本钉在 `browser/VERSION`。
+上游版本钉在 `browser/VERSION`，实际安装的包钉在 `browser/CHROMIUM.sha256`。同版本重新发布后必须提交新的摘要，否则 Image workflow 会继续用 Docker 缓存里的旧 Chrome。
 
 ```bash
 bash browser/scripts/build.sh
 bash scripts/publish-chromium.sh
+# commit the updated browser/CHROMIUM.sha256, then rebuild the image
 ```
 
 Release tag：`chromium-<version>`，附件：`nya-chromium-<version>-linux64.tar.xz`。
