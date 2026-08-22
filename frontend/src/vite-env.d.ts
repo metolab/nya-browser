@@ -25,5 +25,24 @@ declare module '@novnc/novnc' {
     compressionLevel: number;
     viewOnly: boolean;
     focusOnClick: boolean;
+    static messages: {
+      fbUpdateRequest(
+        sock: unknown,
+        incremental: boolean,
+        x?: number,
+        y?: number,
+        w?: number,
+        h?: number,
+      ): void;
+      pointerEvent(sock: unknown, x: number, y: number, mask: number): void;
+      enableContinuousUpdates(
+        sock: unknown,
+        enable: boolean,
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): void;
+    };
   }
 }

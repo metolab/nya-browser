@@ -289,7 +289,8 @@ sessionsRouter.post(
 
       const owned = ownedWindows(session.id, userId);
       if (owned.length) {
-        if (!takeover) {
+        const live = owned.some((w) => (w.vncConnections || 0) > 0);
+        if (live && !takeover) {
           throw new HttpError(409, '该会话已在其他页面打开', { code: 'WINDOW_OWNED' });
         }
         const win = await takeoverOwnedWindow(session.id, userId);
@@ -298,9 +299,9 @@ sessionsRouter.post(
           resourceType: 'window',
           resourceId: `${session.id}:${win?.id || 'main'}`,
           success: true,
-          detail: { takeover: true },
+          detail: { takeover: live },
         });
-        return res.status(201).json({ window: win, takenOver: true, runtime: getRuntimePublic(session.id) });
+        return res.status(201).json({ window: win, takenOver: live, runtime: getRuntimePublic(session.id) });
       }
 
       let runtime = getRuntimePublic(session.id);

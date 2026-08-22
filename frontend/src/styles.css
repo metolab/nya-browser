@@ -32,13 +32,26 @@ body,
   inset: 0;
 }
 
-.vnc-host > div {
-  position: absolute !important;
-  inset: 0 !important;
+.vnc-mount,
+.vnc-hold {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.vnc-mount.is-pending {
+  opacity: 0;
+}
+
+.vnc-host canvas.vnc-hold {
+  pointer-events: none !important;
+}
+
+.vnc-mount > div {
   width: 100% !important;
   height: 100% !important;
   overflow: hidden !important;
-  background: #000 !important;
+  background: transparent !important;
 }
 
 .vnc-host canvas {

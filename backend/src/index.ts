@@ -111,17 +111,34 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
+function vncDebugEnabled() {
+  const raw = String(process.env.NYA_VNC_DEBUG || '').toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on';
+}
+
 function bridgeVnc(ws: import('ws').WebSocket, runtime: { vncSock?: string; vncPort?: number }, sessionId: string) {
   const tcp = runtime.vncSock
     ? net.connect({ path: runtime.vncSock })
     : net.connect({ host: '127.0.0.1', port: runtime.vncPort });
   let closed = false;
-  const HIGH_WATER = 2 * 1024 * 1024;
-  const LOW_WATER = 512 * 1024;
+  const HIGH_WATER = 1024 * 1024;
+  const LOW_WATER = 256 * 1024;
+  let drainTimer: ReturnType<typeof setInterval> | null = null;
+  let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let pausedAt = 0;
+  const debug = vncDebugEnabled();
 
   const cleanup = () => {
     if (closed) return;
     closed = true;
+    if (drainTimer) {
+      clearInterval(drainTimer);
+      drainTimer = null;
+    }
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
     try {
       tcp.destroy();
     } catch {
@@ -134,27 +151,65 @@ function bridgeVnc(ws: import('ws').WebSocket, runtime: { vncSock?: string; vncP
     }
   };
 
+  const maybeResume = () => {
+    if (closed || !tcp.isPaused()) return;
+    const pausedMs = pausedAt ? Date.now() - pausedAt : 0;
+    if (ws.bufferedAmount <= LOW_WATER || pausedMs > 200) {
+      if (debug && pausedMs > 200) {
+        logger.info({ sessionId, bufferedAmount: ws.bufferedAmount, pausedMs }, 'vnc.bridge resume');
+      }
+      tcp.resume();
+      pausedAt = 0;
+      if (drainTimer) {
+        clearInterval(drainTimer);
+        drainTimer = null;
+      }
+    }
+  };
+
+  const armDrain = () => {
+    if (drainTimer || closed) return;
+    drainTimer = setInterval(maybeResume, 50);
+  };
+
+  pingTimer = setInterval(() => {
+    if (closed || ws.readyState !== ws.OPEN) return;
+    try {
+      ws.ping();
+    } catch {
+      cleanup();
+    }
+  }, 15000);
+
   tcp.on('data', (data) => {
     if (ws.readyState !== ws.OPEN) return;
     try {
       ws.send(data, { binary: true });
-      if (ws.bufferedAmount > HIGH_WATER) tcp.pause();
+      if (ws.bufferedAmount > 8 * 1024 * 1024) {
+        logger.error({ sessionId, bufferedAmount: ws.bufferedAmount }, 'vnc.bridge overflow');
+        cleanup();
+        return;
+      }
+      if (ws.bufferedAmount > HIGH_WATER) {
+        if (debug) logger.info({ sessionId, bufferedAmount: ws.bufferedAmount }, 'vnc.bridge pause');
+        if (!tcp.isPaused()) pausedAt = Date.now();
+        tcp.pause();
+        armDrain();
+      }
     } catch (err) {
       logger.error({ err, sessionId }, 'vnc send error');
       cleanup();
     }
   });
 
-  const drainTimer = setInterval(() => {
-    if (closed) return;
-    if (tcp.isPaused() && ws.bufferedAmount <= LOW_WATER) tcp.resume();
-  }, 50);
-
   tcp.on('error', (err) => {
     logger.error({ err, sessionId }, 'vnc tcp error');
     cleanup();
   });
-  tcp.on('close', cleanup);
+  tcp.on('close', () => {
+    if (debug) logger.info({ sessionId }, 'vnc.bridge tcp close');
+    cleanup();
+  });
   ws.on('message', (data) => {
     if (!tcp.writable) return;
     const buf = Array.isArray(data)
@@ -163,13 +218,14 @@ function bridgeVnc(ws: import('ws').WebSocket, runtime: { vncSock?: string; vncP
         ? data
         : Buffer.from(data as ArrayBuffer);
     tcp.write(buf);
+    maybeResume();
   });
-  ws.on('close', () => {
-    clearInterval(drainTimer);
+  ws.on('close', (code) => {
+    if (debug) logger.info({ sessionId, code }, 'vnc.bridge close');
     cleanup();
   });
-  ws.on('error', () => {
-    clearInterval(drainTimer);
+  ws.on('error', (err) => {
+    if (debug) logger.info({ err, sessionId }, 'vnc.bridge error');
     cleanup();
   });
 }

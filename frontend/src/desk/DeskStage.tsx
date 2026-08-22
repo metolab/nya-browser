@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Loader2Icon } from 'lucide-react';
 import type { Session } from '@nya/shared';
 import VncViewer from '../components/VncViewer';
-import { resolveRemoteSize, type DisplayPolicy, type Size } from './display';
+import { readStablePane, resolveRemoteSize, type DisplayPolicy, type Size } from './display';
 import { vncWindowExtra } from '../lib/vnc';
 
 type Props = {
@@ -26,19 +26,36 @@ export default function DeskStage({
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [pane, setPane] = useState<Size>({ w: 1280, h: 720 });
+  const paneRef = useRef<Size>(pane);
   const remote = resolveRemoteSize(pane, display);
+  paneRef.current = pane;
 
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return undefined;
+    let pending = false;
     const apply = () => {
-      const rect = el.getBoundingClientRect();
-      setPane({ w: Math.max(1, Math.round(rect.width)), h: Math.max(1, Math.round(rect.height)) });
+      const next = readStablePane(el, paneRef.current);
+      if (!next) {
+        pending = document.visibilityState !== 'visible';
+        return;
+      }
+      pending = false;
+      if (next === paneRef.current) return;
+      paneRef.current = next;
+      setPane(next);
     };
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(el);
-    return () => ro.disconnect();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && pending) apply();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      ro.disconnect();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   useEffect(() => {

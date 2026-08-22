@@ -1,4 +1,4 @@
-import { APIRequestContext, request as pwRequest } from '@playwright/test';
+import { APIRequestContext, Page, request as pwRequest } from '@playwright/test';
 
 export const BASE = process.env.E2E_BASE || 'http://127.0.0.1:8080';
 export const ADMIN_USER = process.env.INIT_ADMIN_USER || 'admin';
@@ -20,4 +20,12 @@ export async function asUser(username: string, password: string): Promise<APIReq
 
 export async function asAdmin() {
   return asUser(ADMIN_USER, ADMIN_PASS);
+}
+
+export async function loginDesk(page: Page) {
+  await page.goto('/');
+  await page.getByPlaceholder('用户名').fill(ADMIN_USER);
+  await page.getByPlaceholder('密码').fill(ADMIN_PASS);
+  await page.getByRole('button', { name: /进\s*入/ }).click();
+  await page.locator('.brand').waitFor({ timeout: 15000 });
 }

@@ -19,6 +19,11 @@ import {
 } from '../store.js';
 import { DISPLAY_LIMITS, clampDisplayGeom, normalizeTimezone, AUDIT_ACTIONS } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
+import {
+  hasChromeLifecycle,
+  startChromeLifecycle,
+  stopChromeLifecycle,
+} from './chromeLifecycle.js';
 
 const DISPLAY_BASE = Number(process.env.DISPLAY_BASE || 100);
 const SUB_DISPLAY_BASE = Number(process.env.SUB_DISPLAY_BASE || 2000);
@@ -60,6 +65,11 @@ const displayCreds = new Map();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function envOn(name) {
+  const raw = String(process.env[name] || '').toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on';
 }
 
 function killTree(child, signal = 'SIGTERM') {
@@ -783,11 +793,26 @@ function parseWh(spec, fallbackW = 1920, fallbackH = 1080) {
   };
 }
 
+function gpuAvailable() {
+  try {
+    return (
+      fs.existsSync('/dev/nvidia0') &&
+      (fs.existsSync('/usr/share/glvnd/egl_vendor.d/10_nvidia.json') ||
+        fs.existsSync('/usr/share/glvnd/egl_vendor.d/10_nvidia_wayland.json'))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function gpuBackend() {
   const explicit = String(process.env.NYA_GPU_BACKEND || '').trim().toLowerCase();
   if (explicit) return explicit;
   const raw = String(process.env.NYA_GPU || '').toLowerCase();
-  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'nvidia') return 'gl-egl';
+  if (raw === '0' || raw === 'false' || raw === 'off' || raw === 'swiftshader') return 'swiftshader';
+  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'nvidia' || raw === 'auto' || gpuAvailable()) {
+    return 'gl-egl';
+  }
   return 'swiftshader';
 }
 
@@ -810,6 +835,10 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     'WebGpu',
     'WebGPU',
     'DirectSockets',
+    'CalculateNativeWinOcclusion',
+    'IntensiveWakeUpThrottling',
+    'TabFreeze',
+    'IdleDetection',
   ];
   const enabledFeatures = [];
   if (backend === 'vulkan') {
@@ -846,6 +875,11 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     `--window-size=${geom.w},${geom.h}`,
     `--homepage=${homeUrl}`,
     '--disable-dev-shm-usage',
+    '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-background-timer-throttling',
+    '--disable-hang-monitor',
+    '--disable-background-mode',
     '--no-sandbox',
     '--ignore-gpu-blocklist',
     '--enable-webgl',
@@ -866,7 +900,7 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
       '--enable-zero-copy',
     );
   } else if (backend === 'egl' || backend === 'gl-egl') {
-    args.push('--use-gl=angle', '--use-angle=gl-egl', '--enable-gpu-rasterization');
+    args.push('--use-gl=angle', '--use-angle=gl-egl', '--enable-gpu-rasterization', '--enable-zero-copy');
   } else if (backend === 'gles-egl') {
     args.push('--use-gl=angle', '--use-angle=gles-egl', '--enable-gpu-rasterization');
   } else {
@@ -874,8 +908,15 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
       '--use-gl=angle',
       '--use-angle=swiftshader',
       '--enable-unsafe-swiftshader',
-      '--disable-gpu-compositing',
+      '--enable-gpu-rasterization',
     );
+    // X11CanvasSurface + MIT-SHM multibuffer stalls after a lost
+    // completion event: renderer keeps running, the main window pixmap
+    // freezes, new widgets (menus) still present. Stay on the GL
+    // compositor unless explicitly forced back.
+    if (envOn('NYA_SOFTWARE_COMPOSITOR')) {
+      args.push('--disable-gpu-compositing');
+    }
   }
 
   if (fingerprint?.seed) {
@@ -1046,15 +1087,20 @@ async function startChrome(runtime) {
     onExit: (code, signal) => {
       console.log(`[chrome ${runtime.id}] exited code=${code} signal=${signal}`);
       runtime.chrome = null;
+      stopChromeLifecycle(runtime.id);
       if (runtime.allowRecover && runtimes.has(runtime.id)) {
         scheduleChromeRecover(runtime, 'exit');
       }
     },
   });
+  void startChromeLifecycle(runtime.id, cdpPort).catch((err) => {
+    console.warn(`[chrome-lifecycle] session=${runtime.id} attach failed:`, err.message);
+  });
 }
 
 async function stopChrome(runtime) {
   runtime.allowRecover = false;
+  stopChromeLifecycle(runtime.id);
   const child = runtime.chrome;
   runtime.chrome = null;
   if (child) {
@@ -1097,6 +1143,9 @@ async function watchChrome(runtime) {
     if (!chromePidAlive(runtime)) {
       if (runtime.chrome) scheduleChromeRecover(runtime, 'watchdog');
       return;
+    }
+    if (totalVncConnections(runtime.id) > 0 && !hasChromeLifecycle(runtime.id)) {
+      void startChromeLifecycle(runtime.id, runtime.cdpPort).catch(() => {});
     }
     await ensureAllChromeWindows(runtime);
   } catch (err) {
@@ -1223,6 +1272,8 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
       'RANDR',
       '+extension',
       'XTEST',
+      '-s',
+      'off',
     ], { logFile: path.join(home, 'xvfb.log') });
     await sleep(500);
     await waitForX(runtime).catch((err) => {
@@ -1249,6 +1300,7 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
       }
       if (lastBootErr) throw lastBootErr;
       runtime.lastGeom = { w: boot.w, h: boot.h };
+      await disableDisplaySleep(display);
     } catch (err) {
       console.warn(`[display ${sessionId}] boot framebuffer failed:`, err.message);
     }
@@ -1290,11 +1342,19 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
 function spawnX11vnc(runtime, home, opts = {}) {
   // Unix socket only: other session UIDs cannot attach to this desktop.
   // Do not use -threads: framebuffer resizes and pointer/key injection become unstable.
+  // wait/defer coalesce Chrome's clear-then-draw and Tight fill+JPEG into one FBU.
   const display = opts.display ?? runtime.display;
   const sock = opts.vncSock || runtime.vncSock || path.join(home, 'vnc.sock');
   const desktop = opts.desktopName || `nya-${runtime.id}`;
   const logFile = opts.logFile || path.join(home, 'x11vnc.log');
-  return runAsSession(runtime, 'x11vnc', [
+  const gpu = gpuBackend() !== 'swiftshader';
+  const waitMs = Number.isFinite(Number(process.env.NYA_VNC_WAIT))
+    ? String(Math.max(0, Math.round(Number(process.env.NYA_VNC_WAIT))))
+    : gpu ? '5' : '8';
+  const deferMs = Number.isFinite(Number(process.env.NYA_VNC_DEFER))
+    ? String(Math.max(0, Math.round(Number(process.env.NYA_VNC_DEFER))))
+    : gpu ? '6' : '8';
+  const args = [
     '-display',
     `:${display}`,
     '-unixsock',
@@ -1304,14 +1364,16 @@ function spawnX11vnc(runtime, home, opts = {}) {
     '-alwaysshared',
     '-forever',
     '-shared',
-    '-noxdamage',
     '-repeat',
-    '-speeds',
-    'lan',
     '-wait',
-    '1',
+    waitMs,
     '-defer',
+    deferMs,
+    '-ncache',
     '0',
+    '-nonap',
+    '-nowireframe',
+    '-nowirecopyrect',
     '-always_inject',
     '-cursor',
     'arrow',
@@ -1323,10 +1385,15 @@ function spawnX11vnc(runtime, home, opts = {}) {
     desktop,
     '-o',
     logFile,
-  ], { env: { DISPLAY: `:${display}` } });
+  ];
+  if (envOn('NYA_VNC_NOXDAMAGE')) {
+    args.splice(args.indexOf('-repeat'), 0, '-noxdamage');
+  }
+  return runAsSession(runtime, 'x11vnc', args, { env: { DISPLAY: `:${display}` } });
 }
 
 async function forceCleanupRuntime(runtime) {
+  stopChromeLifecycle(runtime.id);
   removeUidLoopbackFilter(runtime);
   displayCreds.delete(runtime.display);
   await stopAllSubs(runtime);
@@ -1409,6 +1476,22 @@ export async function applyProxy(sessionId, proxyInput) {
     await restartBrowser(sessionId);
   }
   return getSession(sessionId);
+}
+
+async function disableDisplaySleep(display) {
+  const cmds = [
+    ['s', 'off'],
+    ['s', 'noblank'],
+    ['-dpms'],
+    ['s', '0', '0'],
+  ];
+  for (const args of cmds) {
+    try {
+      await runOnDisplay(display, 'xset', args, 1500);
+    } catch {
+      /* Xvfb ignores some xset queries */
+    }
+  }
 }
 
 function runOnDisplay(display, file, args, timeout = 8000) {
@@ -1544,6 +1627,35 @@ async function findMainChromeWindow(display, timeoutMs = 2500) {
   return null;
 }
 
+function logVncResize(payload) {
+  console.log(`[vnc.resize] ${JSON.stringify(payload)}`);
+}
+
+async function readChromeWindowGeom(display) {
+  const id = await findMainChromeWindow(display);
+  if (!id) return null;
+  try {
+    const geom = await runOnDisplay(display, 'xdotool', ['getwindowgeometry', id], 1500);
+    const size = String(geom).match(/Geometry:\s+(\d+)x(\d+)/);
+    const pos = String(geom).match(/Position:\s+(-?\d+),(-?\d+)/);
+    if (!size) return { id };
+    return {
+      id,
+      w: Number(size[1]),
+      h: Number(size[2]),
+      x: pos ? Number(pos[1]) : 0,
+      y: pos ? Number(pos[2]) : 0,
+    };
+  } catch {
+    return { id };
+  }
+}
+
+function chromeFits(geom, w, h) {
+  if (!geom || !geom.w || !geom.h) return false;
+  return Math.abs(geom.w - w) <= 8 && Math.abs(geom.h - h) <= 8;
+}
+
 async function maximizeChrome(display, width, height) {
   const id = await findMainChromeWindow(display);
   if (!id) return;
@@ -1658,7 +1770,10 @@ async function ensureMode(runtime, output, modeName, ew, eh, xrText) {
 
 async function setFramebuffer(runtime, ew, eh) {
   const info = await readFramebuffer(runtime);
-  if (info.w === ew && info.h === eh) return info;
+  if (info.w === ew && info.h === eh) {
+    await disableDisplaySleep(runtime.display);
+    return info;
+  }
 
   const modeName = `${ew}x${eh}`;
   const xr = await runOnDisplay(runtime.display, 'xrandr', [], 4000);
@@ -1708,7 +1823,10 @@ async function setFramebuffer(runtime, ew, eh) {
     await sleep(50);
     const now = await readFramebuffer(runtime);
     actual = { w: now.w, h: now.h };
-    if (actual.w === ew && actual.h === eh) return now;
+    if (actual.w === ew && actual.h === eh) {
+      await disableDisplaySleep(runtime.display);
+      return now;
+    }
   }
   if (lastErr) throw lastErr;
   throw new Error(`display is ${actual.w}x${actual.h}, wanted ${ew}x${eh}`);
@@ -1724,13 +1842,41 @@ async function applyDesiredGeomTo(holder, display) {
   holder.desiredGeom = null;
   const view = { display };
   const actual = await readFramebuffer(view);
-  if (actual.w === want.w && actual.h === want.h) {
+  const chrome = await readChromeWindowGeom(display);
+  const fbMatch = actual.w === want.w && actual.h === want.h;
+  if (fbMatch && chromeFits(chrome, want.w, want.h)) {
+    holder.lastGeom = { w: want.w, h: want.h };
+    logVncResize({
+      result: 'noop',
+      display,
+      want,
+      fb: { w: actual.w, h: actual.h },
+      chrome,
+    });
+    if (holder.desiredGeom) return applyDesiredGeomTo(holder, display);
+    return holder.lastGeom;
+  }
+  if (fbMatch) {
     await maximizeChrome(display, want.w, want.h);
     holder.lastGeom = { w: want.w, h: want.h };
+    logVncResize({
+      result: 'maximize',
+      display,
+      want,
+      fb: { w: actual.w, h: actual.h },
+      chrome,
+    });
   } else {
     await setFramebuffer(view, want.w, want.h);
     await maximizeChrome(display, want.w, want.h);
     holder.lastGeom = { w: want.w, h: want.h };
+    logVncResize({
+      result: 'fb',
+      display,
+      want,
+      fb: { w: actual.w, h: actual.h },
+      chrome,
+    });
   }
   if (holder.desiredGeom) return applyDesiredGeomTo(holder, display);
   return holder.lastGeom;
@@ -1891,6 +2037,8 @@ async function spawnSubDesktop(runtime, sub) {
     'RANDR',
     '+extension',
     'XTEST',
+    '-s',
+    'off',
   ], { logFile: path.join(home, `xvfb-sub-${sub.id}.log`), env: { DISPLAY: `:${display}` } });
 
   await sleep(400);

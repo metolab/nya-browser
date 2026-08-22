@@ -146,3 +146,13 @@ export function formatSize(s: Size) {
 export function formatScale(scale: number) {
   return `${Number(scale.toFixed(2))}×`;
 }
+
+export function readStablePane(el: HTMLElement, prev: Size | null): Size | null {
+  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return null;
+  const rect = el.getBoundingClientRect();
+  const w = Math.max(1, Math.round(rect.width));
+  const h = Math.max(1, Math.round(rect.height));
+  if (w < 40 || h < 40) return null;
+  if (prev && Math.abs(prev.w - w) < 8 && Math.abs(prev.h - h) < 8) return prev;
+  return { w, h };
+}

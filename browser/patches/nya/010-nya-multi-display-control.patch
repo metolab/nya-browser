@@ -125,7 +125,9 @@ new file mode 100644
 +#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 +#include "chrome/common/chrome_paths.h"
 +#include "components/ungoogled/ungoogled_switches.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +#include "content/public/browser/devtools_agent_host.h"
++#include "content/public/browser/render_widget_host_view.h"
 +#include "content/public/browser/web_contents.h"
 +#include "ui/events/platform/x11/x11_event_source.h"
 +#include "ui/gfx/x/connection.h"
@@ -422,6 +424,25 @@ new file mode 100644
 +    }
 +    base::Value::Dict extra;
 +    extra.Set("windows", std::move(windows));
++    return JsonOk(id, std::move(extra));
++  }
++
++  if (*cmd == "invalidate") {
++    int count = 0;
++    for (BrowserWindowInterface* bwi : GetAllBrowserWindowInterfaces()) {
++      Browser* browser = bwi->GetBrowserForMigrationOnly();
++      if (!browser || !browser->window())
++        continue;
++      if (content::WebContents* contents =
++              browser->tab_strip_model()->GetActiveWebContents()) {
++        contents->WasShown();
++        if (auto* view = contents->GetRenderWidgetHostView())
++          view->SetActive(true);
++      }
++      count++;
++    }
++    base::Value::Dict extra;
++    extra.Set("windows", count);
 +    return JsonOk(id, std::move(extra));
 +  }
 +

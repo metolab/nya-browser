@@ -91,10 +91,19 @@ diff --git a/ui/gfx/x/connection.cc b/ui/gfx/x/connection.cc
 +
 +Connection* Connection::ForWidget(uint32_t widget) {
 +  const std::string display = DisplayForWidget(widget);
-+  if (!display.empty()) {
-+    if (Connection* extra = GetOrCreate(display)) {
-+      return extra;
++  if (display.empty()) {
++    return Get();
++  }
++  // Same server as the process DISPLAY: reuse the pumped primary connection.
++  // A second xcb to the same server on the compositor thread would present
++  // without an event pump and stall after two SHM frames.
++  if (Connection* primary = Primary()) {
++    if (display == primary->DisplayString()) {
++      return Get();
 +    }
++  }
++  if (Connection* extra = GetOrCreate(display)) {
++    return extra;
 +  }
 +  return Get();
 +}
@@ -142,7 +151,7 @@ diff --git a/ui/ozone/platform/x11/x11_canvas_surface.cc b/ui/ozone/platform/x11
 +
  X11CanvasSurface::X11CanvasSurface(gfx::AcceleratedWidget widget)
 -    : x11_software_bitmap_presenter_(*x11::Connection::Get(), widget, true) {}
-+    : x11_software_bitmap_presenter_(ConnectionForCanvas(widget), widget, true) {
++    : x11_software_bitmap_presenter_(ConnectionForCanvas(widget), widget, false) {
 +}
  
  X11CanvasSurface::~X11CanvasSurface() = default;

@@ -16,6 +16,13 @@ if [ -z "${INIT_ADMIN_PASSWORD}" ]; then
   exit 1
 fi
 
+if [ -z "${NYA_GPU:-}" ] || [ "${NYA_GPU}" = "auto" ]; then
+  if [ -e /dev/nvidia0 ] && [ -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ]; then
+    export NYA_GPU=1
+    export NYA_GPU_BACKEND="${NYA_GPU_BACKEND:-gl-egl}"
+  fi
+fi
+
 mkdir -p "$DATA_DIR/sessions" /var/run/dbus /run/dbus /var/lib/dbus \
   /etc/chromium/policies/managed /tmp/.X11-unix
 chmod 711 "$DATA_DIR/sessions" 2>/dev/null || true

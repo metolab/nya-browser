@@ -9,3 +9,4 @@ nya/008-x11-window-display.patch
 nya/009-x11-clipboard-per-display.patch
 nya/010-nya-multi-display-control.patch
 nya/011-x11-present-per-display.patch
+nya/012-disable-tab-tearoff.patch
