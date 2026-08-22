@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { ProxyRecord, Session, SessionGroup, UserPublic } from '@nya/shared';
-import { DEFAULT_TIMEZONE } from '@nya/shared';
+import { DEFAULT_CHROME_LANGUAGE, DEFAULT_TIMEZONE } from '@nya/shared';
 import { api } from '../../api/client';
 import { SessionTree } from '../../components/SessionTree';
 import SessionFormDialog from '../../components/SessionFormDialog';
@@ -181,6 +181,7 @@ export default function SessionsPage() {
         initialGroupId={edit?.groupId}
         initialProxyId={edit?.proxyId}
         initialTimezone={edit?.timezone || DEFAULT_TIMEZONE}
+        initialChromeLanguage={edit?.chromeLanguage || DEFAULT_CHROME_LANGUAGE}
         initialHomeUrl={edit?.homeUrl}
         initialIdleTimeoutMinutes={edit?.idleTimeoutMinutes ?? 0}
         onCancel={() => setEdit(null)}

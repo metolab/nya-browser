@@ -15,3 +15,4 @@ services:
       args:
         NYA_GITHUB_REPO: ${NYA_GITHUB_REPO:-metolab/nya-browser}
         CHROMIUM_URL: ${CHROMIUM_URL:-}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-mirrors.aliyun.com}

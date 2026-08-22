@@ -1,49 +1,81 @@
-import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { api } from '../api/client';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 
 type Props = {
-  sessionId: string;
-  subId?: string | null;
+  text: string;
+  onTextChange: (value: string) => void;
+  auto: boolean;
+  onAutoChange: (value: boolean) => void;
   ready: boolean;
+  busy: boolean;
+  permission: 'unknown' | 'granted' | 'denied';
+  status: string;
+  onPull: () => Promise<void>;
+  onPush: () => Promise<void>;
+  onRequestPermission: () => Promise<void>;
 };
 
-export default function ClipboardPanel({ sessionId, subId = null, ready }: Props) {
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    setText('');
-  }, [sessionId, subId]);
-
+export default function ClipboardPanel({
+  text,
+  onTextChange,
+  auto,
+  onAutoChange,
+  ready,
+  busy,
+  permission,
+  status,
+  onPull,
+  onPush,
+  onRequestPermission,
+}: Props) {
   return (
     <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor="clip-auto" className="text-xs font-normal">
+          自动同步
+        </Label>
+        <Switch
+          id="clip-auto"
+          size="sm"
+          checked={auto}
+          disabled={!ready}
+          onCheckedChange={onAutoChange}
+        />
+      </div>
       <Textarea
         className="min-h-16 text-xs"
         value={text}
         disabled={!ready || busy}
-        placeholder={ready ? '粘贴或编辑文本' : '打开窗口后可用'}
-        onChange={(e) => setText(e.target.value)}
+        placeholder={ready ? '本地与远程剪贴板会自动同步' : '打开窗口后可用'}
+        onChange={(e) => onTextChange(e.target.value)}
       />
+      <p className="text-[11px] text-muted-foreground">{ready ? status : '打开窗口后可用'}</p>
+      {permission === 'denied' ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!ready}
+          onClick={() => {
+            void onRequestPermission().catch((err) => {
+              toast.error(err instanceof Error ? err.message : String(err));
+            });
+          }}
+        >
+          授权读取本地剪贴板
+        </Button>
+      ) : null}
       <div className="flex gap-2">
         <Button
           size="sm"
           variant="outline"
           disabled={!ready || busy}
           onClick={() => {
-            void (async () => {
-              setBusy(true);
-              try {
-                const data = await api.getClipboard(sessionId, subId);
-                setText(data.text);
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : String(err));
-              } finally {
-                setBusy(false);
-              }
-            })();
+            void onPull().catch((err) => {
+              toast.error(err instanceof Error ? err.message : String(err));
+            });
           }}
         >
           读取
@@ -52,16 +84,9 @@ export default function ClipboardPanel({ sessionId, subId = null, ready }: Props
           size="sm"
           disabled={!ready || busy}
           onClick={() => {
-            void (async () => {
-              setBusy(true);
-              try {
-                await api.setClipboard(sessionId, text, subId);
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : String(err));
-              } finally {
-                setBusy(false);
-              }
-            })();
+            void onPush().catch((err) => {
+              toast.error(err instanceof Error ? err.message : String(err));
+            });
           }}
         >
           写入

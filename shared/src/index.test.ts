@@ -10,7 +10,13 @@ import {
   createSessionSchema,
   IDLE_TIMEOUT_MINUTES_MAX,
 } from './schemas.js';
-import { normalizeTimezone, DEFAULT_TIMEZONE } from './timezones.js';
+import { normalizeTimezone, DEFAULT_TIMEZONE, isValidTimezone } from './timezones.js';
+import {
+  normalizeChromeLanguage,
+  DEFAULT_CHROME_LANGUAGE,
+  acceptLanguageHeader,
+  posixLocale,
+} from './languages.js';
 import { emptyProxy } from './types.js';
 import { regionFromLoc } from './region.js';
 
@@ -80,6 +86,22 @@ describe('schemas', () => {
 describe('timezones', () => {
   it('defaults empty', () => {
     expect(normalizeTimezone('')).toBe(DEFAULT_TIMEZONE);
+  });
+
+  it('accepts IANA zones beyond the common list', () => {
+    expect(isValidTimezone('Pacific/Honolulu')).toBe(true);
+    expect(normalizeTimezone('Pacific/Honolulu')).toBe('Pacific/Honolulu');
+  });
+});
+
+describe('chrome languages', () => {
+  it('defaults empty', () => {
+    expect(normalizeChromeLanguage('')).toBe(DEFAULT_CHROME_LANGUAGE);
+  });
+
+  it('builds accept-language', () => {
+    expect(acceptLanguageHeader('zh-CN')).toBe('zh-CN,zh,en-US,en');
+    expect(posixLocale('zh-TW')).toBe('zh_TW.UTF-8');
   });
 });
 

@@ -17,7 +17,15 @@ import {
   normalizeHomeUrl,
   sessionDir,
 } from '../store.js';
-import { DISPLAY_LIMITS, clampDisplayGeom, normalizeTimezone, AUDIT_ACTIONS } from '@nya/shared';
+import {
+  DISPLAY_LIMITS,
+  clampDisplayGeom,
+  normalizeTimezone,
+  normalizeChromeLanguage,
+  posixLocale,
+  acceptLanguageHeader,
+  AUDIT_ACTIONS,
+} from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
 import {
   hasChromeLifecycle,
@@ -39,6 +47,8 @@ const CHROME_BIN = process.env.CHROME_BIN || '/opt/nya-chromium/chrome';
 const CHROME_POLICY_DIRS = ['/etc/chromium/policies/managed'];
 const CHROME_WM_CLASSES = ['chromium', 'Chromium', 'chromium-browser', 'Chromium-browser'];
 const WINDOW_ENSURE_COOLDOWN_MS = 8000;
+const TASKBAR_BIN = '/usr/bin/tint2';
+const TASKBAR_H = 36;
 
 function sessionHomeUrl(sessionId, override) {
   const raw = String(override ?? '').trim();
@@ -462,6 +472,9 @@ function ensureX11UnixDir() {
 function sessionEnv(runtime, extra = {}) {
   const home = sessionDir(runtime.id);
   const tmp = path.join(home, 'tmp');
+  const session = getSession(runtime.id);
+  const language = normalizeChromeLanguage(session?.chromeLanguage);
+  const posix = posixLocale(language);
   return {
     ...process.env,
     DISPLAY: `:${runtime.display}`,
@@ -474,10 +487,11 @@ function sessionEnv(runtime, extra = {}) {
     TEMP: tmp,
     XDG_RUNTIME_DIR: tmp,
     XDG_CONFIG_HOME: path.join(home, '.config'),
-    LANG: 'zh_CN.UTF-8',
-    LC_ALL: 'zh_CN.UTF-8',
-    TZ: normalizeTimezone(getSession(runtime.id)?.timezone),
-    GTK_CSD: '0',
+    LANG: posix,
+    LC_ALL: posix,
+    LANGUAGE: posix.split('.')[0],
+    TZ: normalizeTimezone(session?.timezone),
+    GTK_CSD: '1',
     NO_AT_BRIDGE: '1',
     DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/dbus/system_bus_socket',
     ...extra,
@@ -700,12 +714,20 @@ function writeChromePreferences(sessionId, startUrl) {
   };
   prefs.browser = {
     ...(prefs.browser || {}),
-    custom_chrome_frame: false,
+    custom_chrome_frame: true,
   };
   prefs.session = {
     ...(prefs.session || {}),
     restore_on_startup: 4,
     startup_urls: [homeUrl],
+  };
+  const language = normalizeChromeLanguage(getSession(sessionId)?.chromeLanguage);
+  const acceptLang = acceptLanguageHeader(language);
+  prefs.intl = {
+    ...(prefs.intl || {}),
+    accept_languages: acceptLang,
+    selected_languages: acceptLang,
+    app_locale: language,
   };
   prefs.homepage = homeUrl;
   prefs.homepage_is_newtabpage = false;
@@ -734,6 +756,10 @@ function writeChromePreferences(sessionId, startUrl) {
     ...(localState.signin || {}),
     allowed: false,
   };
+  localState.intl = {
+    ...(localState.intl || {}),
+    app_locale: language,
+  };
   fs.writeFileSync(localStatePath, JSON.stringify(localState));
 }
 
@@ -745,44 +771,159 @@ function writeOpenboxConfig(home) {
     `<?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <resistance>
-    <strength>0</strength>
+    <strength>10</strength>
     <screen_edge_strength>0</screen_edge_strength>
   </resistance>
   <focus>
     <focusNew>yes</focusNew>
     <followMouse>no</followMouse>
-    <raiseOnFocus>no</raiseOnFocus>
+    <raiseOnFocus>yes</raiseOnFocus>
   </focus>
   <theme>
     <name>Clearlooks</name>
-    <titleLayout></titleLayout>
+    <titleLayout>C</titleLayout>
     <keepBorder>no</keepBorder>
   </theme>
   <desktops>
     <number>1</number>
   </desktops>
   <resize>
-    <drawContents>no</drawContents>
+    <drawContents>yes</drawContents>
   </resize>
   <keyboard>
     <chainQuit>yes</chainQuit>
+    <keybind key="A-Tab">
+      <action name="NextWindow">
+        <dialog>no</dialog>
+        <bar>no</bar>
+        <raise>yes</raise>
+        <linear>yes</linear>
+      </action>
+    </keybind>
+    <keybind key="A-S-Tab">
+      <action name="PreviousWindow">
+        <dialog>no</dialog>
+        <bar>no</bar>
+        <raise>yes</raise>
+        <linear>yes</linear>
+      </action>
+    </keybind>
   </keyboard>
   <mouse>
     <dragThreshold>8192</dragThreshold>
-    <!-- Keep mouse empty so Button1 is not grabbed from Chrome. -->
+    <!-- Keep Chrome clicks; titlebar bindings stay on decorated windows. -->
+    <context name="Titlebar">
+      <mousebind button="Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+      <mousebind button="Left" action="Drag"><action name="Move"/></mousebind>
+      <mousebind button="Left" action="DoubleClick"><action name="ToggleMaximize"/></mousebind>
+    </context>
+    <context name="Frame">
+      <mousebind button="A-Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+      <mousebind button="A-Left" action="Drag"><action name="Move"/></mousebind>
+    </context>
   </mouse>
   <applications>
     <application class="*">
       <decor>no</decor>
-      <maximized>yes</maximized>
-      <position force="yes"><x>0</x><y>0</y></position>
+      <maximized>no</maximized>
+      <layer>normal</layer>
+    </application>
+    <application class="*hromium*" type="dialog">
+      <decor>no</decor>
+      <maximized>no</maximized>
       <layer>above</layer>
-      <focus>yes</focus>
+    </application>
+    <application class="*hromium*" type="utility">
+      <decor>no</decor>
+      <maximized>no</maximized>
+      <layer>above</layer>
+    </application>
+    <application class="tint2">
+      <decor>no</decor>
+      <layer>above</layer>
+      <skip_taskbar>yes</skip_taskbar>
     </application>
   </applications>
 </openbox_config>
 `,
   );
+}
+
+function tint2ConfigPath(home) {
+  return path.join(home, '.config', 'tint2', 'tint2rc');
+}
+
+function taskbarAvailable() {
+  try {
+    fs.accessSync(TASKBAR_BIN, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeTint2Config(home) {
+  const dest = tint2ConfigPath(home);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(
+    dest,
+    `# nya taskbar: extra windows, or the only window when minimized
+rounded = 0
+border_width = 0
+background_color = #1f2937 100
+border_color = #111827 100
+
+rounded = 1
+border_width = 0
+background_color = #3b82f6 100
+
+rounded = 1
+border_width = 0
+background_color = #334155 100
+
+panel_items = T
+panel_size = 100% ${TASKBAR_H}
+panel_margin = 0 0
+panel_padding = 6 3 6
+panel_background_id = 1
+panel_position = bottom center horizontal
+panel_layer = top
+panel_dock = 0
+strut_policy = follow_size
+autohide = 0
+wm_menu = 0
+panel_window_name = tint2
+
+taskbar_mode = single_desktop
+taskbar_padding = 0 0 4
+taskbar_name = 0
+taskbar_hide_inactive_tasks = 0
+taskbar_hide_different_monitor = 0
+
+task_align = left
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 220 28
+task_padding = 8 3 6
+task_font = Noto Sans CJK SC 9
+task_font_color = #f8fafc 100
+task_active_font_color = #ffffff 100
+task_background_id = 3
+task_active_background_id = 2
+task_mouse_left = toggle
+task_mouse_middle = close
+task_tooltip = 1
+
+systray_padding = 0
+clock_size_font = 0
+`,
+  );
+}
+
+function writeDesktopConfig(home) {
+  writeOpenboxConfig(home);
+  writeTint2Config(home);
 }
 
 function parseWh(spec, fallbackW = 1920, fallbackH = 1080) {
@@ -819,6 +960,8 @@ function gpuBackend() {
 function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpPort = null, fingerprint = null, inProcessGpu = false, startUrl = null) {
   const profile = chromeProfileDir(sessionId);
   const homeUrl = sessionHomeUrl(sessionId, startUrl);
+  const language = normalizeChromeLanguage(getSession(sessionId)?.chromeLanguage);
+  const acceptLang = acceptLanguageHeader(language);
   const backend = gpuBackend();
   const disabledFeatures = [
     'TranslateUI',
@@ -874,6 +1017,8 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     '--window-position=0,0',
     `--window-size=${geom.w},${geom.h}`,
     `--homepage=${homeUrl}`,
+    `--lang=${language}`,
+    `--accept-lang=${acceptLang}`,
     '--disable-dev-shm-usage',
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
@@ -985,13 +1130,8 @@ async function xdotoolChromeIds(display, timeoutMs = 2500) {
 
 async function displayHasBrowserWindow(display, timeoutMs = 1500) {
   try {
-    const list = await runOnDisplay(display, 'wmctrl', ['-lx'], timeoutMs);
-    for (const line of list.split('\n')) {
-      if (!/chromium/i.test(line)) continue;
-      if (/10x10/.test(line)) continue;
-      return true;
-    }
-    return false;
+    const wins = await listDesktopWindows(display, timeoutMs);
+    return wins.some((w) => w.switchable && w.chrome && w.type === 'normal');
   } catch {
     return Boolean(await findMainChromeWindow(display, timeoutMs));
   }
@@ -1152,6 +1292,7 @@ async function watchChrome(runtime) {
       void startChromeLifecycle(runtime.id, runtime.cdpPort).catch(() => {});
     }
     await ensureAllChromeWindows(runtime);
+    await syncSessionDesktops(runtime);
   } catch (err) {
     console.warn(`[chrome-watch] session=${runtime.id}`, err.message);
   } finally {
@@ -1198,6 +1339,20 @@ function startChromeWatchdog() {
 
 startChromeWatchdog();
 
+let desktopWatchTimer = null;
+function startDesktopWatch() {
+  if (desktopWatchTimer) return;
+  desktopWatchTimer = setInterval(() => {
+    for (const runtime of runtimes.values()) {
+      if (runtime.stopping) continue;
+      void syncSessionDesktops(runtime).catch(() => {});
+    }
+  }, 1500);
+  if (typeof desktopWatchTimer.unref === 'function') desktopWatchTimer.unref();
+}
+
+startDesktopWatch();
+
 /**
  * Start full desktop stack for a session.
  */
@@ -1225,7 +1380,7 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
     ensureSessionFingerprint(sessionId);
     ensureSessionTimezone(sessionId);
     writeChromePreferences(sessionId, launchUrl);
-    writeOpenboxConfig(home);
+    writeDesktopConfig(home);
     hardenSessionDirs(sessionId, user);
     const authFile = writeXauth(home, display, user.uid, user.gid);
     const vncSock = path.join(home, 'vnc.sock');
@@ -1254,6 +1409,9 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
       openbox: null,
       chrome: null,
       x11vnc: null,
+      tint2: null,
+      taskbarOn: false,
+      taskbarFitted: false,
       cdpPort: NYA_CDP_BASE > 0 ? NYA_CDP_BASE + slot : null,
       startedAt: new Date().toISOString(),
       launchUrl,
@@ -1405,6 +1563,10 @@ async function forceCleanupRuntime(runtime) {
     killTree(runtime.clipboardHolder, 'SIGKILL');
     runtime.clipboardHolder = null;
   }
+  if (runtime.tint2) {
+    killTree(runtime.tint2, 'SIGKILL');
+    runtime.tint2 = null;
+  }
   const kids = [runtime.chrome, runtime.x11vnc, runtime.openbox, runtime.xvfb];
   for (const child of kids) {
     killTree(child, 'SIGTERM');
@@ -1539,25 +1701,11 @@ async function restrictChromeWindowControls(display, id) {
       '-id',
       id,
       '-f',
-      '_MOTIF_WM_HINTS',
-      '32c',
-      '-set',
-      '_MOTIF_WM_HINTS',
-      '3, 0, 0, 0, 0',
-    ]);
-  } catch {
-    /* ignore */
-  }
-  try {
-    await runOnDisplay(display, 'xprop', [
-      '-id',
-      id,
-      '-f',
       '_NET_WM_ALLOWED_ACTIONS',
       '32a',
       '-set',
       '_NET_WM_ALLOWED_ACTIONS',
-      '_NET_WM_ACTION_MOVE,_NET_WM_ACTION_RESIZE,_NET_WM_ACTION_FULLSCREEN',
+      '_NET_WM_ACTION_MOVE,_NET_WM_ACTION_RESIZE,_NET_WM_ACTION_MINIMIZE,_NET_WM_ACTION_FULLSCREEN,_NET_WM_ACTION_CLOSE',
     ]);
   } catch {
     /* ignore */
@@ -1589,41 +1737,103 @@ export async function getChromeTitle(sessionId, subId = null) {
   }
 }
 
+async function windowType(display, id, timeoutMs = 800) {
+  try {
+    const out = await runOnDisplay(display, 'xprop', ['-id', id, '_NET_WM_WINDOW_TYPE'], timeoutMs);
+    if (/DIALOG/i.test(out)) return 'dialog';
+    if (/UTILITY/i.test(out)) return 'utility';
+    if (/DOCK/i.test(out)) return 'dock';
+    if (/DESKTOP/i.test(out)) return 'desktop';
+    if (/MENU|TOOLTIP|NOTIFICATION|DROPDOWN|POPUP|COMBO|SPLASH/i.test(out)) return 'popup';
+    return 'normal';
+  } catch {
+    return 'normal';
+  }
+}
+
+async function windowHidden(display, id, timeoutMs = 800) {
+  try {
+    const out = await runOnDisplay(display, 'xprop', ['-id', id, '_NET_WM_STATE', 'WM_STATE'], timeoutMs);
+    if (/_NET_WM_STATE_HIDDEN/i.test(out)) return true;
+    if (/window state:\s*Iconic/i.test(out)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function listDesktopWindows(display, timeoutMs = 2000) {
+  let geomOut = '';
+  let classOut = '';
+  try {
+    [geomOut, classOut] = await Promise.all([
+      runOnDisplay(display, 'wmctrl', ['-lG'], timeoutMs),
+      runOnDisplay(display, 'wmctrl', ['-lx'], timeoutMs),
+    ]);
+  } catch {
+    return [];
+  }
+  const byId = new Map();
+  for (const line of String(classOut).split('\n')) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3) continue;
+    const id = parts[0];
+    const cls = parts[2] || '';
+    const title = parts.slice(4).join(' ');
+    byId.set(id, { id, cls, title, x: 0, y: 0, w: 0, h: 0 });
+  }
+  for (const line of String(geomOut).split('\n')) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 6) continue;
+    const id = parts[0];
+    const cur = byId.get(id) || { id, cls: '', title: parts.slice(6).join(' ') };
+    cur.x = Number(parts[2]) || 0;
+    cur.y = Number(parts[3]) || 0;
+    cur.w = Number(parts[4]) || 0;
+    cur.h = Number(parts[5]) || 0;
+    byId.set(id, cur);
+  }
+  const wins = [];
+  for (const win of byId.values()) {
+    const cls = String(win.cls || '');
+    const title = String(win.title || '');
+    if (/tint2/i.test(cls) || /tint2/i.test(title)) continue;
+    if (/openbox/i.test(cls)) continue;
+    const hidden = await windowHidden(display, win.id, Math.min(800, timeoutMs));
+    if (!hidden && win.w > 0 && win.h > 0 && win.w <= 32 && win.h <= 32) continue;
+    const type = await windowType(display, win.id, Math.min(800, timeoutMs));
+    if (type === 'dock' || type === 'desktop' || type === 'popup') continue;
+    const chrome = /chromium|google-chrome|chrome/i.test(cls) || /chromium|chrome/i.test(title);
+    const switchable = type === 'normal' || type === 'dialog' || type === 'utility';
+    wins.push({ ...win, type, chrome, switchable, hidden });
+  }
+  return wins;
+}
+
 async function findMainChromeWindow(display, timeoutMs = 2500) {
+  try {
+    const wins = await listDesktopWindows(display, timeoutMs);
+    const normals = wins.filter((w) => w.chrome && w.type === 'normal');
+    const visible = normals.filter((w) => !w.hidden);
+    const pick = visible.length ? visible : normals;
+    if (pick.length) {
+      pick.sort((a, b) => b.w * b.h - a.w * a.h);
+      return pick[0].id;
+    }
+  } catch {
+    /* fall through */
+  }
   try {
     const ids = await xdotoolChromeIds(display, timeoutMs);
     for (const id of ids) {
       try {
-        const geom = await runOnDisplay(
-          display,
-          'xdotool',
-          ['getwindowgeometry', id],
-          timeoutMs,
-        );
+        const geom = await runOnDisplay(display, 'xdotool', ['getwindowgeometry', id], timeoutMs);
         const m = geom.match(/Geometry:\s+(\d+)x(\d+)/);
-        if (m && Number(m[1]) <= 32 && Number(m[2]) <= 32) {
-          try {
-            await runOnDisplay(display, 'xdotool', ['windowlower', id], timeoutMs);
-          } catch {
-            /* ignore */
-          }
-          continue;
-        }
+        if (m && Number(m[1]) <= 32 && Number(m[2]) <= 32) continue;
       } catch {
-        /* ignore */
+        /* keep candidate */
       }
       return id;
-    }
-  } catch {
-    /* ignore */
-  }
-  try {
-    const list = await runOnDisplay(display, 'wmctrl', ['-lx'], timeoutMs);
-    for (const line of list.split('\n')) {
-      if (!/chromium/i.test(line)) continue;
-      if (/10x10/.test(line)) continue;
-      const id = line.trim().split(/\s+/)[0];
-      if (id) return id;
     }
   } catch {
     /* ignore */
@@ -1655,15 +1865,27 @@ async function readChromeWindowGeom(display) {
   }
 }
 
-function chromeFits(geom, w, h) {
+function chromeFits(geom, w, h, panelH = 0) {
   if (!geom || !geom.w || !geom.h) return false;
-  return Math.abs(geom.w - w) <= 8 && Math.abs(geom.h - h) <= 8;
+  const targetH = Math.max(40, h - (Number(panelH) || 0));
+  return Math.abs(geom.w - w) <= 8 && Math.abs(geom.h - targetH) <= 20;
 }
 
-async function maximizeChrome(display, width, height) {
-  const id = await findMainChromeWindow(display);
+async function extraDesktopWindows(display, mainId) {
+  try {
+    const wins = await listDesktopWindows(display);
+    return wins.some((w) => w.switchable && w.id !== mainId);
+  } catch {
+    return false;
+  }
+}
+
+async function maximizeChrome(display, width, height, opts = {}) {
+  const id = opts.id || (await findMainChromeWindow(display));
   if (!id) return;
-  await restrictChromeWindowControls(display, id);
+  if (await windowHidden(display, id)) return;
+  const panelH = Number(opts.panelH) || 0;
+  const keepStack = Boolean(opts.keepStack) || (await extraDesktopWindows(display, id));
   const tryRun = async (file, args) => {
     try {
       await runOnDisplay(display, file, args, 2500);
@@ -1671,7 +1893,8 @@ async function maximizeChrome(display, width, height) {
       /* ignore */
     }
   };
-  // Maximized windows ignore windowsize; drop it, set geometry, then restore.
+  await restrictChromeWindowControls(display, id);
+  await tryRun('wmctrl', ['-i', '-r', id, '-b', 'remove,above']);
   await tryRun('wmctrl', [
     '-i',
     '-r',
@@ -1679,13 +1902,80 @@ async function maximizeChrome(display, width, height) {
     '-b',
     'remove,maximized_vert,maximized_horz',
   ]);
+  const fitH = Math.max(40, height - panelH);
   await tryRun('xdotool', ['windowmove', id, '0', '0']);
-  await tryRun('xdotool', ['windowsize', id, String(width), String(height)]);
-  await tryRun('wmctrl', ['-i', '-r', id, '-e', `0,0,0,${width},${height}`]);
+  await tryRun('xdotool', ['windowsize', id, String(width), String(fitH)]);
+  await tryRun('wmctrl', ['-i', '-r', id, '-e', `0,0,0,${width},${fitH}`]);
   await tryRun('wmctrl', ['-i', '-r', id, '-b', 'add,maximized_vert,maximized_horz']);
-  await tryRun('wmctrl', ['-i', '-r', id, '-b', 'add,above']);
-  await tryRun('xdotool', ['windowraise', id]);
-  await tryRun('xdotool', ['windowactivate', id]);
+  if (!keepStack) {
+    await tryRun('xdotool', ['windowraise', id]);
+    await tryRun('xdotool', ['windowactivate', id]);
+  }
+}
+
+function startTaskbar(runtime, holder, display) {
+  if (!taskbarAvailable()) return false;
+  if (holder.tint2 && childPidAlive(holder.tint2)) {
+    holder.taskbarOn = true;
+    return true;
+  }
+  const home = sessionDir(runtime.id);
+  writeTint2Config(home);
+  const logName = holder === runtime ? 'tint2.log' : `tint2-sub-${holder.id}.log`;
+  holder.tint2 = runAsSession(runtime, TASKBAR_BIN, ['-c', tint2ConfigPath(home)], {
+    env: { DISPLAY: `:${display}` },
+    logFile: path.join(home, logName),
+  });
+  holder.taskbarOn = true;
+  return true;
+}
+
+function stopTaskbar(holder) {
+  if (holder.tint2) {
+    killTree(holder.tint2, 'SIGTERM');
+    holder.tint2 = null;
+  }
+  holder.taskbarOn = false;
+}
+
+async function syncDesktop(runtime, holder, display) {
+  if (!runtime || !holder || display == null || runtime.stopping) return;
+  const wins = await listDesktopWindows(display).catch(() => []);
+  const switchable = wins.filter((w) => w.switchable);
+  const hidden = switchable.filter((w) => w.hidden);
+  const needBar = switchable.length > 1 || hidden.length > 0;
+  const geom = holder.lastGeom || parseWh(SCREEN_INIT);
+  if (needBar) {
+    const alive = childPidAlive(holder.tint2);
+    if (!alive) holder.taskbarOn = false;
+    if (taskbarAvailable() && !holder.taskbarOn) {
+      startTaskbar(runtime, holder, display);
+      holder.taskbarFitted = false;
+    }
+    const mainId = await findMainChromeWindow(display);
+    const mainHidden = Boolean(mainId && (await windowHidden(display, mainId)));
+    if (holder.taskbarOn && !holder.taskbarFitted && !mainHidden) {
+      await sleep(120);
+      await maximizeChrome(display, geom.w, geom.h, { panelH: TASKBAR_H, keepStack: true });
+      holder.taskbarFitted = true;
+    }
+    return;
+  }
+  if (holder.taskbarOn || holder.tint2) {
+    stopTaskbar(holder);
+    holder.taskbarFitted = false;
+    await sleep(80);
+    await maximizeChrome(display, geom.w, geom.h);
+  }
+}
+
+async function syncSessionDesktops(runtime) {
+  if (!runtime || runtime.stopping) return;
+  await syncDesktop(runtime, runtime, runtime.display);
+  for (const sub of runtime.subs || []) {
+    if (runtime.stopping) return;
+    await syncDesktop(runtime, sub, sub.display);
+  }
 }
 
 function parseXrandr(xr) {
@@ -1848,7 +2138,8 @@ async function applyDesiredGeomTo(holder, display) {
   const actual = await readFramebuffer(view);
   const chrome = await readChromeWindowGeom(display);
   const fbMatch = actual.w === want.w && actual.h === want.h;
-  if (fbMatch && chromeFits(chrome, want.w, want.h)) {
+  const panelH = holder.taskbarOn ? TASKBAR_H : 0;
+  if (fbMatch && chromeFits(chrome, want.w, want.h, panelH)) {
     holder.lastGeom = { w: want.w, h: want.h };
     logVncResize({
       result: 'noop',
@@ -1861,7 +2152,10 @@ async function applyDesiredGeomTo(holder, display) {
     return holder.lastGeom;
   }
   if (fbMatch) {
-    await maximizeChrome(display, want.w, want.h);
+    await maximizeChrome(display, want.w, want.h, {
+      panelH,
+      keepStack: Boolean(holder.taskbarOn),
+    });
     holder.lastGeom = { w: want.w, h: want.h };
     logVncResize({
       result: 'maximize',
@@ -1872,7 +2166,10 @@ async function applyDesiredGeomTo(holder, display) {
     });
   } else {
     await setFramebuffer(view, want.w, want.h);
-    await maximizeChrome(display, want.w, want.h);
+    await maximizeChrome(display, want.w, want.h, {
+      panelH,
+      keepStack: Boolean(holder.taskbarOn),
+    });
     holder.lastGeom = { w: want.w, h: want.h };
     logVncResize({
       result: 'fb',
@@ -1975,6 +2272,12 @@ async function stopSubInternal(runtime, sub) {
     killTree(sub.clipboardHolder, 'SIGKILL');
     sub.clipboardHolder = null;
   }
+  if (sub.tint2) {
+    killTree(sub.tint2, 'SIGKILL');
+    sub.tint2 = null;
+  }
+  sub.taskbarOn = false;
+  sub.taskbarFitted = false;
   const kids = [sub.x11vnc, sub.openbox, sub.xvfb];
   for (const child of kids) {
     killTree(child, 'SIGTERM');
@@ -2088,6 +2391,12 @@ async function respawnSubDesktop(runtime, sub) {
     killTree(sub.clipboardHolder, 'SIGKILL');
     sub.clipboardHolder = null;
   }
+  if (sub.tint2) {
+    killTree(sub.tint2, 'SIGKILL');
+    sub.tint2 = null;
+  }
+  sub.taskbarOn = false;
+  sub.taskbarFitted = false;
   const kids = [sub.x11vnc, sub.openbox, sub.xvfb];
   for (const child of kids) {
     killTree(child, 'SIGTERM');
@@ -2131,6 +2440,9 @@ export async function createSub(sessionId, url, { ownerUserId } = {}) {
     lastGeom: parseWh(SCREEN_INIT),
     clipboardText: undefined,
     clipboardHolder: null,
+    tint2: null,
+    taskbarOn: false,
+    taskbarFitted: false,
     ownerUserId: ownerUserId || null,
     occupancyId: ownerUserId ? newOccupancy() : null,
   };
@@ -2451,11 +2763,13 @@ export function getRuntimePids(sessionId) {
     xvfb: runtime.xvfb?.pid || null,
     openbox: runtime.openbox?.pid || null,
     x11vnc: runtime.x11vnc?.pid || null,
+    tint2: runtime.tint2?.pid || null,
     subs: (runtime.subs || []).map((sub) => ({
       id: sub.id,
       xvfb: sub.xvfb?.pid || null,
       openbox: sub.openbox?.pid || null,
       x11vnc: sub.x11vnc?.pid || null,
+      tint2: sub.tint2?.pid || null,
     })),
   };
 }

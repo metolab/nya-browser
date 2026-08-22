@@ -13,6 +13,8 @@ type Props = {
   display: DisplayPolicy;
   sizeTick: number;
   onPaneChange: (pane: Size) => void;
+  onRemoteClipboard?: (text: string) => void;
+  onVncFocus?: () => void;
 };
 
 export default function DeskStage({
@@ -23,6 +25,8 @@ export default function DeskStage({
   display,
   sizeTick,
   onPaneChange,
+  onRemoteClipboard,
+  onVncFocus,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [pane, setPane] = useState<Size>({ w: 1280, h: 720 });
@@ -79,7 +83,8 @@ export default function DeskStage({
           remoteHeight={remote.h}
           sizeTick={sizeTick}
           occupancyId={occupancyId}
-          onFocus={() => undefined}
+          onFocus={() => onVncFocus?.()}
+          onRemoteClipboard={onRemoteClipboard}
         />
       )}
     </div>

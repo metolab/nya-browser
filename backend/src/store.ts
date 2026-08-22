@@ -6,6 +6,7 @@ import {
   DEFAULT_HOME_URL,
   IDLE_TIMEOUT_MINUTES_MAX,
   emptyProxy,
+  normalizeChromeLanguage,
   normalizeTimezone,
   type FingerprintConfig,
   type AccessGrant,
@@ -230,6 +231,7 @@ export type SessionRecord = {
   proxy: ProxyConfig;
   fingerprint: FingerprintConfig;
   timezone: string;
+  chromeLanguage: string;
   homeUrl: string;
   idleTimeoutMinutes: number;
   createdAt: string;
@@ -247,6 +249,7 @@ function hydrateSession(row: typeof sessionsTable.$inferSelect): SessionRecord {
     proxy: proxyToConfig(proxy),
     fingerprint: parseFingerprint(row.fingerprint),
     timezone: normalizeTimezone(row.timezone),
+    chromeLanguage: normalizeChromeLanguage(row.chromeLanguage),
     homeUrl: normalizeHomeUrl(row.homeUrl),
     idleTimeoutMinutes: normalizeIdleTimeoutMinutes(row.idleTimeoutMinutes),
     createdAt: row.createdAt,
@@ -269,6 +272,7 @@ export function createSession(input: {
   groupId?: string | null;
   proxyId?: string | null;
   timezone?: string;
+  chromeLanguage?: string;
   homeUrl?: string;
   idleTimeoutMinutes?: number;
   fingerprint?: FingerprintConfig;
@@ -289,6 +293,7 @@ export function createSession(input: {
     proxy: proxyToConfig(getProxy(input.proxyId || null)),
     fingerprint: input.fingerprint ? normalizeFingerprint(input.fingerprint) : createFingerprint(),
     timezone: normalizeTimezone(input.timezone),
+    chromeLanguage: normalizeChromeLanguage(input.chromeLanguage),
     homeUrl: normalizeHomeUrl(input.homeUrl),
     idleTimeoutMinutes: normalizeIdleTimeoutMinutes(input.idleTimeoutMinutes),
     createdAt: now,
@@ -303,6 +308,7 @@ export function createSession(input: {
       groupId: session.groupId,
       proxyId: session.proxyId,
       timezone: session.timezone,
+      chromeLanguage: session.chromeLanguage,
       homeUrl: session.homeUrl,
       idleTimeoutMinutes: session.idleTimeoutMinutes,
       fingerprint: JSON.stringify(session.fingerprint),
@@ -321,6 +327,7 @@ export function updateSession(
     groupId: string | null;
     proxyId: string | null;
     timezone: string;
+    chromeLanguage: string;
     homeUrl: string;
     idleTimeoutMinutes: number;
     fingerprint: FingerprintConfig;
@@ -341,6 +348,10 @@ export function updateSession(
     proxyId: patch.proxyId !== undefined ? patch.proxyId : current.proxyId,
     timezone:
       patch.timezone !== undefined ? normalizeTimezone(patch.timezone) : current.timezone,
+    chromeLanguage:
+      patch.chromeLanguage !== undefined
+        ? normalizeChromeLanguage(patch.chromeLanguage)
+        : current.chromeLanguage,
     homeUrl: patch.homeUrl !== undefined ? normalizeHomeUrl(patch.homeUrl) : current.homeUrl,
     idleTimeoutMinutes:
       patch.idleTimeoutMinutes !== undefined

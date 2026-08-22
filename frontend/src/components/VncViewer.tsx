@@ -30,6 +30,7 @@ type Props = {
   resizeRemote?: boolean;
   occupancyId?: string | null;
   onFocus: () => void;
+  onRemoteClipboard?: (text: string) => void;
 };
 
 function vncUrl(sessionId: string, subId: string | null, occupancyId: string | null) {
@@ -58,6 +59,7 @@ export default function VncViewer({
   resizeRemote = true,
   occupancyId = null,
   onFocus,
+  onRemoteClipboard,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -75,6 +77,8 @@ export default function VncViewer({
   const viewOnlyRef = useRef(viewOnly);
   const resizeRemoteRef = useRef(resizeRemote);
   const [error, setError] = useState<string | null>(null);
+  const onRemoteClipboardRef = useRef(onRemoteClipboard);
+  onRemoteClipboardRef.current = onRemoteClipboard;
 
   remoteRef.current = { w: remoteWidth, h: remoteHeight };
   sessionIdRef.current = sessionId;
@@ -300,6 +304,10 @@ export default function VncViewer({
         rfb.addEventListener('credentialsrequired', () => {
           rfb.sendCredentials({ password: '' });
         });
+        rfb.addEventListener('clipboard', (e: { detail?: { text?: string } }) => {
+          const next = String(e?.detail?.text ?? '');
+          onRemoteClipboardRef.current?.(next);
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : '画面连接失败');
       }
@@ -381,6 +389,18 @@ export default function VncViewer({
       aria-label={title}
       onPointerDownCapture={(e) => {
         if (!focused && e.button === 0) onFocus();
+        const rfb = rfbRef.current;
+        if (!rfb || viewOnlyRef.current || !navigator.clipboard?.readText) return;
+        void navigator.clipboard
+          .readText()
+          .then((text) => {
+            try {
+              rfb.clipboardPasteFrom(text);
+            } catch {
+              /* ignore */
+            }
+          })
+          .catch(() => undefined);
       }}
     >
       <div ref={hostRef} className="vnc-host" />

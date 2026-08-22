@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { TIMEZONE_LIST } from './timezones.js';
+import { CHROME_LANGUAGE_LIST } from './languages.js';
+import { isValidTimezone } from './timezones.js';
+
+const timezoneSchema = z
+  .string()
+  .min(1)
+  .max(80)
+  .refine((value) => value === 'UTC' || value === 'GMT' || isValidTimezone(value), 'Invalid timezone');
 
 export const roleSchema = z.enum(['admin', 'user']);
 
@@ -65,7 +72,8 @@ export const createSessionSchema = z.object({
   description: z.string().max(500).optional().default(''),
   groupId: z.string().min(1).nullable().optional(),
   proxyId: z.string().min(1).nullable().optional(),
-  timezone: z.enum(TIMEZONE_LIST).optional(),
+  timezone: timezoneSchema.optional(),
+  chromeLanguage: z.enum(CHROME_LANGUAGE_LIST).optional(),
   homeUrl: z.string().max(2000).optional(),
   idleTimeoutMinutes: idleTimeoutMinutesSchema.optional().default(0),
 });
@@ -75,7 +83,8 @@ export const updateSessionSchema = z.object({
   description: z.string().max(500).optional(),
   groupId: z.string().min(1).nullable().optional(),
   proxyId: z.string().min(1).nullable().optional(),
-  timezone: z.enum(TIMEZONE_LIST).optional(),
+  timezone: timezoneSchema.optional(),
+  chromeLanguage: z.enum(CHROME_LANGUAGE_LIST).optional(),
   homeUrl: z.string().max(2000).optional(),
   idleTimeoutMinutes: idleTimeoutMinutesSchema.optional(),
 });

@@ -106,6 +106,7 @@ export interface Session {
   proxy: ProxyConfig;
   fingerprint?: FingerprintConfig;
   timezone: string;
+  chromeLanguage: string;
   homeUrl: string;
   idleTimeoutMinutes: number;
   createdAt: string;
@@ -171,6 +172,7 @@ export interface BackupManifest {
   name: string;
   description: string;
   timezone: string;
+  chromeLanguage?: string;
   homeUrl: string;
   idleTimeoutMinutes?: number;
   fingerprint: FingerprintConfig;

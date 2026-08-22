@@ -1,10 +1,21 @@
 import { useEffect, useState } from 'react';
 import type { ProxyRecord, SessionGroup } from '@nya/shared';
-import { DEFAULT_TIMEZONE, IDLE_TIMEOUT_MINUTES_MAX, TIMEZONES } from '@nya/shared';
+import {
+  COMMON_TIMEZONES,
+  DEFAULT_CHROME_LANGUAGE,
+  DEFAULT_TIMEZONE,
+  IDLE_TIMEOUT_MINUTES_MAX,
+  PINNED_CHROME_LANGUAGES,
+  chromeLanguageOptionLabel,
+  listTimezones,
+  timezoneOptionLabel,
+  CHROME_LANGUAGES,
+} from '@nya/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import SearchSelect from '@/components/SearchSelect';
 import {
   Dialog,
   DialogContent,
@@ -21,12 +32,26 @@ import {
 } from '@/components/ui/select';
 import { NONE_KEY, groupSelectOptions } from '@/lib/groups';
 
+const COMMON_TZ = new Set<string>(COMMON_TIMEZONES);
+const TIMEZONE_OPTIONS = listTimezones().map((tz) => ({
+  value: tz,
+  label: timezoneOptionLabel(tz),
+  group: COMMON_TZ.has(tz) ? '常用' : '全部',
+}));
+const PINNED_LANG = new Set<string>(PINNED_CHROME_LANGUAGES);
+const LANGUAGE_OPTIONS = CHROME_LANGUAGES.map((code) => ({
+  value: code,
+  label: chromeLanguageOptionLabel(code),
+  group: PINNED_LANG.has(code) ? '常用' : '全部',
+}));
+
 export type SessionFormValues = {
   name: string;
   description: string;
   groupId: string | null;
   proxyId: string | null;
   timezone: string;
+  chromeLanguage: string;
   homeUrl: string;
   idleTimeoutMinutes: number;
 };
@@ -39,6 +64,7 @@ type Props = {
   initialProxyId?: string | null;
   initialGroupId?: string | null;
   initialTimezone?: string;
+  initialChromeLanguage?: string;
   initialHomeUrl?: string;
   initialIdleTimeoutMinutes?: number;
   proxies: ProxyRecord[];
@@ -58,6 +84,7 @@ export default function SessionFormDialog({
   initialProxyId = null,
   initialGroupId = null,
   initialTimezone = DEFAULT_TIMEZONE,
+  initialChromeLanguage = DEFAULT_CHROME_LANGUAGE,
   initialHomeUrl = 'https://www.google.com/',
   initialIdleTimeoutMinutes = 0,
   proxies,
@@ -72,6 +99,7 @@ export default function SessionFormDialog({
   const [name, setName] = useState(initialName);
   const [description, setDescription] = useState(initialDescription);
   const [timezone, setTimezone] = useState(initialTimezone);
+  const [chromeLanguage, setChromeLanguage] = useState(initialChromeLanguage);
   const [homeUrl, setHomeUrl] = useState(initialHomeUrl);
   const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState(String(initialIdleTimeoutMinutes ?? 0));
   const [proxyId, setProxyId] = useState(initialProxyId || NONE_KEY);
@@ -82,6 +110,7 @@ export default function SessionFormDialog({
     setName(initialName);
     setDescription(initialDescription);
     setTimezone(initialTimezone || DEFAULT_TIMEZONE);
+    setChromeLanguage(initialChromeLanguage || DEFAULT_CHROME_LANGUAGE);
     setHomeUrl(initialHomeUrl || 'https://www.google.com/');
     setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? 0));
     setProxyId(initialProxyId || NONE_KEY);
@@ -94,6 +123,7 @@ export default function SessionFormDialog({
     initialProxyId,
     initialGroupId,
     initialTimezone,
+    initialChromeLanguage,
     initialHomeUrl,
     initialIdleTimeoutMinutes,
   ]);
@@ -114,6 +144,7 @@ export default function SessionFormDialog({
               name: name.trim() || initialName || 'Session',
               description,
               timezone: timezone || DEFAULT_TIMEZONE,
+              chromeLanguage: chromeLanguage || DEFAULT_CHROME_LANGUAGE,
               homeUrl: homeUrl || 'https://www.google.com/',
               idleTimeoutMinutes: (() => {
                 const n = Number.parseInt(String(idleTimeoutMinutes), 10);
@@ -156,38 +187,41 @@ export default function SessionFormDialog({
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="grid gap-2">
                   <Label>时区</Label>
-                  <Select value={timezone} onValueChange={setTimezone}>
+                  <SearchSelect
+                    value={timezone}
+                    onChange={setTimezone}
+                    options={TIMEZONE_OPTIONS}
+                    searchPlaceholder="搜索城市或时区"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Chrome 语言</Label>
+                  <SearchSelect
+                    value={chromeLanguage}
+                    onChange={setChromeLanguage}
+                    options={LANGUAGE_OPTIONS}
+                    searchPlaceholder="搜索语言"
+                  />
+                </div>
+              </div>
+              {groups && (
+                <div className="grid gap-2">
+                  <Label>目录</Label>
+                  <Select value={groupId} onValueChange={setGroupId}>
                     <SelectTrigger className="w-full">
-                      <SelectValue />
+                      <SelectValue placeholder="未归类" />
                     </SelectTrigger>
                     <SelectContent position="popper" className="max-h-64">
-                      {TIMEZONES.map((tz) => (
-                        <SelectItem key={tz} value={tz}>
-                          {tz}
+                      <SelectItem value={NONE_KEY}>未归类</SelectItem>
+                      {groupSelectOptions(groups).map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
-                {groups && (
-                  <div className="grid gap-2">
-                    <Label>目录</Label>
-                    <Select value={groupId} onValueChange={setGroupId}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="未归类" />
-                      </SelectTrigger>
-                      <SelectContent position="popper" className="max-h-64">
-                        <SelectItem value={NONE_KEY}>未归类</SelectItem>
-                        {groupSelectOptions(groups).map((opt) => (
-                          <SelectItem key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-              </div>
+              )}
               <div className="grid gap-2">
                 <Label htmlFor="session-url">默认网址</Label>
                 <Input

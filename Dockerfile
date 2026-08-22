@@ -33,17 +33,38 @@ ENV DEBIAN_FRONTEND=noninteractive \
 COPY --from=node:22-bookworm /usr/local/bin/node /usr/local/bin/node
 COPY --from=node:22-bookworm /usr/local/lib/node_modules /usr/local/lib/node_modules
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ARG DEBIAN_MIRROR=
+RUN set -eux; \
+    if [ -n "${DEBIAN_MIRROR}" ]; then \
+      if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g; s|security.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+      fi; \
+      if [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g; s|security.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list; \
+      fi; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
       wget \
       locales \
+      fontconfig \
       fonts-liberation \
+      fonts-liberation2 \
+      fonts-dejavu-core \
       fonts-noto-cjk \
+      fonts-noto-cjk-extra \
       fonts-noto-color-emoji \
+      fonts-wqy-microhei \
+      fonts-wqy-zenhei \
+      fonts-ipafont \
+      fonts-nanum \
+      fonts-crosextra-carlito \
+      fonts-crosextra-caladea \
       xvfb \
       x11vnc \
       openbox \
+      tint2 \
       xclip \
       x11-xserver-utils \
       x11-utils \
@@ -97,6 +118,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && locale-gen \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+COPY config/fonts.conf /etc/fonts/conf.d/99-nya.conf
+RUN fc-cache -f
 
 WORKDIR /app
 

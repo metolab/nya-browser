@@ -63,6 +63,7 @@ sessionsRouter.post(
         groupId: parsed.data.groupId ?? null,
         proxyId: parsed.data.proxyId ?? null,
         timezone: parsed.data.timezone,
+        chromeLanguage: parsed.data.chromeLanguage,
         homeUrl: parsed.data.homeUrl,
         idleTimeoutMinutes: parsed.data.idleTimeoutMinutes,
       });
@@ -98,9 +99,9 @@ sessionsRouter.patch(
     if (parsed.data.proxyId !== undefined && parsed.data.proxyId !== before.proxyId) {
       await applyProxy(session.id, session.proxy);
     } else if (
-      parsed.data.timezone &&
-      parsed.data.timezone !== before.timezone &&
-      getRuntimePublic(session.id)
+      getRuntimePublic(session.id) &&
+      ((parsed.data.timezone && parsed.data.timezone !== before.timezone) ||
+        (parsed.data.chromeLanguage && parsed.data.chromeLanguage !== before.chromeLanguage))
     ) {
       await restartBrowser(session.id);
     }

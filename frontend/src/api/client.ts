@@ -62,6 +62,7 @@ export const api = {
     groupId?: string | null;
     proxyId?: string | null;
     timezone?: string;
+    chromeLanguage?: string;
     homeUrl?: string;
     idleTimeoutMinutes?: number;
   }) =>
@@ -77,6 +78,7 @@ export const api = {
       groupId: string | null;
       proxyId: string | null;
       timezone: string;
+      chromeLanguage: string;
       homeUrl: string;
       idleTimeoutMinutes: number;
     }>,

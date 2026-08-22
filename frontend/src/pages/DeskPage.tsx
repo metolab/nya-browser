@@ -6,6 +6,7 @@ import type { Session, SessionGroup } from '@nya/shared';
 import { api, ApiError } from '../api/client';
 import { useAuth } from '../auth';
 import ClipboardPanel from '../components/ClipboardPanel';
+import { useClipboardSync } from '../lib/useClipboardSync';
 import FilePanel from '../components/FilePanel';
 import { SessionTree } from '../components/SessionTree';
 import DeskFloat from '../desk/DeskFloat';
@@ -52,6 +53,11 @@ export default function DeskPage() {
   const [tabTitle, setTabTitle] = useState('');
 
   const remote = resolveRemoteSize(pane, display);
+  const clip = useClipboardSync({
+    sessionId: active?.session.id,
+    subId: active ? vncWindowExtra(active.windowId) : null,
+    enabled: Boolean(active?.windowId),
+  });
   useDocumentTitle(formatDeskTitle(active?.session.name, tabTitle));
 
   const onPaneChange = useCallback((next: Size) => {
@@ -165,6 +171,12 @@ export default function DeskPage() {
           display={display}
           sizeTick={sizeTick}
           onPaneChange={onPaneChange}
+          onRemoteClipboard={(text) => {
+            void clip.ingestRemote(text);
+          }}
+          onVncFocus={() => {
+            void clip.flushLocal();
+          }}
         />
       ) : (
         <div className="flex h-full items-center justify-center p-6">
@@ -261,9 +273,17 @@ export default function DeskPage() {
           className="right-3 bottom-16"
         >
           <ClipboardPanel
-            sessionId={active.session.id}
-            subId={vncWindowExtra(active.windowId)}
+            text={clip.text}
+            onTextChange={clip.onTextChange}
+            auto={clip.auto}
+            onAutoChange={clip.setAuto}
             ready={Boolean(active.windowId)}
+            busy={clip.busy}
+            permission={clip.permission}
+            status={clip.status}
+            onPull={clip.pull}
+            onPush={clip.push}
+            onRequestPermission={clip.requestPermission}
           />
         </DeskFloat>
       ) : null}

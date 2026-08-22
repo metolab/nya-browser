@@ -36,6 +36,7 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
     proxy: redactProxy(session, Boolean(admin)),
     fingerprint: session.fingerprint,
     timezone: session.timezone,
+    chromeLanguage: session.chromeLanguage,
     homeUrl: session.homeUrl,
     idleTimeoutMinutes: session.idleTimeoutMinutes,
     createdAt: session.createdAt,
