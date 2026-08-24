@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { AUTH_COOKIE, AUDIT_ACTIONS, loginSchema } from '@nya/shared';
 import { asyncHandler, clientIp } from '../../http/util.js';
+import { BASE_PATH } from '../../config.js';
 import { cookieOptions, issueToken, revokeToken, verifyUser } from './service.js';
 import { writeAudit } from '../audit/service.js';
 
@@ -47,6 +48,7 @@ publicAuthRouter.post(
     }
     const token = issueToken(user.id);
     res.cookie(AUTH_COOKIE, token, cookieOptions());
+    if (BASE_PATH !== '/') res.clearCookie(AUTH_COOKIE, { path: '/' });
     writeAudit({
       actorId: user.id,
       actorUsername: user.username,
@@ -79,7 +81,8 @@ privateAuthRouter.post(
       ip: clientIp(req),
       success: true,
     });
-    res.clearCookie(AUTH_COOKIE, { path: '/' });
+    res.clearCookie(AUTH_COOKIE, { path: cookieOptions().path });
+    if (BASE_PATH !== '/') res.clearCookie(AUTH_COOKIE, { path: '/' });
     res.json({ ok: true });
   }),
 );

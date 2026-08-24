@@ -3,7 +3,7 @@ import argon2 from 'argon2';
 import { eq, lte } from 'drizzle-orm';
 import { AUTH_COOKIE } from '@nya/shared';
 import type { UserPublic } from '@nya/shared';
-import { AUTH_TTL_MS } from '../../config.js';
+import { AUTH_TTL_MS, BASE_PATH } from '../../config.js';
 import { db } from '../../db/client.js';
 import { authTokens, users } from '../../db/schema.js';
 
@@ -84,7 +84,7 @@ export function cookieOptions() {
     httpOnly: true,
     sameSite: 'lax' as const,
     maxAge: AUTH_TTL_MS,
-    path: '/',
+    path: BASE_PATH,
   };
 }
 

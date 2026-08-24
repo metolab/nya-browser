@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Loader2Icon } from 'lucide-react';
 import type { UserPublic } from '@nya/shared';
 import { api } from './api/client';
+import { getBasePath } from './basePath';
 import { AuthContext } from './auth';
 import LoginPage from './pages/LoginPage';
 import DeskPage from './pages/DeskPage';
@@ -45,7 +46,7 @@ export default function App() {
           <LoginPage onOk={() => void refresh()} />
         ) : (
           <AuthContext.Provider value={{ user, refresh }}>
-            <BrowserRouter>
+            <BrowserRouter basename={getBasePath()}>
               <Routes>
                 <Route path="/" element={<DeskPage />} />
                 <Route

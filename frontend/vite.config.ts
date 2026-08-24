@@ -6,8 +6,9 @@ import tailwindcss from '@tailwindcss/vite';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react(), tailwindcss()],
+  base: command === 'build' ? './' : '/',
   resolve: {
     alias: {
       '@': path.resolve(root, './src'),
@@ -31,4 +32,4 @@ export default defineConfig({
     sourcemap: false,
     target: 'es2022',
   },
-});
+}));

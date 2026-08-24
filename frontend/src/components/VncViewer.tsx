@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'rea
 import { Button } from '@/components/ui/button';
 import RFB from '@novnc/novnc';
 import { api } from '../api/client';
+import { withBase } from '../basePath';
 import { snapEven } from '../desk/display';
 import {
   advanceTrapX,
@@ -65,7 +66,7 @@ function vncUrl(sessionId: string, subId: string | null, occupancyId: string | n
     ? `/ws/vnc/${encodeURIComponent(sessionId)}/${encodeURIComponent(subId)}`
     : `/ws/vnc/${encodeURIComponent(sessionId)}`;
   const occ = occupancyId ? `?occ=${encodeURIComponent(occupancyId)}` : '';
-  return `${proto}//${window.location.host}${path}${occ}`;
+  return `${proto}//${window.location.host}${withBase(path)}${occ}`;
 }
 
 function mountCanvas(mount: HTMLElement): HTMLCanvasElement | null {

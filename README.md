@@ -13,6 +13,8 @@ docker compose up -d
 
 镜像：`ghcr.io/metolab/nya-browser:latest`。默认端口 `8080`，数据目录 `./data`。
 
+挂到子路径时设置 `BASE_PATH`（不要末尾斜杠），例如 `BASE_PATH=/nya-browser`。容器内 `/api/health` 仍可用于健康检查；页面、API 和 VNC WebSocket 都在该前缀下。反向代理不要剥掉前缀，并开启 WebSocket 升级。
+
 NVIDIA 机器上打开硬件加速（Xvfb 出图，GL/WebGL 走 GPU）：
 
 ```bash

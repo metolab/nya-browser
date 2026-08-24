@@ -1,5 +1,9 @@
 /// <reference types="vite/client" />
 
+interface Window {
+  __NYA_BASE_PATH__?: string;
+}
+
 declare module '@novnc/novnc' {
   export default class RFB {
     constructor(

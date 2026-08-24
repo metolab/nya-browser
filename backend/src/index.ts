@@ -1,8 +1,8 @@
 import http from 'http';
 import net from 'net';
 import { WebSocketServer } from 'ws';
-import { AUTH_COOKIE, AUDIT_ACTIONS } from '@nya/shared';
-import { HOST, PORT } from './config.js';
+import { AUTH_COOKIE, AUDIT_ACTIONS, joinBasePath } from '@nya/shared';
+import { BASE_PATH, HOST, PORT } from './config.js';
 import { migrate } from './db/migrate.js';
 import { bootstrap } from './db/bootstrap.js';
 import { createApp } from './app.js';
@@ -43,7 +43,8 @@ function parseCookie(header: string) {
 server.on('upgrade', (req, socket, head) => {
   try {
     const url = new URL(req.url || '', `http://${req.headers.host}`);
-    if (!url.pathname.startsWith('/ws/vnc/')) {
+    const wsPrefix = joinBasePath(BASE_PATH, '/ws/vnc/');
+    if (!url.pathname.startsWith(wsPrefix)) {
       socket.destroy();
       return;
     }
@@ -55,7 +56,7 @@ server.on('upgrade', (req, socket, head) => {
       socket.destroy();
       return;
     }
-    const parts = url.pathname.slice('/ws/vnc/'.length).split('/').filter(Boolean);
+    const parts = url.pathname.slice(wsPrefix.length).split('/').filter(Boolean);
     const sessionId = decodeURIComponent(parts[0] || '');
     const subId = parts[1] ? decodeURIComponent(parts[1]) : null;
     if (!getSession(sessionId)) {
@@ -231,8 +232,9 @@ function bridgeVnc(ws: import('ws').WebSocket, runtime: { vncSock?: string; vncP
 }
 
 server.listen(PORT, HOST, () => {
-  logger.info({ HOST, PORT, STATIC_DIR: process.env.STATIC_DIR }, 'Nya Browser listening');
-  console.log(`Nya Browser listening on http://${HOST}:${PORT}`);
+  const publicPath = BASE_PATH === '/' ? '' : BASE_PATH;
+  logger.info({ HOST, PORT, BASE_PATH, STATIC_DIR: process.env.STATIC_DIR }, 'Nya Browser listening');
+  console.log(`Nya Browser listening on http://${HOST}:${PORT}${publicPath}/`);
 });
 
 async function shutdown() {

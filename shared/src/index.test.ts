@@ -19,6 +19,7 @@ import {
 } from './languages.js';
 import { emptyProxy } from './types.js';
 import { regionFromLoc } from './region.js';
+import { injectIndexHtml, joinBasePath, normalizeBasePath } from './basePath.js';
 
 describe('displayLimits', () => {
   it('clamps oversized geometry', () => {
@@ -114,5 +115,41 @@ describe('emptyProxy', () => {
 describe('regionFromLoc', () => {
   it('maps JP to 日本', () => {
     expect(regionFromLoc('JP')).toBe('日本');
+  });
+});
+
+describe('basePath', () => {
+  it('normalizes missing, slash, and trailing slash', () => {
+    expect(normalizeBasePath(undefined)).toBe('/');
+    expect(normalizeBasePath('')).toBe('/');
+    expect(normalizeBasePath('/')).toBe('/');
+    expect(normalizeBasePath('nya-browser')).toBe('/nya-browser');
+    expect(normalizeBasePath('/nya-browser/')).toBe('/nya-browser');
+  });
+
+  it('rejects unsafe values', () => {
+    expect(normalizeBasePath('/foo/../bar')).toBe('/');
+    expect(normalizeBasePath('//evil')).toBe('/');
+    expect(normalizeBasePath('/foo bar')).toBe('/');
+  });
+
+  it('joins API and websocket paths', () => {
+    expect(joinBasePath('/', '/api/health')).toBe('/api/health');
+    expect(joinBasePath('/nya-browser', '/api/me')).toBe('/nya-browser/api/me');
+    expect(joinBasePath('/nya-browser', '/ws/vnc/abc')).toBe('/nya-browser/ws/vnc/abc');
+    expect(joinBasePath('/nya-browser', '/api/audit?q=1')).toBe('/nya-browser/api/audit?q=1');
+  });
+
+  it('rewrites index.html assets and injects the runtime prefix', () => {
+    const html = `<head>
+    <script>window.__NYA_BASE_PATH__ = window.__NYA_BASE_PATH__ || '/';</script>
+    <script type="module" crossorigin src="./assets/index-aaaa.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-bbbb.css">
+  </head>`;
+    const out = injectIndexHtml(html, '/nya-browser');
+    expect(out).toContain('window.__NYA_BASE_PATH__="/nya-browser";');
+    expect(out).toContain('src="/nya-browser/assets/index-aaaa.js"');
+    expect(out).toContain('href="/nya-browser/assets/index-bbbb.css"');
+    expect(injectIndexHtml(html, '/')).toContain('src="/assets/index-aaaa.js"');
   });
 });

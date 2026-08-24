@@ -1,7 +1,9 @@
 import path from 'path';
+import { normalizeBasePath } from '@nya/shared';
 
 export const PORT = Number(process.env.PORT || 8080);
 export const HOST = process.env.HOST || '0.0.0.0';
+export const BASE_PATH = normalizeBasePath(process.env.BASE_PATH);
 export const DATA_DIR = process.env.DATA_DIR || '/data';
 export const STATIC_DIR =
   process.env.STATIC_DIR || path.resolve(process.cwd(), '../frontend/dist');

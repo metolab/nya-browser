@@ -12,6 +12,7 @@ import type {
   SessionWindow,
   UserPublic,
 } from '@nya/shared';
+import { withBase } from '../basePath';
 
 export type { FileEntry, ProxyConfig, Session, UserPublic };
 
@@ -26,7 +27,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetch(withBase(url), {
     credentials: 'include',
     ...init,
     headers: {
@@ -219,7 +220,7 @@ export const api = {
     const form = new FormData();
     Array.from(files).forEach((f) => form.append('files', f));
     const res = await fetch(
-      `/api/sessions/${id}/files/upload?dir=${encodeURIComponent(dir)}`,
+      withBase(`/api/sessions/${id}/files/upload?dir=${encodeURIComponent(dir)}`),
       { method: 'POST', body: form, credentials: 'include' },
     );
     const data = await res.json();
@@ -227,7 +228,7 @@ export const api = {
     return data;
   },
   downloadUrl: (id: string, path: string) =>
-    `/api/sessions/${id}/files/download?path=${encodeURIComponent(path)}`,
+    withBase(`/api/sessions/${id}/files/download?path=${encodeURIComponent(path)}`),
 
   listUsers: () =>
     request<{ users: (UserPublic & { grants: AccessGrant[] })[] }>('/api/users'),
@@ -286,11 +287,11 @@ export const api = {
     const q = new URLSearchParams(query).toString();
     return request<{ logs: AuditLog[] }>(`/api/audit${q ? `?${q}` : ''}`);
   },
-  exportUrl: (id: string) => `/api/sessions/${id}/export`,
+  exportUrl: (id: string) => withBase(`/api/sessions/${id}/export`),
   importSession: async (file: File) => {
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch('/api/sessions/import', {
+    const res = await fetch(withBase('/api/sessions/import'), {
       method: 'POST',
       body: form,
       credentials: 'include',
