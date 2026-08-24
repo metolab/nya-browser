@@ -10,3 +10,5 @@ nya/009-x11-clipboard-per-display.patch
 nya/010-nya-multi-display-control.patch
 nya/011-x11-present-per-display.patch
 nya/013-x11-xvfb-readback-present.patch
+nya/014-x11-in-window-popups.patch
+nya/015-x11-safe-extra-widgets.patch

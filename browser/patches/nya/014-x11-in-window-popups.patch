@@ -1,0 +1,116 @@
+diff --git a/chrome/browser/ui/views/chrome_views_delegate_linux.cc b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+--- a/chrome/browser/ui/views/chrome_views_delegate_linux.cc
++++ b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/views/chrome_views_delegate.h"
+ 
++#include "base/command_line.h"
+ #include "base/environment.h"
+ #include "base/feature_list.h"
+ #include "base/nix/xdg_util.h"
+@@ -11,6 +12,7 @@
+ #include "chrome/browser/ui/views/native_widget_factory.h"
+ #include "chrome/common/channel_info.h"
+ #include "chrome/grit/chrome_unscaled_resources.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ #include "components/version_info/channel.h"
+ #include "ui/base/resource/resource_bundle.h"
+ #include "ui/base/ui_base_features.h"
+@@ -43,8 +45,30 @@
+ }
+ #endif  // BUILDFLAG(IS_LINUX)
+ 
++bool IsNyaInWindowPopupType(views::Widget::InitParams::Type type) {
++  return type == views::Widget::InitParams::TYPE_BUBBLE ||
++         type == views::Widget::InitParams::TYPE_POPUP ||
++         type == views::Widget::InitParams::TYPE_MENU ||
++         type == views::Widget::InitParams::TYPE_TOOLTIP;
++}
++
++bool NyaHostPopupsInParent() {
++  return base::CommandLine::ForCurrentProcess()->HasSwitch(
++      switches::kNyaX11MultiDisplay);
++}
++
+ NativeWidgetType GetNativeWidgetTypeForInitParams(
+     const views::Widget::InitParams& params) {
++  // Xvfb + in-process GPU cannot present a second AcceleratedWidget (frozen
++  // UI + leftover XGrabPointer). Host chrome popups as child Aura windows
++  // of the browser compositor. Security surfaces too: in this product the
++  // browser is maximized, so an in-window prompt cannot be covered by
++  // another X window.
++  if (NyaHostPopupsInParent() && IsNyaInWindowPopupType(params.type) &&
++      (params.parent || params.context || params.child)) {
++    return NativeWidgetType::kNativeWidgetAura;
++  }
++
+   // If this is a security surface, always use a toplevel window,
+   // otherwise it's possible for things like menus to obscure the view.
+   if (params.z_order &&
+@@ -81,6 +105,11 @@
+ views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
+     views::Widget::InitParams* params,
+     views::internal::NativeWidgetDelegate* delegate) {
++  if (NyaHostPopupsInParent() && IsNyaInWindowPopupType(params->type) &&
++      (params->parent || params->context)) {
++    params->child = true;
++    params->use_accelerated_widget_override = false;
++  }
+   return ::CreateNativeWidget(GetNativeWidgetTypeForInitParams(*params), params,
+                               delegate);
+ }
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3620,6 +3620,7 @@
+ 
+     deps += [
+       "//chrome/browser:shell_integration_linux",
++      "//components/ungoogled:ungoogled_switches",
+       "//ui/base:wm_role_names",
+       "//ui/base/ime",
+       "//ui/events:dom_keycode_converter",
+diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
+--- a/ui/views/widget/widget.cc
++++ b/ui/views/widget/widget.cc
+@@ -518,8 +518,10 @@
+ 
+   // ViewsDelegate::OnBeforeWidgetInit() may change `params.delegate` either by
+   // setting it to null or assigning a different value to it, so handle both
+-  // cases.
++  // cases. It may also set `params.child` (Nya in-window popups), so recompute
++  // `is_top_level_` afterwards.
+   ViewsDelegate::GetInstance()->OnBeforeWidgetInit(&params, this);
++  is_top_level_ = !params.child;
+ 
+   if (params.delegate) {
+     widget_delegate_ = params.delegate->AttachWidgetAndGetHandle(this);
+diff --git a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
+--- a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
++++ b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
+@@ -9,6 +9,7 @@
+ #include <utility>
+ 
+ #include "base/auto_reset.h"
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/memory/raw_ptr.h"
+@@ -252,6 +253,16 @@
+     bool is_menu = window->GetType() == aura::client::WINDOW_TYPE_MENU;
+ 
+     if (is_fullscreen || is_menu) {
++#if BUILDFLAG(IS_LINUX)
++      // A second Desktop window here creates another AcceleratedWidget on
++      // Xvfb + in-process GPU, which stalls present and can leave XGrabPointer
++      // held. Keep menus in the parent compositor when Nya is hosting popups
++      // in-window.
++      if (is_menu && base::CommandLine::ForCurrentProcess()->HasSwitch(
++                         "nya-x11-multi-display")) {
++        return root_window_;
++      }
++#endif
+       ui::ZOrderLevel root_z_order = ui::ZOrderLevel::kNormal;
+       internal::NativeWidgetPrivate* native_widget =
+           DesktopNativeWidgetAura::ForWindow(root_window_);

@@ -1,0 +1,487 @@
+diff --git a/chrome/browser/ui/views/chrome_views_delegate_linux.cc b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+--- a/chrome/browser/ui/views/chrome_views_delegate_linux.cc
++++ b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+@@ -110,8 +110,13 @@
+     params->child = true;
+     params->use_accelerated_widget_override = false;
+   }
+-  return ::CreateNativeWidget(GetNativeWidgetTypeForInitParams(*params), params,
+-                              delegate);
++  const NativeWidgetType native_type =
++      GetNativeWidgetTypeForInitParams(*params);
++  if (NyaHostPopupsInParent() && IsNyaInWindowPopupType(params->type) &&
++      native_type == NativeWidgetType::kDesktopNativeWidgetAura) {
++    params->force_software_compositing = true;
++  }
++  return ::CreateNativeWidget(native_type, params, delegate);
+ }
+ 
+ #if BUILDFLAG(IS_LINUX)
+diff --git a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
+--- a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
++++ b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
+@@ -140,6 +140,14 @@
+                                   ? Widget::InitParams::Activatable::kYes
+                                   : Widget::InitParams::Activatable::kNo;
+     init_params.z_order = root_z_order;
++#if BUILDFLAG(IS_LINUX)
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++            "nya-x11-multi-display") &&
++        (init_params.type == Widget::InitParams::TYPE_MENU ||
++         init_params.type == Widget::InitParams::TYPE_POPUP)) {
++      init_params.force_software_compositing = true;
++    }
++#endif
+     // Also provide the context, which Ozone (in particular - Wayland) will use
+     // to parent this newly created toplevel native widget to. Please refer to
+     // https://crrev.com/c/2831291 for more details.
+diff --git a/ui/ozone/platform/x11/BUILD.gn b/ui/ozone/platform/x11/BUILD.gn
+--- a/ui/ozone/platform/x11/BUILD.gn
++++ b/ui/ozone/platform/x11/BUILD.gn
+@@ -35,6 +35,8 @@
+     "x11_keyboard_hook.h",
+     "x11_menu_utils.cc",
+     "x11_menu_utils.h",
++    "x11_readback_present_cache.cc",
++    "x11_readback_present_cache.h",
+     "x11_screen_ozone.cc",
+     "x11_screen_ozone.h",
+     "x11_surface_factory.cc",
+diff --git a/ui/ozone/platform/x11/x11_readback_present_cache.h b/ui/ozone/platform/x11/x11_readback_present_cache.h
+new file mode 100644
+--- /dev/null
++++ b/ui/ozone/platform/x11/x11_readback_present_cache.h
+@@ -0,0 +1,35 @@
++// Copyright 2026 Nya Browser
++// Use of this source code is governed by a BSD-style license.
++
++#ifndef UI_OZONE_PLATFORM_X11_X11_READBACK_PRESENT_CACHE_H_
++#define UI_OZONE_PLATFORM_X11_X11_READBACK_PRESENT_CACHE_H_
++
++#include "base/memory/scoped_refptr.h"
++#include "base/task/single_thread_task_runner.h"
++#include "ui/gfx/native_ui_types.h"
++#include "ui/gfx/x/xproto.h"
++
++namespace ui {
++
++struct X11ReadbackPresentTarget {
++  x11::Window window = x11::Window::None;
++  x11::GraphicsContext gc{};
++  x11::VisualId visual{};
++  scoped_refptr<base::SingleThreadTaskRunner> ui_runner;
++};
++
++// UI-thread owned GC/visual for EGL-readback present. The GPU thread must not
++// Sync() on an unpumped xcb connection (in-process GPU deadlock / freeze).
++class X11ReadbackPresentCache {
++ public:
++  static void Register(gfx::AcceleratedWidget widget,
++                       const X11ReadbackPresentTarget& target);
++  static void Unregister(gfx::AcceleratedWidget widget);
++  static bool Lookup(gfx::AcceleratedWidget widget,
++                     X11ReadbackPresentTarget* out);
++  static bool Contains(gfx::AcceleratedWidget widget);
++};
++
++}  // namespace ui
++
++#endif  // UI_OZONE_PLATFORM_X11_X11_READBACK_PRESENT_CACHE_H_
+diff --git a/ui/ozone/platform/x11/x11_readback_present_cache.cc b/ui/ozone/platform/x11/x11_readback_present_cache.cc
+new file mode 100644
+--- /dev/null
++++ b/ui/ozone/platform/x11/x11_readback_present_cache.cc
+@@ -0,0 +1,58 @@
++// Copyright 2026 Nya Browser
++// Use of this source code is governed by a BSD-style license.
++
++#include "ui/ozone/platform/x11/x11_readback_present_cache.h"
++
++#include <map>
++
++#include "base/no_destructor.h"
++#include "base/synchronization/lock.h"
++#include "base/task/single_thread_task_runner.h"
++
++namespace ui {
++namespace {
++
++struct Map {
++  base::Lock lock;
++  std::map<gfx::AcceleratedWidget, X11ReadbackPresentTarget> targets;
++};
++
++Map& GetMap() {
++  static base::NoDestructor<Map> map;
++  return *map;
++}
++
++}  // namespace
++
++void X11ReadbackPresentCache::Register(gfx::AcceleratedWidget widget,
++                                       const X11ReadbackPresentTarget& target) {
++  auto& map = GetMap();
++  base::AutoLock lock(map.lock);
++  map.targets[widget] = target;
++}
++
++void X11ReadbackPresentCache::Unregister(gfx::AcceleratedWidget widget) {
++  auto& map = GetMap();
++  base::AutoLock lock(map.lock);
++  map.targets.erase(widget);
++}
++
++bool X11ReadbackPresentCache::Lookup(gfx::AcceleratedWidget widget,
++                                     X11ReadbackPresentTarget* out) {
++  auto& map = GetMap();
++  base::AutoLock lock(map.lock);
++  auto it = map.targets.find(widget);
++  if (it == map.targets.end()) {
++    return false;
++  }
++  *out = it->second;
++  return true;
++}
++
++bool X11ReadbackPresentCache::Contains(gfx::AcceleratedWidget widget) {
++  auto& map = GetMap();
++  base::AutoLock lock(map.lock);
++  return map.targets.contains(widget);
++}
++
++}  // namespace ui
+diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.h b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.h
+--- a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.h
++++ b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.h
+@@ -5,9 +5,14 @@
+ #ifndef UI_OZONE_PLATFORM_X11_GL_SURFACE_EGL_READBACK_X11_H_
+ #define UI_OZONE_PLATFORM_X11_GL_SURFACE_EGL_READBACK_X11_H_
+ 
+-#include "base/memory/raw_ptr.h"
++#include "base/memory/scoped_refptr.h"
++#include "ui/gfx/native_ui_types.h"
+ #include "ui/gfx/x/xproto.h"
+ #include "ui/ozone/common/gl_surface_egl_readback.h"
++
++namespace base {
++class SingleThreadTaskRunner;
++}
+ 
+ namespace ui {
+ 
+@@ -30,8 +35,9 @@
+   // gl::GLSurfaceEglReadback:
+   bool HandlePixels(uint8_t* pixels) override;
+ 
++  const gfx::AcceleratedWidget widget_;
+   const x11::Window window_;
+-  const raw_ptr<x11::Connection> connection_;
++  scoped_refptr<base::SingleThreadTaskRunner> ui_runner_;
+   x11::GraphicsContext window_graphics_context_{};
+   x11::VisualId visual_{};
+ };
+diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
+--- a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
++++ b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
+@@ -4,13 +4,22 @@
+ 
+ #include "ui/ozone/platform/x11/gl_surface_egl_readback_x11.h"
+ 
++#include <algorithm>
++#include <memory>
++#include <utility>
++#include <vector>
++
+ #include "base/check.h"
++#include "base/functional/bind.h"
+ #include "base/logging.h"
++#include "base/task/single_thread_task_runner.h"
+ #include "third_party/skia/include/core/SkImageInfo.h"
+ #include "third_party/skia/include/core/SkPixmap.h"
+ #include "ui/base/x/x11_util.h"
++#include "ui/gfx/geometry/size.h"
+ #include "ui/gfx/x/connection.h"
+ #include "ui/gfx/x/xproto.h"
++#include "ui/ozone/platform/x11/x11_readback_present_cache.h"
+ 
+ namespace ui {
+ 
+@@ -18,58 +27,61 @@
+ 
+ constexpr x11::GraphicsContext kNoGC = x11::GraphicsContext{};
+ 
++void PresentOnUiThread(gfx::AcceleratedWidget widget,
++                       x11::Window window,
++                       x11::GraphicsContext gc,
++                       x11::VisualId visual,
++                       gfx::Size size,
++                       std::unique_ptr<std::vector<uint8_t>> buffer) {
++  if (!X11ReadbackPresentCache::Contains(widget)) {
++    return;
++  }
++  auto* conn = x11::Connection::ForWidget(static_cast<uint32_t>(widget));
++  if (!conn) {
++    return;
++  }
++  SkImageInfo image_info =
++      SkImageInfo::Make(size.width(), size.height(), kBGRA_8888_SkColorType,
++                        kPremul_SkAlphaType);
++  SkPixmap pixmap(image_info, buffer->data(), image_info.minRowBytes());
++  DrawPixmap(conn, visual, window, gc, pixmap, 0, 0, 0, 0, size.width(),
++             size.height());
+ }
++
++}  // namespace
+ 
+ GLSurfaceEglReadbackX11::GLSurfaceEglReadbackX11(gl::GLDisplayEGL* display,
+                                                  gfx::AcceleratedWidget window)
+     : GLSurfaceEglReadback(display),
++      widget_(window),
+       window_(static_cast<x11::Window>(
+-          x11::Connection::WidgetXid(static_cast<uint32_t>(window)))),
+-      connection_([&]() -> x11::Connection* {
+-        auto* conn =
+-            x11::Connection::ForWidget(static_cast<uint32_t>(window));
+-        CHECK(conn) << "No X connection for widget "
+-                    << static_cast<uint32_t>(window);
+-        return conn;
+-      }()) {}
++          x11::Connection::WidgetXid(static_cast<uint32_t>(window)))) {}
+ 
+ bool GLSurfaceEglReadbackX11::Initialize(gl::GLSurfaceFormat format) {
+   if (!GLSurfaceEglReadback::Initialize(format))
+     return false;
+ 
+-  // We don't need to reinitialize |window_graphics_context_|.
+   if (window_graphics_context_ != kNoGC)
+     return true;
+ 
+-  window_graphics_context_ = connection_->GenerateId<x11::GraphicsContext>();
+-  auto gc_future = connection_->CreateGC({window_graphics_context_, window_});
+-
+-  if (auto attributes = connection_->GetWindowAttributes({window_}).Sync()) {
+-    visual_ = attributes->visual;
+-  } else {
+-    DLOG(ERROR) << "Failed to get attributes for window "
+-                << static_cast<uint32_t>(window_);
++  X11ReadbackPresentTarget target;
++  if (!X11ReadbackPresentCache::Lookup(widget_, &target) ||
++      target.gc == kNoGC || !target.ui_runner) {
++    DLOG(ERROR) << "No UI-thread readback present target for widget "
++                << static_cast<uint32_t>(widget_);
+     Destroy();
+     return false;
+   }
+ 
+-  if (gc_future.Sync().error) {
+-    DLOG(ERROR) << "XCreateGC failed";
+-    Destroy();
+-    return false;
+-  }
+-
++  window_graphics_context_ = target.gc;
++  visual_ = target.visual;
++  ui_runner_ = target.ui_runner;
+   return true;
+ }
+ 
+ void GLSurfaceEglReadbackX11::Destroy() {
+-  if (window_graphics_context_ != kNoGC) {
+-    connection_->FreeGC({window_graphics_context_});
+-    window_graphics_context_ = kNoGC;
+-  }
+-
+-  connection_->Sync();
+-
++  window_graphics_context_ = kNoGC;
++  ui_runner_.reset();
+   GLSurfaceEglReadback::Destroy();
+ }
+ 
+@@ -78,16 +90,27 @@
+ }
+ 
+ bool GLSurfaceEglReadbackX11::HandlePixels(uint8_t* pixels) {
++  if (!ui_runner_ || window_graphics_context_ == kNoGC) {
++    return false;
++  }
++
++  const gfx::Size size = GetSize();
++  if (size.IsEmpty()) {
++    return false;
++  }
++
+   SkImageInfo image_info =
+-      SkImageInfo::Make(GetSize().width(), GetSize().height(),
+-                        kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+-  SkPixmap pixmap(image_info, pixels, image_info.minRowBytes());
++      SkImageInfo::Make(size.width(), size.height(), kBGRA_8888_SkColorType,
++                        kPremul_SkAlphaType);
++  auto buffer = std::make_unique<std::vector<uint8_t>>(
++      static_cast<size_t>(image_info.computeMinByteSize()));
++  std::copy(pixels, pixels + buffer->size(), buffer->begin());
+ 
+-  // Copy pixels into pixmap and then update the XWindow.
+-  const gfx::Size size = GetSize();
+-  DrawPixmap(connection_, visual_, window_, window_graphics_context_, pixmap, 0,
+-             0, 0, 0, size.width(), size.height());
+-
++  ui_runner_->PostTask(
++      FROM_HERE,
++      base::BindOnce(&PresentOnUiThread, widget_, window_,
++                     window_graphics_context_, visual_, size,
++                     std::move(buffer)));
+   return true;
+ }
+ 
+diff --git a/ui/ozone/platform/x11/x11_window.cc b/ui/ozone/platform/x11/x11_window.cc
+--- a/ui/ozone/platform/x11/x11_window.cc
++++ b/ui/ozone/platform/x11/x11_window.cc
+@@ -7,6 +7,8 @@
+ #include <algorithm>
+ 
+ #include "base/compiler_specific.h"
++#include "base/command_line.h"
++#include "base/logging.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/no_destructor.h"
+ #include "base/notimplemented.h"
+@@ -49,6 +51,7 @@
+ #include "ui/gfx/x/x11_path.h"
+ #include "ui/gfx/x/xproto.h"
+ #include "ui/ozone/platform/x11/hit_test_x11.h"
++#include "ui/ozone/platform/x11/x11_readback_present_cache.h"
+ #include "ui/ozone/platform/x11/x11_window_manager.h"
+ #include "ui/platform_window/common/platform_window_defaults.h"
+ #include "ui/platform_window/extensions/workspace_extension_delegate.h"
+@@ -284,6 +287,21 @@
+   // platform window delegate.
+   X11WindowManager::GetInstance()->AddWindow(this);
+ 
++  // Create the X GC on this (UI) thread so the GPU thread never Sync()s on
++  // an unpumped xcb connection.
++  {
++    X11ReadbackPresentTarget target;
++    target.window = xwindow_;
++    target.visual = visual_id_;
++    target.gc = connection_->GenerateId<x11::GraphicsContext>();
++    target.ui_runner = base::SingleThreadTaskRunner::GetCurrentDefault();
++    if (connection_->CreateGC({target.gc, xwindow_}).Sync().error) {
++      DLOG(ERROR) << "XCreateGC failed for readback present cache";
++    } else {
++      X11ReadbackPresentCache::Register(GetWidget(), target);
++    }
++  }
++
+   connection_->AddEventObserver(this);
+   DCHECK(X11EventSource::HasInstance());
+   X11EventSource::GetInstance()->AddPlatformEventDispatcher(this);
+@@ -656,6 +674,15 @@
+     return;
+   }
+   X11WindowManager::GetInstance()->GrabEvents(this);
++
++  // Aura-only capture for override-redirect popups under Nya: a leftover
++  // XGrabPointer on a window that failed to present freezes the whole
++  // session, and VNC reconnect cannot ungrab.
++  if (override_redirect_ &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "nya-x11-multi-display")) {
++    return;
++  }
+ 
+   // If the pointer is already in |xwindow_|, we will not get a crossing event
+   // with a mode of NotifyGrab, so we must record the grab state manually.
+@@ -2021,6 +2048,16 @@
+     auto& security_surfaces = GetSecuritySurfaces();
+     security_surfaces.erase(std::ranges::find(security_surfaces, xwindow_),
+                             security_surfaces.end());
++  }
++
++  if (auto target_widget = GetWidget();
++      X11ReadbackPresentCache::Contains(target_widget)) {
++    X11ReadbackPresentTarget target;
++    if (X11ReadbackPresentCache::Lookup(target_widget, &target) &&
++        target.gc != x11::GraphicsContext{}) {
++      connection_->FreeGC({target.gc});
++    }
++    X11ReadbackPresentCache::Unregister(target_widget);
+   }
+ 
+   geometry_cache_.reset();
+@@ -2498,8 +2535,12 @@
+     should_maximize_after_map_ = false;
+   }
+   if (should_grab_pointer_after_map_) {
+-    has_pointer_grab_ |=
+-        (ui::GrabPointer(xwindow_, true, nullptr) == x11::GrabStatus::Success);
++    if (!(override_redirect_ &&
++          base::CommandLine::ForCurrentProcess()->HasSwitch(
++              "nya-x11-multi-display"))) {
++      has_pointer_grab_ |=
++          (ui::GrabPointer(xwindow_, true, nullptr) == x11::GrabStatus::Success);
++    }
+     should_grab_pointer_after_map_ = false;
+   }
+ }
+diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
+--- a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
++++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
+@@ -10,6 +10,7 @@
+ #include <utility>
+ 
+ #include "base/functional/bind.h"
++#include "base/command_line.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/notimplemented.h"
+ #include "base/notreached.h"
+@@ -304,10 +305,22 @@
+                         : nullptr;
+ 
+   // Disable compositing on tooltips as a workaround for
+-  // https://crbug.com/442111.
+-  CreateCompositor(params.force_software_compositing ||
+-                       params.type == Widget::InitParams::TYPE_TOOLTIP,
+-                   begin_frame_source != nullptr);
++  // https://crbug.com/442111. Extra AcceleratedWidgets on Nya/Xvfb must use
++  // the software presenter so they do not create a second EGL surface on the
++  // in-process GPU thread.
++  bool force_software = params.force_software_compositing ||
++                        params.type == Widget::InitParams::TYPE_TOOLTIP;
++#if BUILDFLAG(IS_LINUX)
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "nya-x11-multi-display") &&
++      (params.type == Widget::InitParams::TYPE_MENU ||
++       params.type == Widget::InitParams::TYPE_BUBBLE ||
++       params.type == Widget::InitParams::TYPE_POPUP ||
++       params.type == Widget::InitParams::TYPE_TOOLTIP)) {
++    force_software = true;
++  }
++#endif
++  CreateCompositor(force_software, begin_frame_source != nullptr);
+ 
+   if (begin_frame_source) {
+     begin_frame_adapter_ = std::make_unique<ui::ExternalBeginFrameAdapter>(
+diff --git a/ui/views/controls/menu/menu_host.cc b/ui/views/controls/menu/menu_host.cc
+--- a/ui/views/controls/menu/menu_host.cc
++++ b/ui/views/controls/menu/menu_host.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "base/auto_reset.h"
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/metrics/histogram_macros.h"
+@@ -169,6 +170,11 @@
+   // the UI thread blocking issue during command buffer creation. We can
+   // revert this change once http://crbug.com/125248 is fixed.
+   params.force_software_compositing = true;
++#elif BUILDFLAG(IS_LINUX)
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "nya-x11-multi-display")) {
++    params.force_software_compositing = true;
++  }
+ #endif
+   Init(std::move(params));
+   std::optional<std::string> show_menu_host_duration_histogram =
