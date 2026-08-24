@@ -267,8 +267,8 @@ diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc b/ui/ozone/pla
 +  X11ReadbackPresentTarget target;
 +  if (!X11ReadbackPresentCache::Lookup(widget_, &target) ||
 +      target.gc == kNoGC || !target.ui_runner) {
-+    DLOG(ERROR) << "No UI-thread readback present target for widget "
-+                << static_cast<uint32_t>(widget_);
++    LOG(ERROR) << "No UI-thread readback present target for widget "
++               << static_cast<uint32_t>(widget_);
      Destroy();
      return false;
    }
@@ -354,7 +354,7 @@ diff --git a/ui/ozone/platform/x11/x11_window.cc b/ui/ozone/platform/x11/x11_win
  #include "ui/ozone/platform/x11/x11_window_manager.h"
  #include "ui/platform_window/common/platform_window_defaults.h"
  #include "ui/platform_window/extensions/workspace_extension_delegate.h"
-@@ -284,6 +287,21 @@
+@@ -284,6 +287,27 @@
    // platform window delegate.
    X11WindowManager::GetInstance()->AddWindow(this);
  
@@ -366,8 +366,14 @@ diff --git a/ui/ozone/platform/x11/x11_window.cc b/ui/ozone/platform/x11/x11_win
 +    target.visual = visual_id_;
 +    target.gc = connection_->GenerateId<x11::GraphicsContext>();
 +    target.ui_runner = base::SingleThreadTaskRunner::GetCurrentDefault();
++    if (auto attributes = connection_->GetWindowAttributes({xwindow_}).Sync()) {
++      target.visual = attributes->visual;
++      visual_id_ = attributes->visual;
++    }
 +    if (connection_->CreateGC({target.gc, xwindow_}).Sync().error) {
-+      DLOG(ERROR) << "XCreateGC failed for readback present cache";
++      LOG(ERROR) << "XCreateGC failed for readback present cache";
++    } else if (target.visual == x11::VisualId{}) {
++      LOG(ERROR) << "No X visual for readback present cache";
 +    } else {
 +      X11ReadbackPresentCache::Register(GetWidget(), target);
 +    }
@@ -376,7 +382,7 @@ diff --git a/ui/ozone/platform/x11/x11_window.cc b/ui/ozone/platform/x11/x11_win
    connection_->AddEventObserver(this);
    DCHECK(X11EventSource::HasInstance());
    X11EventSource::GetInstance()->AddPlatformEventDispatcher(this);
-@@ -656,6 +674,15 @@
+@@ -656,6 +680,15 @@
      return;
    }
    X11WindowManager::GetInstance()->GrabEvents(this);
@@ -392,6 +398,14 @@ diff --git a/ui/ozone/platform/x11/x11_window.cc b/ui/ozone/platform/x11/x11_win
  
    // If the pointer is already in |xwindow_|, we will not get a crossing event
    // with a mode of NotifyGrab, so we must record the grab state manually.
+@@ -2012,6 +2038,7 @@
+     visual_manager.ChooseVisualForWindow(enable_transparent_visuals, &visual_id,
+                                          &depth, &colormap, &visual_has_alpha_);
+   }
++  visual_id_ = visual_id;
+   // When drawing translucent windows, ensure a translucent background pixel
+   // value so that a colored border won't be shown in the time after the window
+   // has been resized smaller but before Chrome has finished drawing a frame.
 @@ -2021,6 +2048,16 @@
      auto& security_surfaces = GetSecuritySurfaces();
      security_surfaces.erase(std::ranges::find(security_surfaces, xwindow_),
