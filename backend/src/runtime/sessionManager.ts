@@ -1548,7 +1548,10 @@ function spawnX11vnc(runtime, home, opts = {}) {
     '-o',
     logFile,
   ];
-  if (envOn('NYA_VNC_NOXDAMAGE')) {
+  // Xvfb does not emit XDamage for EGL-readback PutImage, so x11vnc keeps
+  // serving the last frame until it gives up (~90s). Bookmark bubbles make
+  // that look like a freeze. Poll instead on the GPU present path.
+  if (gpu || envOn('NYA_VNC_NOXDAMAGE')) {
     args.splice(args.indexOf('-repeat'), 0, '-noxdamage');
   }
   return runAsSession(runtime, 'x11vnc', args, { env: { DISPLAY: `:${display}` } });
