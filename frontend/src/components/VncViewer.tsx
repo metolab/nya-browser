@@ -1,8 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import RFB from '@novnc/novnc';
 import { api } from '../api/client';
 import { snapEven } from '../desk/display';
+import {
+  advanceTrapX,
+  canTakeImeFocus,
+  clampTrapPos,
+  commitTextFromEvents,
+  isFallbackInsert,
+  keyboardEventInit,
+  sendUnicodeKeysyms,
+  shouldForwardKey,
+  shouldPreventDefaultKey,
+  shouldSendCommit,
+  TRAP_H,
+  TRAP_MIN_W,
+} from '../lib/imeInput';
 import {
   attachVncSession,
   clearHold,
@@ -15,6 +29,18 @@ import {
   vncLog,
   withVncCanvasHints,
 } from '../lib/vncSession';
+
+let metricsCtx: CanvasRenderingContext2D | null = null;
+
+function measureTrapText(text: string) {
+  if (!text) return 0;
+  if (!metricsCtx) {
+    metricsCtx = document.createElement('canvas').getContext('2d');
+  }
+  if (!metricsCtx) return text.length * 8;
+  metricsCtx.font = '16px system-ui, sans-serif';
+  return metricsCtx.measureText(text).width;
+}
 
 hushNovncTlsWarning();
 
@@ -63,8 +89,17 @@ export default function VncViewer({
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const trapRef = useRef<HTMLTextAreaElement>(null);
   const rfbRef = useRef<RFB | null>(null);
   const sessionRef = useRef<VncSession | null>(null);
+  const imeRef = useRef({
+    composing: false,
+    lastCommitAt: 0,
+    lastSent: null as { text: string; at: number } | null,
+    x: 8,
+    y: 8,
+  });
+  const [imeUi, setImeUi] = useState({ composing: false, x: 8, y: 8, width: TRAP_MIN_W });
   const applied = useRef({ w: 0, h: 0 });
   const genRef = useRef(0);
   const remoteRef = useRef({ w: remoteWidth, h: remoteHeight });
@@ -88,6 +123,39 @@ export default function VncViewer({
 
   const autoscale = useCallback(() => {
     sessionRef.current?.autoscale();
+  }, []);
+
+  const focusTrap = useCallback((force = false) => {
+    if (viewOnlyRef.current) return;
+    const trap = trapRef.current;
+    const wrap = wrapRef.current;
+    if (!trap || !wrap) return;
+    if (!force && !canTakeImeFocus(wrap, trap)) return;
+    try {
+      trap.focus({ preventScroll: true });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const sendCommit = useCallback((text: string) => {
+    const rfb = rfbRef.current;
+    const wrap = wrapRef.current;
+    const ime = imeRef.current;
+    if (!rfb || viewOnlyRef.current) {
+      setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
+      return;
+    }
+    const now = performance.now();
+    if (!shouldSendCommit(text, now, ime.lastSent)) {
+      setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
+      return;
+    }
+    sendUnicodeKeysyms((keysym, code, down) => rfb.sendKey(keysym, code, down), text);
+    ime.lastSent = { text, at: now };
+    ime.lastCommitAt = now;
+    ime.x = advanceTrapX(ime.x, measureTrapText(text), wrap?.clientWidth || 0);
+    setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
   }, []);
 
   const pushSize = useCallback((force = false) => {
@@ -249,7 +317,7 @@ export default function VncViewer({
         rfb.scaleViewport = resizeRemoteRef.current;
         rfb.clipViewport = false;
         rfb.resizeSession = false;
-        rfb.focusOnClick = !viewOnlyRef.current;
+        rfb.focusOnClick = false;
         rfb.viewOnly = viewOnlyRef.current;
         rfb.qualityLevel = 8;
         rfb.compressionLevel = 0;
@@ -360,27 +428,119 @@ export default function VncViewer({
   }, [sizeTick, schedulePush]);
 
   useEffect(() => {
+    const trap = trapRef.current;
+    if (!trap) return undefined;
+
+    const canvas = () => {
+      const host = hostRef.current;
+      return host ? mountCanvas(host) : null;
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (viewOnlyRef.current) return;
+      const ime = imeRef.current;
+      const now = performance.now();
+      if (shouldPreventDefaultKey(e, ime.composing)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      if (!shouldForwardKey(e, ime.composing, now, ime.lastCommitAt)) return;
+      const target = canvas();
+      if (!target) return;
+      target.dispatchEvent(new KeyboardEvent(e.type, keyboardEventInit(e)));
+    };
+
+    const grow = () => {
+      const w = Math.max(TRAP_MIN_W, measureTrapText(trap.value) + 8);
+      setImeUi((ui) => ({ ...ui, composing: true, width: w }));
+    };
+
+    const onCompositionStart = () => {
+      imeRef.current.composing = true;
+      setImeUi((ui) => ({ ...ui, composing: true }));
+    };
+
+    const onCompositionUpdate = () => {
+      grow();
+    };
+
+    const onCompositionEnd = (e: CompositionEvent) => {
+      imeRef.current.composing = false;
+      const text = commitTextFromEvents(e.data, trap.value);
+      trap.value = '';
+      if (text) sendCommit(text);
+      else setImeUi({ composing: false, x: imeRef.current.x, y: imeRef.current.y, width: TRAP_MIN_W });
+    };
+
+    const onInput = (e: Event) => {
+      const ime = imeRef.current;
+      if (ime.composing) {
+        grow();
+        return;
+      }
+      const inputType = e instanceof InputEvent ? e.inputType : '';
+      if (!isFallbackInsert(inputType, false, trap.value)) return;
+      const text = trap.value;
+      trap.value = '';
+      sendCommit(text);
+    };
+
+    const onClipboard = (e: Event) => {
+      if (viewOnlyRef.current) return;
+      e.preventDefault();
+    };
+
+    trap.addEventListener('keydown', onKey);
+    trap.addEventListener('keyup', onKey);
+    trap.addEventListener('compositionstart', onCompositionStart);
+    trap.addEventListener('compositionupdate', onCompositionUpdate);
+    trap.addEventListener('compositionend', onCompositionEnd);
+    trap.addEventListener('input', onInput);
+    trap.addEventListener('copy', onClipboard);
+    trap.addEventListener('cut', onClipboard);
+    trap.addEventListener('paste', onClipboard);
+    return () => {
+      trap.removeEventListener('keydown', onKey);
+      trap.removeEventListener('keyup', onKey);
+      trap.removeEventListener('compositionstart', onCompositionStart);
+      trap.removeEventListener('compositionupdate', onCompositionUpdate);
+      trap.removeEventListener('compositionend', onCompositionEnd);
+      trap.removeEventListener('input', onInput);
+      trap.removeEventListener('copy', onClipboard);
+      trap.removeEventListener('cut', onClipboard);
+      trap.removeEventListener('paste', onClipboard);
+    };
+  }, [sendCommit]);
+
+  useEffect(() => {
     const rfb = rfbRef.current;
     if (!rfb) return;
     rfb.viewOnly = viewOnly;
-    rfb.focusOnClick = !viewOnly;
-    if (!viewOnly) {
-      try {
-        rfb.focus();
-      } catch {
-        /* ignore */
-      }
-    }
-  }, [viewOnly]);
+    rfb.focusOnClick = false;
+    if (!viewOnly) focusTrap(false);
+  }, [viewOnly, focusTrap]);
 
   useEffect(() => {
-    if (!focused) return;
-    try {
-      rfbRef.current?.focus();
-    } catch {
-      /* ignore */
-    }
-  }, [focused]);
+    if (!focused || viewOnly) return;
+    focusTrap(false);
+  }, [focused, viewOnly, focusTrap]);
+
+  const placeTrap = (e: PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || viewOnlyRef.current) return;
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const rect = wrap.getBoundingClientRect();
+    const next = clampTrapPos(
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+      wrap.clientWidth,
+      wrap.clientHeight,
+    );
+    imeRef.current.x = next.x;
+    imeRef.current.y = next.y;
+    setImeUi((ui) => ({ ...ui, x: next.x, y: next.y, width: ui.composing ? ui.width : TRAP_MIN_W }));
+    focusTrap(true);
+  };
 
   return (
     <div
@@ -402,8 +562,27 @@ export default function VncViewer({
           })
           .catch(() => undefined);
       }}
+      onPointerDown={placeTrap}
+      onPointerUp={(e) => {
+        if (e.button !== 0 || viewOnlyRef.current) return;
+        focusTrap(true);
+      }}
     >
       <div ref={hostRef} className="vnc-host" />
+      <textarea
+        ref={trapRef}
+        className={`vnc-ime-trap ${imeUi.composing ? 'is-composing' : ''}`}
+        rows={1}
+        wrap="off"
+        tabIndex={-1}
+        aria-hidden="true"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        disabled={viewOnly}
+        style={{ left: imeUi.x, top: imeUi.y, width: imeUi.width, height: TRAP_H }}
+      />
       {error && (
         <div className="absolute bottom-3 left-3 z-10 flex items-center gap-2 rounded-lg border bg-popover px-3 py-2 text-sm">
           {error}
