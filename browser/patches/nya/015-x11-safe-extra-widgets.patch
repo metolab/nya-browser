@@ -1,8 +1,7 @@
 diff --git a/chrome/browser/ui/views/chrome_views_delegate_linux.cc b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
 --- a/chrome/browser/ui/views/chrome_views_delegate_linux.cc
 +++ b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
-@@ -110,8 +110,13 @@
-     params->child = true;
+@@ -118,8 +118,13 @@
      params->use_accelerated_widget_override = false;
    }
 -  return ::CreateNativeWidget(GetNativeWidgetTypeForInitParams(*params), params,

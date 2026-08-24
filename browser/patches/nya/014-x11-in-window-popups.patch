@@ -48,13 +48,22 @@ diff --git a/chrome/browser/ui/views/chrome_views_delegate_linux.cc b/chrome/bro
    // If this is a security surface, always use a toplevel window,
    // otherwise it's possible for things like menus to obscure the view.
    if (params.z_order &&
-@@ -81,6 +105,11 @@
+@@ -81,6 +105,21 @@
  views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
      views::Widget::InitParams* params,
      views::internal::NativeWidgetDelegate* delegate) {
 +  if (NyaHostPopupsInParent() && IsNyaInWindowPopupType(params->type) &&
 +      (params->parent || params->context)) {
-+    params->child = true;
++    // TYPE_BUBBLE/POPUP map to WINDOW_TYPE_POPUP, which
++    // DesktopScreenPositionClient already places in screen coordinates even
++    // as children. TYPE_MENU/TOOLTIP do not: forcing child=true parents them
++    // to the bookmark bubble and treats screen bounds as bubble-relative, so
++    // the folder combobox opens off-screen. Keep those top-level transients
++    // on the browser compositor (still NativeWidgetAura, no extra X window).
++    if (params->type != views::Widget::InitParams::TYPE_MENU &&
++        params->type != views::Widget::InitParams::TYPE_TOOLTIP) {
++      params->child = true;
++    }
 +    params->use_accelerated_widget_override = false;
 +  }
    return ::CreateNativeWidget(GetNativeWidgetTypeForInitParams(*params), params,
