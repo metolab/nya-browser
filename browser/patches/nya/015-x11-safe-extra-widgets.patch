@@ -1,39 +1,3 @@
-diff --git a/chrome/browser/ui/views/chrome_views_delegate_linux.cc b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
---- a/chrome/browser/ui/views/chrome_views_delegate_linux.cc
-+++ b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
-@@ -118,8 +118,13 @@
-     params->use_accelerated_widget_override = false;
-   }
--  return ::CreateNativeWidget(GetNativeWidgetTypeForInitParams(*params), params,
--                              delegate);
-+  const NativeWidgetType native_type =
-+      GetNativeWidgetTypeForInitParams(*params);
-+  if (NyaHostPopupsInParent() && IsNyaInWindowPopupType(params->type) &&
-+      native_type == NativeWidgetType::kDesktopNativeWidgetAura) {
-+    params->force_software_compositing = true;
-+  }
-+  return ::CreateNativeWidget(native_type, params, delegate);
- }
- 
- #if BUILDFLAG(IS_LINUX)
-diff --git a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
---- a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
-+++ b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
-@@ -140,6 +140,14 @@
-                                   ? Widget::InitParams::Activatable::kYes
-                                   : Widget::InitParams::Activatable::kNo;
-     init_params.z_order = root_z_order;
-+#if BUILDFLAG(IS_LINUX)
-+    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-+            "nya-x11-multi-display") &&
-+        (init_params.type == Widget::InitParams::TYPE_MENU ||
-+         init_params.type == Widget::InitParams::TYPE_POPUP)) {
-+      init_params.force_software_compositing = true;
-+    }
-+#endif
-     // Also provide the context, which Ozone (in particular - Wayland) will use
-     // to parent this newly created toplevel native widget to. Please refer to
-     // https://crrev.com/c/2831291 for more details.
 diff --git a/ui/ozone/platform/x11/BUILD.gn b/ui/ozone/platform/x11/BUILD.gn
 --- a/ui/ozone/platform/x11/BUILD.gn
 +++ b/ui/ozone/platform/x11/BUILD.gn
@@ -50,7 +14,7 @@ diff --git a/ui/ozone/platform/x11/x11_readback_present_cache.h b/ui/ozone/platf
 new file mode 100644
 --- /dev/null
 +++ b/ui/ozone/platform/x11/x11_readback_present_cache.h
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,40 @@
 +// Copyright 2026 Nya Browser
 +// Use of this source code is governed by a BSD-style license.
 +
@@ -81,6 +45,11 @@ new file mode 100644
 +  static bool Lookup(gfx::AcceleratedWidget widget,
 +                     X11ReadbackPresentTarget* out);
 +  static bool Contains(gfx::AcceleratedWidget widget);
++  // Last-resort freeze tripwire: at most one EGL-readback view per X display.
++  // Extra widgets must be NativeWidgetAura (014). A second pbuffer on
++  // in-process GPU stalls present; refuse before creating it.
++  static bool TryClaimEglView(gfx::AcceleratedWidget widget);
++  static void ReleaseEglView(gfx::AcceleratedWidget widget);
 +};
 +
 +}  // namespace ui
@@ -90,17 +59,19 @@ diff --git a/ui/ozone/platform/x11/x11_readback_present_cache.cc b/ui/ozone/plat
 new file mode 100644
 --- /dev/null
 +++ b/ui/ozone/platform/x11/x11_readback_present_cache.cc
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,87 @@
 +// Copyright 2026 Nya Browser
 +// Use of this source code is governed by a BSD-style license.
 +
 +#include "ui/ozone/platform/x11/x11_readback_present_cache.h"
 +
 +#include <map>
++#include <string>
 +
 +#include "base/no_destructor.h"
 +#include "base/synchronization/lock.h"
 +#include "base/task/single_thread_task_runner.h"
++#include "ui/gfx/x/connection.h"
 +
 +namespace ui {
 +namespace {
@@ -108,6 +79,7 @@ new file mode 100644
 +struct Map {
 +  base::Lock lock;
 +  std::map<gfx::AcceleratedWidget, X11ReadbackPresentTarget> targets;
++  std::map<std::string, gfx::AcceleratedWidget> egl_view_by_display;
 +};
 +
 +Map& GetMap() {
@@ -146,6 +118,32 @@ new file mode 100644
 +  auto& map = GetMap();
 +  base::AutoLock lock(map.lock);
 +  return map.targets.contains(widget);
++}
++
++bool X11ReadbackPresentCache::TryClaimEglView(gfx::AcceleratedWidget widget) {
++  const std::string display = x11::Connection::DisplayForIndex(
++      x11::Connection::WidgetDisplayIndex(static_cast<uint32_t>(widget)));
++  auto& map = GetMap();
++  base::AutoLock lock(map.lock);
++  auto it = map.egl_view_by_display.find(display);
++  if (it == map.egl_view_by_display.end() || it->second == widget) {
++    map.egl_view_by_display[display] = widget;
++    return true;
++  }
++  return false;
++}
++
++void X11ReadbackPresentCache::ReleaseEglView(gfx::AcceleratedWidget widget) {
++  auto& map = GetMap();
++  base::AutoLock lock(map.lock);
++  for (auto it = map.egl_view_by_display.begin();
++       it != map.egl_view_by_display.end();) {
++    if (it->second == widget) {
++      it = map.egl_view_by_display.erase(it);
++    } else {
++      ++it;
++    }
++  }
 +}
 +
 +}  // namespace ui
@@ -205,7 +203,7 @@ diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc b/ui/ozone/pla
  
  namespace ui {
  
-@@ -18,58 +27,61 @@
+@@ -18,58 +27,71 @@
  
  constexpr x11::GraphicsContext kNoGC = x11::GraphicsContext{};
  
@@ -248,8 +246,19 @@ diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc b/ui/ozone/pla
 +          x11::Connection::WidgetXid(static_cast<uint32_t>(window)))) {}
  
  bool GLSurfaceEglReadbackX11::Initialize(gl::GLSurfaceFormat format) {
-   if (!GLSurfaceEglReadback::Initialize(format))
-     return false;
++  if (window_graphics_context_ == kNoGC &&
++      !X11ReadbackPresentCache::TryClaimEglView(widget_)) {
++    LOG(ERROR) << "Refusing second EGL readback view for widget "
++               << static_cast<uint32_t>(widget_);
++    return false;
++  }
++
+-  if (!GLSurfaceEglReadback::Initialize(format))
+-    return false;
++  if (!GLSurfaceEglReadback::Initialize(format)) {
++    X11ReadbackPresentCache::ReleaseEglView(widget_);
++    return false;
++  }
  
 -  // We don't need to reinitialize |window_graphics_context_|.
    if (window_graphics_context_ != kNoGC)
@@ -292,6 +301,7 @@ diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc b/ui/ozone/pla
 -
 -  connection_->Sync();
 -
++  X11ReadbackPresentCache::ReleaseEglView(widget_);
 +  window_graphics_context_ = kNoGC;
 +  ui_runner_.reset();
    GLSurfaceEglReadback::Destroy();
@@ -437,64 +447,4 @@ diff --git a/ui/ozone/platform/x11/x11_window.cc b/ui/ozone/platform/x11/x11_win
      should_grab_pointer_after_map_ = false;
    }
  }
-diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
---- a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
-+++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
-@@ -10,6 +10,7 @@
- #include <utility>
- 
- #include "base/functional/bind.h"
-+#include "base/command_line.h"
- #include "base/memory/raw_ptr.h"
- #include "base/notimplemented.h"
- #include "base/notreached.h"
-@@ -304,10 +305,22 @@
-                         : nullptr;
- 
-   // Disable compositing on tooltips as a workaround for
--  // https://crbug.com/442111.
--  CreateCompositor(params.force_software_compositing ||
--                       params.type == Widget::InitParams::TYPE_TOOLTIP,
--                   begin_frame_source != nullptr);
-+  // https://crbug.com/442111. Extra AcceleratedWidgets on Nya/Xvfb must use
-+  // the software presenter so they do not create a second EGL surface on the
-+  // in-process GPU thread.
-+  bool force_software = params.force_software_compositing ||
-+                        params.type == Widget::InitParams::TYPE_TOOLTIP;
-+#if BUILDFLAG(IS_LINUX)
-+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-+          "nya-x11-multi-display") &&
-+      (params.type == Widget::InitParams::TYPE_MENU ||
-+       params.type == Widget::InitParams::TYPE_BUBBLE ||
-+       params.type == Widget::InitParams::TYPE_POPUP ||
-+       params.type == Widget::InitParams::TYPE_TOOLTIP)) {
-+    force_software = true;
-+  }
-+#endif
-+  CreateCompositor(force_software, begin_frame_source != nullptr);
- 
-   if (begin_frame_source) {
-     begin_frame_adapter_ = std::make_unique<ui::ExternalBeginFrameAdapter>(
-diff --git a/ui/views/controls/menu/menu_host.cc b/ui/views/controls/menu/menu_host.cc
---- a/ui/views/controls/menu/menu_host.cc
-+++ b/ui/views/controls/menu/menu_host.cc
-@@ -8,6 +8,7 @@
- 
- #include "base/auto_reset.h"
- #include "base/check_op.h"
-+#include "base/command_line.h"
- #include "base/functional/bind.h"
- #include "base/memory/raw_ptr.h"
- #include "base/metrics/histogram_macros.h"
-@@ -169,6 +170,11 @@
-   // the UI thread blocking issue during command buffer creation. We can
-   // revert this change once http://crbug.com/125248 is fixed.
-   params.force_software_compositing = true;
-+#elif BUILDFLAG(IS_LINUX)
-+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-+          "nya-x11-multi-display")) {
-+    params.force_software_compositing = true;
-+  }
- #endif
-   Init(std::move(params));
-   std::optional<std::string> show_menu_host_duration_histogram =
+
