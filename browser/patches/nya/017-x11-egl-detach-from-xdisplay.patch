@@ -1,0 +1,228 @@
+diff --git a/ui/base/x/x11_gl_egl_utility.cc b/ui/base/x/x11_gl_egl_utility.cc
+--- a/ui/base/x/x11_gl_egl_utility.cc
++++ b/ui/base/x/x11_gl_egl_utility.cc
+@@ -6,6 +6,8 @@
+ 
+ #include <algorithm>
+ 
++#include "base/command_line.h"
+ #include "ui/base/x/x11_util.h"
+ #include "ui/gfx/x/visual_manager.h"
+ #include "ui/gl/gl_surface_egl.h"
+@@ -37,24 +39,57 @@
+ #define EGL_EXT_platform_x11 1
+ #define EGL_PLATFORM_X11_EXT 0x31D5
+ #endif /* EGL_EXT_platform_x11 */
+ 
+ namespace ui {
+ 
+ void GetPlatformExtraDisplayAttribs(EGLenum platform_type,
+                                     std::vector<EGLAttrib>* attributes) {
+   // ANGLE_NULL and SwiftShader backends don't use the visual,
+   // and may run without X11 where we can't get it anyway.
+-  if ((platform_type != EGL_PLATFORM_ANGLE_TYPE_NULL_ANGLE) &&
+-      !std::ranges::contains(
+-          *attributes, EGL_PLATFORM_ANGLE_DEVICE_TYPE_SWIFTSHADER_ANGLE)) {
+-    x11::VisualId visual_id;
+-    x11::Connection::Get()->GetOrCreateVisualManager().ChooseVisualForWindow(
+-        true, &visual_id, nullptr, nullptr, nullptr);
+-    attributes->push_back(EGL_X11_VISUAL_ID_ANGLE);
+-    attributes->push_back(static_cast<EGLAttrib>(visual_id));
+-    attributes->push_back(EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE);
+-    attributes->push_back(EGL_PLATFORM_X11_EXT);
++  if ((platform_type == EGL_PLATFORM_ANGLE_TYPE_NULL_ANGLE) ||
++      std::ranges::contains(
++          *attributes, EGL_PLATFORM_ANGLE_DEVICE_TYPE_SWIFTSHADER_ANGLE)) {
++    return;
+   }
++
++  // Xvfb present is EGL pbuffer + PutImage. Binding ANGLE/NVIDIA to
++  // EGL_PLATFORM_X11 makes the GPU thread talk Xlib on the UI xcb
++  // connection. ChatGPT/WebGL then deadlocks present: viz keeps
++  // running (CDP screenshots work), the X pixmap freezes, VNC reconnect
++  // cannot recover.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "nya-x11-multi-display")) {
++    // No EGL_PLATFORM_X11 (binds NVIDIA to the UI xcb connection) and no
++    // EGL_PLATFORM_DEVICE (no pbuffer configs on Xvfb). ANGLE uses the
++    // default native platform with EGL_DEFAULT_DISPLAY.
++    return;
++  }
++
++  x11::VisualId visual_id;
++  x11::Connection::Get()->GetOrCreateVisualManager().ChooseVisualForWindow(
++      true, &visual_id, nullptr, nullptr, nullptr);
++  attributes->push_back(EGL_X11_VISUAL_ID_ANGLE);
++  attributes->push_back(static_cast<EGLAttrib>(visual_id));
++  attributes->push_back(EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE);
++  attributes->push_back(EGL_PLATFORM_X11_EXT);
+ }
+ 
+ void ChoosePlatformCustomAlphaAndBufferSize(EGLint* alpha_size,
+                                             EGLint* buffer_size) {
+diff --git a/ui/ozone/platform/x11/x11_surface_factory.cc b/ui/ozone/platform/x11/x11_surface_factory.cc
+--- a/ui/ozone/platform/x11/x11_surface_factory.cc
++++ b/ui/ozone/platform/x11/x11_surface_factory.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <memory>
+ 
++#include "base/command_line.h"
+ #include "base/task/current_thread.h"
+ #include "components/viz/common/resources/shared_image_format_utils.h"
+ #include "gpu/vulkan/buildflags.h"
+@@ -28,6 +29,10 @@
+ #include "ui/ozone/platform/x11/vulkan_implementation_x11.h"
+ #endif
+ 
+ namespace ui {
+ namespace {
+ 
+@@ -109,9 +110,18 @@
+ 
+  protected:
+   // GLOzoneEGL:
+   gl::EGLDisplayPlatform GetNativeDisplay() override {
+-    return gl::EGLDisplayPlatform(reinterpret_cast<EGLNativeDisplayType>(
+-        x11::Connection::Get()->GetXlibDisplay().display()));
++    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++            "nya-x11-multi-display")) {
++      return gl::EGLDisplayPlatform(reinterpret_cast<EGLNativeDisplayType>(
++          x11::Connection::Get()->GetXlibDisplay().display()));
++    }
++    // Xvfb present is pbuffer + PutImage. Do not pass the UI Xlib Display
++    // (NVIDIA would share that connection with UI-thread xcb). Do not use
++    // EGL_PLATFORM_DEVICE either: ANGLE then has no pbuffer configs
++    // ("No suitable EGL configs found") and Chrome falls back to MIT-SHM,
++    // which stalls. EGL_DEFAULT_DISPLAY talks to NVIDIA without X11.
++    return gl::EGLDisplayPlatform(EGL_DEFAULT_DISPLAY);
+   }
+ 
+   bool LoadGLES2Bindings(
+       const gl::GLImplementationParts& implementation) override {
+diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
+--- a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
++++ b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
+@@ -6,12 +6,16 @@
+ 
+ #include <algorithm>
++#include <map>
+ #include <memory>
++#include <set>
+ #include <utility>
+ #include <vector>
+ 
+ #include "base/check.h"
+ #include "base/functional/bind.h"
+ #include "base/logging.h"
++#include "base/no_destructor.h"
++#include "base/synchronization/lock.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "third_party/skia/include/core/SkImageInfo.h"
+ #include "third_party/skia/include/core/SkPixmap.h"
+@@ -27,6 +31,25 @@
+ 
+ constexpr x11::GraphicsContext kNoGC = x11::GraphicsContext{};
+ 
++struct PendingFrame {
++  x11::Window window = x11::Window::None;
++  x11::GraphicsContext gc{};
++  x11::VisualId visual{};
++  gfx::Size size;
++  std::unique_ptr<std::vector<uint8_t>> buffer;
++};
++
++struct PresentQueue {
++  base::Lock lock;
++  std::map<gfx::AcceleratedWidget, PendingFrame> latest;
++  std::set<gfx::AcceleratedWidget> queued;
++};
++
++PresentQueue& GetPresentQueue() {
++  static base::NoDestructor<PresentQueue> queue;
++  return *queue;
++}
++
+ void PresentOnUiThread(gfx::AcceleratedWidget widget,
+                        x11::Window window,
+                        x11::GraphicsContext gc,
+@@ -47,6 +70,34 @@
+              size.height());
+ }
+ 
++void DrainPresent(gfx::AcceleratedWidget widget) {
++  auto& queue = GetPresentQueue();
++  PendingFrame frame;
++  {
++    base::AutoLock lock(queue.lock);
++    auto it = queue.latest.find(widget);
++    if (it == queue.latest.end() || !it->second.buffer) {
++      queue.queued.erase(widget);
++      return;
++    }
++    frame = std::move(it->second);
++    queue.latest.erase(it);
++  }
++  PresentOnUiThread(widget, frame.window, frame.gc, frame.visual, frame.size,
++                    std::move(frame.buffer));
++  {
++    base::AutoLock lock(queue.lock);
++    if (queue.latest.contains(widget) && queue.latest[widget].buffer) {
++      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE, base::BindOnce(&DrainPresent, widget));
++      return;
++    }
++    queue.queued.erase(widget);
++  }
++}
++
+ }  // namespace
+ 
+ GLSurfaceEglReadbackX11::GLSurfaceEglReadbackX11(gl::GLDisplayEGL* display,
+@@ -89,6 +140,12 @@
+ }
+ 
+ void GLSurfaceEglReadbackX11::Destroy() {
++  {
++    auto& queue = GetPresentQueue();
++    base::AutoLock lock(queue.lock);
++    queue.latest.erase(widget_);
++    queue.queued.erase(widget_);
++  }
+   X11ReadbackPresentCache::ReleaseEglView(widget_);
+   window_graphics_context_ = kNoGC;
+   ui_runner_.reset();
+@@ -115,13 +172,26 @@
+   auto buffer = std::make_unique<std::vector<uint8_t>>(
+       static_cast<size_t>(image_info.computeMinByteSize()));
+   std::copy(pixels, pixels + buffer->size(), buffer->begin());
+ 
+-  ui_runner_->PostTask(
+-      FROM_HERE,
+-      base::BindOnce(&PresentOnUiThread, widget_, window_,
+-                     window_graphics_context_, visual_, size,
+-                     std::move(buffer)));
++  // Keep only the latest unread frame per widget so ChatGPT-rate
++  // glReadPixels cannot bury the UI thread in 6MB PutImage tasks.
++  bool post = false;
++  {
++    auto& queue = GetPresentQueue();
++    base::AutoLock lock(queue.lock);
++    PendingFrame& slot = queue.latest[widget_];
++    slot.window = window_;
++    slot.gc = window_graphics_context_;
++    slot.visual = visual_;
++    slot.size = size;
++    slot.buffer = std::move(buffer);
++    if (!queue.queued.contains(widget_)) {
++      queue.queued.insert(widget_);
++      post = true;
++    }
++  }
++  if (post) {
++    ui_runner_->PostTask(FROM_HERE, base::BindOnce(&DrainPresent, widget_));
++  }
+   return true;
+ }
+ 
+ }  // namespace ui

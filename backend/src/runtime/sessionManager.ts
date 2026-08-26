@@ -1036,6 +1036,9 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     // cache and the GPU thread share address space.
     '--nya-x11-multi-display',
     '--in-process-gpu',
+    // LOG(ERROR) "nya-present …" in the session chrome.log. Heartbeat every
+    // 10s or when the center pixel changes; failures are one-shot.
+    '--enable-logging=stderr',
   ];
   if (enabledFeatures.length) {
     args.push(`--enable-features=${enabledFeatures.join(',')}`);
@@ -1049,11 +1052,14 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
       '--enable-zero-copy',
     );
   } else if (backend === 'egl' || backend === 'gl-egl') {
-    // Raster/WebGL on NVIDIA EGL. Window present is EGL readback + X
-    // PutImage (Xvfb has no eglCreateWindowSurface configs). Do not add
-    // --disable-gpu-compositing: that path is the MIT-SHM presenter that
-    // stalls after a lost completion event.
-    args.push('--use-gl=angle', '--use-angle=gl-egl', '--enable-gpu-rasterization', '--enable-zero-copy');
+    // Raster/WebGL on NVIDIA EGL, but the EGL display must not be the
+    // UI Xlib connection (patch 017). Window present is EGL readback +
+    // X PutImage (Xvfb has no eglCreateWindowSurface configs). Do not
+    // add --disable-gpu-compositing: that path is the MIT-SHM presenter
+    // that stalls after a lost completion event.
+    // Xvfb has no native pixmap/overlay path; --enable-zero-copy waits for
+    // scanout that never happens. Raster/WebGL still run on NVIDIA EGL.
+    args.push('--use-gl=angle', '--use-angle=gl-egl', '--enable-gpu-rasterization');
   } else if (backend === 'gles-egl') {
     args.push('--use-gl=angle', '--use-angle=gles-egl', '--enable-gpu-rasterization');
   } else {

@@ -1,0 +1,541 @@
+diff --git a/ui/ozone/common/gl_surface_egl_readback.cc b/ui/ozone/common/gl_surface_egl_readback.cc
+--- a/ui/ozone/common/gl_surface_egl_readback.cc
++++ b/ui/ozone/common/gl_surface_egl_readback.cc
+@@ -6,10 +6,14 @@
+ 
+ #include <utility>
+ 
++#include <cstring>
++
+ #include "base/compiler_specific.h"
+ #include "base/functional/bind.h"
++#include "base/logging.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "ui/gl/gl_bindings.h"
++#include "ui/gl/gl_context.h"
+ #include "ui/gl/gl_implementation.h"
+ #include "ui/ozone/common/egl_util.h"
+ 
+@@ -45,6 +49,13 @@
+   const size_t buffer_size = size.width() * size.height() * kBytesPerPixelBGRA;
+   pixels_ = base::HeapArray<uint8_t>::Uninit(buffer_size);
+ 
++  // Named FBO so Skia/glReadPixels do not depend on which EGL pbuffer is
++  // current. FBO 0 is per-surface; after ChatGPT/WebGL the compositor pbuffer
++  // is empty while CopyOutput still sees the page on another pbuffer.
++  // Resize can run without a current context; create the FBO on first use.
++  if (gl::GLContext::GetCurrent() && !EnsureReadbackFbo(size))
++    return false;
++
+   return true;
+ }
+ 
+@@ -53,8 +64,21 @@
+   gfx::SwapResult swap_result = gfx::SwapResult::SWAP_FAILED;
+   gfx::PresentationFeedback feedback;
+ 
++  // Bind this pbuffer if GLSurface TLS says we are not current. Do not
++  // always MakeCurrent: that path left glReadPixels returning white.
++  gl::GLContext* context = gl::GLContext::GetCurrent();
++  if (context && !IsCurrent() && !context->MakeCurrent(this)) {
++    LOG(ERROR) << "nya-present swap MakeCurrent failed size="
++               << GetSize().ToString();
++    task_runner_->PostTask(FROM_HERE,
++                           base::BindOnce(std::move(callback), feedback));
++    return swap_result;
++  }
++
+   if (!pixels_.empty()) {
+-    ReadPixels(pixels_.as_span());
++    if (!use_pending_pixels_)
++      ReadPixels(pixels_.as_span());
++    use_pending_pixels_ = false;
+     if (UNSAFE_TODO(HandlePixels(pixels_.as_span().data()))) {
+       // Swap is successful, so return SWAP_ACK and provide the current time
+       // with presentation feedback.
+@@ -62,6 +86,8 @@
+       feedback.timestamp = base::TimeTicks::Now();
+     }
+   } else {
++    LOG(ERROR) << "nya-present swap empty pixels size="
++               << GetSize().ToString();
+     swap_result = gfx::SwapResult::SWAP_ACK;
+     feedback.timestamp = base::TimeTicks::Now();
+   }
+@@ -75,6 +101,89 @@
+   return gfx::SurfaceOrigin::kTopLeft;
+ }
+ 
++unsigned int GLSurfaceEglReadback::GetBackingFramebufferObject() {
++  EnsureReadbackFbo(GetSize());
++  return readback_fbo_;
++}
++
++void GLSurfaceEglReadback::SetPendingReadbackPixels(
++    base::span<const uint8_t> pixels) {
++  if (pixels_.empty() || pixels.size() != pixels_.size()) {
++    LOG(ERROR) << "nya-present pending-pixels size mismatch have="
++               << pixels_.size() << " got=" << pixels.size();
++    use_pending_pixels_ = false;
++    return;
++  }
++  memcpy(pixels_.data(), pixels.data(), pixels.size());
++  use_pending_pixels_ = true;
++}
++
++void GLSurfaceEglReadback::Destroy() {
++  DestroyReadbackFbo();
++  PbufferGLSurfaceEGL::Destroy();
++}
++
++void GLSurfaceEglReadback::DestroyReadbackFbo() {
++  if (!readback_fbo_ && !readback_texture_)
++    return;
++  if (gl::GLContext::GetCurrent()) {
++    if (readback_fbo_)
++      glDeleteFramebuffersEXT(1, &readback_fbo_);
++    if (readback_texture_)
++      glDeleteTextures(1, &readback_texture_);
++  }
++  readback_fbo_ = 0;
++  readback_texture_ = 0;
++  readback_fbo_size_ = gfx::Size();
++}
++
++bool GLSurfaceEglReadback::EnsureReadbackFbo(const gfx::Size& size) {
++  if (readback_fbo_ && readback_fbo_size_ == size)
++    return true;
++  DestroyReadbackFbo();
++  if (size.IsEmpty())
++    return true;
++  if (!gl::GLContext::GetCurrent()) {
++    LOG(ERROR) << "nya-present readback-fbo without current GL context";
++    return false;
++  }
++
++  GLuint texture = 0;
++  GLuint fbo = 0;
++  glGenTextures(1, &texture);
++  glBindTexture(GL_TEXTURE_2D, texture);
++  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size.width(), size.height(), 0,
++               GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
++
++  glGenFramebuffersEXT(1, &fbo);
++  GLint prev_fbo = 0;
++  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
++  glBindFramebufferEXT(GL_FRAMEBUFFER, fbo);
++  glFramebufferTexture2DEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
++                            texture, 0);
++  const GLenum status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER);
++  glBindFramebufferEXT(GL_FRAMEBUFFER, prev_fbo);
++  glBindTexture(GL_TEXTURE_2D, 0);
++  if (status != GL_FRAMEBUFFER_COMPLETE) {
++    LOG(ERROR) << "nya-present readback-fbo incomplete status=" << status
++               << " size=" << size.ToString();
++    glDeleteFramebuffersEXT(1, &fbo);
++    glDeleteTextures(1, &texture);
++    return false;
++  }
++
++  readback_texture_ = texture;
++  readback_fbo_ = fbo;
++  readback_fbo_size_ = size;
++  LOG(ERROR) << "nya-present readback-fbo id=" << readback_fbo_
++             << " tex=" << readback_texture_ << " size=" << size.ToString();
++  return true;
++}
++
+ GLSurfaceEglReadback::~GLSurfaceEglReadback() {
+   Destroy();
+ }
+@@ -85,17 +194,19 @@
+ 
+ void GLSurfaceEglReadback::ReadPixels(base::span<uint8_t> buffer) {
+   const gfx::Size size = GetSize();
+-  GLint read_fbo = 0;
++  GLint prev_read_fbo = 0;
+   GLint pixel_pack_buffer = 0;
+-  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
++  GLint prev_read_buffer = 0;
++  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
+   glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pixel_pack_buffer);
++  glGetIntegerv(GL_READ_BUFFER, &prev_read_buffer);
+ 
+-  // Make sure pixels are read from fbo 0.
+-  if (read_fbo)
+-    glBindFramebufferEXT(GL_READ_FRAMEBUFFER, 0);
++  EnsureReadbackFbo(size);
++  const GLuint target_fbo = readback_fbo_;
++  glBindFramebufferEXT(GL_READ_FRAMEBUFFER, target_fbo);
++  if (target_fbo)
++    glReadBuffer(GL_COLOR_ATTACHMENT0);
+ 
+-  // Make sure pixels are stored into |pixels_| instead of buffer binding to
+-  // GL_PIXEL_PACK_BUFFER.
+   if (pixel_pack_buffer)
+     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+ 
+@@ -103,9 +214,14 @@
+            base::checked_cast<size_t>(size.height()));
+   glReadPixels(0, 0, size.width(), size.height(), GL_BGRA_EXT, GL_UNSIGNED_BYTE,
+                buffer.data());
++  const GLenum err = glGetError();
++  if (err != GL_NO_ERROR) {
++    LOG(ERROR) << "nya-present glReadPixels err=" << static_cast<int>(err)
++               << " fbo=" << target_fbo << " size=" << size.ToString();
++  }
+ 
+-  if (read_fbo)
+-    glBindFramebufferEXT(GL_READ_FRAMEBUFFER, read_fbo);
++  glBindFramebufferEXT(GL_READ_FRAMEBUFFER, prev_read_fbo);
++  glReadBuffer(static_cast<GLenum>(prev_read_buffer));
+   if (pixel_pack_buffer)
+     glBindBuffer(GL_PIXEL_PACK_BUFFER, pixel_pack_buffer);
+ }
+diff --git a/ui/ozone/common/gl_surface_egl_readback.h b/ui/ozone/common/gl_surface_egl_readback.h
+--- a/ui/ozone/common/gl_surface_egl_readback.h
++++ b/ui/ozone/common/gl_surface_egl_readback.h
+@@ -8,6 +8,7 @@
+ #include "base/containers/heap_array.h"
+ #include "base/containers/span.h"
+ #include "base/memory/scoped_refptr.h"
++#include "ui/gfx/geometry/size.h"
+ #include "ui/gfx/native_ui_types.h"
+ #include "ui/gl/gl_surface_egl.h"
+ 
+@@ -35,6 +36,9 @@
+   gfx::SwapResult SwapBuffers(PresentationCallback callback,
+                               gfx::FrameData data) override;
+   gfx::SurfaceOrigin GetOrigin() const override;
++  unsigned int GetBackingFramebufferObject() override;
++  void Destroy() override;
++  void SetPendingReadbackPixels(base::span<const uint8_t> pixels) override;
+ 
+   // TODO(kylechar): Implement SupportsPostSubBuffer() and PostSubBuffer().
+ 
+@@ -52,8 +56,15 @@
+   void ReadPixels(base::span<uint8_t> buffer);
+ 
+  private:
++  void DestroyReadbackFbo();
++  bool EnsureReadbackFbo(const gfx::Size& size);
++
+   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+   base::HeapArray<uint8_t> pixels_;
++  unsigned int readback_fbo_ = 0;
++  unsigned int readback_texture_ = 0;
++  gfx::Size readback_fbo_size_;
++  bool use_pending_pixels_ = false;
+ };
+ 
+ }  // namespace ui
+diff --git a/ui/base/x/x11_util.cc b/ui/base/x/x11_util.cc
+--- a/ui/base/x/x11_util.cc
++++ b/ui/base/x/x11_util.cc
+@@ -108,16 +108,32 @@
+ 
+   const auto* visual_info = connection->GetVisualInfoFromId(visual);
+   if (!visual_info) {
++    LOG(ERROR) << "nya-present DrawPixmap no visual "
++               << static_cast<uint32_t>(visual);
+     return;
+   }
+ 
+   size_t row_bytes = RowBytesForVisualWidth(*visual_info, width);
+ 
+-  auto color_type = ColorTypeForVisual(visual);
++  // Derive color type from this connection's visual, not
++  // ColorTypeForVisual() which uses Connection::Get(). A
++  // ScopedConnectionBind on the UI thread would miss and drop PutImage.
++  SkColorType color_type = kUnknown_SkColorType;
++  if (visual_info->visual_type && visual_info->format) {
++    if (visual_info->format->bits_per_pixel == 32 &&
++        visual_info->visual_type->blue_mask == 0xffu) {
++      color_type = kBGRA_8888_SkColorType;
++    } else if (visual_info->format->bits_per_pixel == 32 &&
++               visual_info->visual_type->red_mask == 0xffu) {
++      color_type = kRGBA_8888_SkColorType;
++    }
++  }
+   if (color_type == kUnknown_SkColorType) {
+-    // TODO(crbug.com/40124639): Add a fallback path in case any users
+-    // are running a server that uses visual types for which Skia doesn't have
+-    // a corresponding color format.
++    LOG(ERROR) << "nya-present DrawPixmap unknown color type visual "
++               << static_cast<uint32_t>(visual)
++               << " bpp="
++               << (visual_info->format ? visual_info->format->bits_per_pixel
++                                       : -1);
+     return;
+   }
+   SkImageInfo image_info =
+diff --git a/components/viz/service/display_embedder/skia_output_device_gl.cc b/components/viz/service/display_embedder/skia_output_device_gl.cc
+--- a/components/viz/service/display_embedder/skia_output_device_gl.cc
++++ b/components/viz/service/display_embedder/skia_output_device_gl.cc
+@@ -6,9 +6,11 @@
+ 
+ #include <tuple>
+ #include <utility>
++#include <vector>
+ 
+ #include "base/debug/alias.h"
+ #include "base/functional/callback_helpers.h"
++#include "base/logging.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/notreached.h"
+ #include "base/time/time.h"
+@@ -18,6 +20,7 @@
+ #include "gpu/command_buffer/service/texture_manager.h"
+ #include "skia/ext/legacy_display_globals.h"
+ #include "third_party/skia/include/core/SkColorType.h"
++#include "third_party/skia/include/core/SkImageInfo.h"
+ #include "third_party/skia/include/core/SkSurface.h"
+ #include "third_party/skia/include/core/SkSurfaceProps.h"
+ #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
+@@ -207,8 +210,8 @@
+   }
+   SkSurfaceProps surface_props;
+ 
+-  GrGLFramebufferInfo framebuffer_info = {0};
+-  DCHECK_EQ(gl_surface_->GetBackingFramebufferObject(), 0u);
++  GrGLFramebufferInfo framebuffer_info = {};
++  framebuffer_info.fFBOID = gl_surface_->GetBackingFramebufferObject();
+ 
+   auto* gr_context = context_state_->gr_context();
+ 
+@@ -216,6 +219,8 @@
+       gr_context->defaultBackendFormat(color_type, GrRenderable::kYes);
+   DCHECK(backend_format.isValid()) << "color_type: " << color_type;
+   framebuffer_info.fFormat = GrBackendFormats::AsGLFormatEnum(backend_format);
++  if (framebuffer_info.fFBOID)
++    framebuffer_info.fFormat = GL_RGBA8;
+ 
+   auto render_target = GrBackendRenderTargets::MakeGL(
+       size.width(), size.height(), params.sample_count,
+@@ -262,6 +267,30 @@
+     gl_surface_->SetVSyncEnabled(!multiple_surface_swaps);
+   }
+ 
++  // Ensure the compositor pbuffer is current for glReadPixels. Drawing
++  // already rebound it in BeginPaint; this is the readback side.
++  if (!context_state_->MakeCurrent(gl_surface_.get(), /*needs_gl=*/true)) {
++    LOG(ERROR) << "nya-present skia Present MakeCurrent failed";
++  }
++  if (GrDirectContext* gr = context_state_->gr_context()) {
++    gr->flushAndSubmit(GrSyncCpu::kYes);
++  }
++  if (sk_surface_) {
++    const SkImageInfo info = SkImageInfo::Make(
++        sk_surface_->width(), sk_surface_->height(), kBGRA_8888_SkColorType,
++        kPremul_SkAlphaType);
++    const size_t row_bytes = info.minRowBytes();
++    std::vector<uint8_t> cpu(info.computeMinByteSize());
++    const bool ok =
++        sk_surface_->readPixels(info, cpu.data(), row_bytes, 0, 0);
++    if (!ok) {
++      LOG(ERROR) << "nya-present skia readPixels failed size="
++                 << gfx::Size(info.width(), info.height()).ToString();
++    } else {
++      gl_surface_->SetPendingReadbackPixels(cpu);
++    }
++  }
++
+   StartSwapBuffers({});
+ 
+   gfx::Size surface_size =
+@@ -313,6 +342,19 @@
+ 
+ SkSurface* SkiaOutputDeviceGL::BeginPaint(
+     std::vector<GrBackendSemaphore>* end_semaphores) {
++  // In-process GPU shares this GL context with the renderer. Renderer
++  // frames bind a different FBO/pbuffer; Skia then thinks the compositor
++  // target is still bound and the root pass misses the page (CDP still
++  // sees it on the renderer surface). Rebind and drop cached GL state.
++  if (!context_state_->MakeCurrent(gl_surface_.get(), /*needs_gl=*/true)) {
++    LOG(ERROR) << "nya-present BeginPaint MakeCurrent failed";
++    return nullptr;
++  }
++  context_state_->set_need_context_state_reset(true);
++  if (unsigned fbo = gl_surface_->GetBackingFramebufferObject())
++    glBindFramebufferEXT(GL_FRAMEBUFFER, fbo);
++  if (GrDirectContext* gr = context_state_->gr_context())
++    gr->resetContext();
+   DCHECK(sk_surface_);
+   return sk_surface_.get();
+ }
+diff --git a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
+--- a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
++++ b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
+@@ -16,6 +16,7 @@
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback.h"
++#include "base/logging.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/metrics/histogram_macros.h"
+@@ -2277,6 +2278,16 @@
+   DCHECK(output_device_);
+ 
+   if (context_is_lost_) {
++    // Do not leave DisplayScheduler swap-throttled: max_pending_swaps is 1
++    // for the EGL-readback surface, so a lost context that skips the ack
++    // freezes the X pixmap forever (CDP screenshots still work).
++    LOG(ERROR) << "nya-present compositor-context-lost";
++    if (frame) {
++      gpu::SwapBuffersCompleteParams params;
++      params.swap_response.result = gfx::SwapResult::SWAP_FAILED;
++      DidSwapBuffersCompleteInternal(std::move(params), size_,
++                                     gfx::GpuFenceHandle());
++    }
+     return;
+   }
+ 
+diff --git a/gpu/command_buffer/service/gl_context_virtual.cc b/gpu/command_buffer/service/gl_context_virtual.cc
+--- a/gpu/command_buffer/service/gl_context_virtual.cc
++++ b/gpu/command_buffer/service/gl_context_virtual.cc
+@@ -51,12 +51,13 @@
+ }
+ 
+ bool GLContextVirtual::IsCurrent(gl::GLSurface* surface) {
+-  // If it's a real surface it needs to be current.
+-  if (surface &&
+-      !surface->IsOffscreen())
++  // Offscreen pbuffers still have a distinct EGL surface. Skipping the
++  // surface check lets WebGL keep a different pbuffer current while the
++  // compositor believes it is current — SwapBuffers then stops after
++  // ChatGPT/WebGL, and the X pixmap freezes.
++  if (surface)
+     return shared_context_->IsCurrent(surface);
+ 
+-  // Otherwise, only insure the context itself is current.
+   return shared_context_->IsCurrent(nullptr);
+ }
+ 
+diff --git a/ui/gl/gl_surface.h b/ui/gl/gl_surface.h
+--- a/ui/gl/gl_surface.h
++++ b/ui/gl/gl_surface.h
+@@ -5,6 +5,7 @@
+ #ifndef UI_GL_GL_SURFACE_H_
+ #define UI_GL_GL_SURFACE_H_
+ 
++#include "base/containers/span.h"
+ #include "base/functional/callback.h"
+ #include "base/memory/ref_counted.h"
+ #include "base/memory/weak_ptr.h"
+@@ -108,6 +109,9 @@
+   // FBO. Otherwise returns 0.
+   virtual unsigned int GetBackingFramebufferObject();
+ 
++  // Optional CPU pixels for the next SwapBuffers (EGL readback present).
++  virtual void SetPendingReadbackPixels(base::span<const uint8_t> pixels);
++
+   // The SwapCompletionCallback is used to receive notification about the
+   // completion of the swap operation from |SwapBuffersAsync|,
+   // |PostSubBufferAsync|, |CommitOverlayPlanesAsync|, etc. If a null gpu fence
+diff --git a/ui/gl/gl_surface.cc b/ui/gl/gl_surface.cc
+--- a/ui/gl/gl_surface.cc
++++ b/ui/gl/gl_surface.cc
+@@ -57,6 +57,8 @@
+   return 0;
+ }
+ 
++void GLSurface::SetPendingReadbackPixels(base::span<const uint8_t> pixels) {}
++
+ void GLSurface::SwapBuffersAsync(SwapCompletionCallback completion_callback,
+                                  PresentationCallback presentation_callback,
+                                  gfx::FrameData data) {
+diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
+--- a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
++++ b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
+@@ -17,6 +17,7 @@
+ #include "base/no_destructor.h"
+ #include "base/synchronization/lock.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "base/time/time.h"
+ #include "third_party/skia/include/core/SkImageInfo.h"
+ #include "third_party/skia/include/core/SkPixmap.h"
+ #include "ui/base/x/x11_util.h"
+@@ -50,6 +51,16 @@
+   return *queue;
+ }
+ 
++uint32_t CenterBgr(const std::vector<uint8_t>& buffer, const gfx::Size& size) {
++  if (size.width() <= 0 || size.height() <= 0 || buffer.size() < 4)
++    return 0;
++  const size_t stride = static_cast<size_t>(size.width()) * 4;
++  const size_t off = static_cast<size_t>(size.height() / 2) * stride +
++                     static_cast<size_t>(size.width() / 2) * 4;
++  if (off + 2 >= buffer.size())
++    return 0;
++  return buffer[off] | (buffer[off + 1] << 8) | (buffer[off + 2] << 16);
++}
+ 
+ void PresentOnUiThread(gfx::AcceleratedWidget widget,
+                        x11::Window window,
+@@ -58,10 +69,14 @@
+                        gfx::Size size,
+                        std::unique_ptr<std::vector<uint8_t>> buffer) {
+   if (!X11ReadbackPresentCache::Contains(widget)) {
++    LOG(ERROR) << "nya-present drop: no readback cache widget="
++               << static_cast<uint32_t>(widget);
+     return;
+   }
+   auto* conn = x11::Connection::ForWidget(static_cast<uint32_t>(widget));
+   if (!conn) {
++    LOG(ERROR) << "nya-present drop: no X connection widget="
++               << static_cast<uint32_t>(widget);
+     return;
+   }
+   SkImageInfo image_info =
+@@ -70,6 +85,25 @@
+   SkPixmap pixmap(image_info, buffer->data(), image_info.minRowBytes());
+   DrawPixmap(conn, visual, window, gc, pixmap, 0, 0, 0, 0, size.width(),
+              size.height());
++  const uint32_t cx = CenterBgr(*buffer, size);
++  static int present_count = 0;
++  static uint32_t last_cx = 0;
++  static base::TimeTicks last_log;
++  ++present_count;
++  const base::TimeTicks now = base::TimeTicks::Now();
++  const bool changed = cx != last_cx;
++  const bool heartbeat =
++      last_log.is_null() || (now - last_log >= base::Seconds(10));
++  if (changed || heartbeat) {
++    LOG(ERROR) << "nya-present n=" << present_count
++               << " widget=" << static_cast<uint32_t>(widget)
++               << " window=" << static_cast<uint32_t>(window)
++               << " visual=" << static_cast<uint32_t>(visual)
++               << " size=" << size.ToString() << " buf_c=" << cx
++               << " changed=" << (changed ? 1 : 0);
++    last_log = now;
++    last_cx = cx;
++  }
+ }
+ 
+ void DrainPresent(gfx::AcceleratedWidget widget) {
+@@ -156,12 +190,18 @@
+ }
+ 
+ bool GLSurfaceEglReadbackX11::HandlePixels(uint8_t* pixels) {
+-  if (!ui_runner_ || window_graphics_context_ == kNoGC)
++  if (!ui_runner_ || window_graphics_context_ == kNoGC) {
++    LOG(ERROR) << "nya-present HandlePixels missing UI target widget="
++               << static_cast<uint32_t>(widget_);
+     return false;
++  }
+ 
+   const gfx::Size size = GetSize();
+-  if (size.IsEmpty())
++  if (size.IsEmpty()) {
++    LOG(ERROR) << "nya-present HandlePixels empty size widget="
++               << static_cast<uint32_t>(widget_);
+     return false;
++  }
+ 
+   SkImageInfo image_info =
+       SkImageInfo::Make(size.width(), size.height(), kBGRA_8888_SkColorType,
