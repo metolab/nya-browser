@@ -99,7 +99,7 @@ export default function VncViewer({
     x: 8,
     y: 8,
   });
-  const typeChain = useRef(Promise.resolve());
+  const typeChain = useRef<Promise<unknown>>(Promise.resolve());
   const [imeUi, setImeUi] = useState({ composing: false, x: 8, y: 8, width: TRAP_MIN_W });
   const applied = useRef({ w: 0, h: 0 });
   const genRef = useRef(0);
