@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { displaySchema, clipboardSchema } from '@nya/shared';
+import { displaySchema, clipboardSchema, typeTextSchema } from '@nya/shared';
 import { asyncHandler } from '../../http/util.js';
 import { assertSessionAccess, handleHttpError, HttpError } from '../../http/access.js';
 import {
@@ -8,6 +8,7 @@ import {
   getClipboard,
   resizeDisplay,
   setClipboard,
+  typeText,
 } from '../../runtime/sessionManager.js';
 
 export const sessionIoRouter = Router({ mergeParams: true });
@@ -130,6 +131,36 @@ sessionIoRouter.put(
       gateWindow(req, req.params.subId);
       const parsed = clipboardSchema.safeParse(req.body || {});
       await setClipboard(req.params.id, parsed.success ? parsed.data.text : '', req.params.subId);
+      res.json({ ok: true });
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.post(
+  '/type',
+  asyncHandler(async (req, res) => {
+    try {
+      gateWindow(req, 'main');
+      const parsed = typeTextSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ ok: false, error: 'Invalid text' });
+      await typeText(req.params.id, parsed.data.text);
+      res.json({ ok: true });
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.post(
+  '/subs/:subId/type',
+  asyncHandler(async (req, res) => {
+    try {
+      gateWindow(req, req.params.subId);
+      const parsed = typeTextSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ ok: false, error: 'Invalid text' });
+      await typeText(req.params.id, parsed.data.text, req.params.subId);
       res.json({ ok: true });
     } catch (err) {
       handleHttpError(err, res);

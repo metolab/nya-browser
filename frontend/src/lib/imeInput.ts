@@ -90,10 +90,16 @@ export function keysymsFromText(text: string): number[] {
   return out;
 }
 
-export function commitTextFromEvents(data: string | null | undefined, value: string): string {
+export function commitTextFromEvents(
+  data: string | null | undefined,
+  value: string,
+  nextComposing = false,
+): string {
   const fromData = String(data ?? '');
-  if (fromData) return fromData;
-  return String(value ?? '');
+  const fromValue = String(value ?? '');
+  if (nextComposing) return fromData;
+  if (fromValue.length > fromData.length) return fromValue;
+  return fromData;
 }
 
 export function shouldSendCommit(

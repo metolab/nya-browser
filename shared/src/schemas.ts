@@ -117,3 +117,9 @@ export const displaySchema = z.object({
 export const clipboardSchema = z.object({
   text: z.string().max(1024 * 1024),
 });
+
+export const TYPE_TEXT_MAX = 8192;
+
+export const typeTextSchema = z.object({
+  text: z.string().max(TYPE_TEXT_MAX),
+});

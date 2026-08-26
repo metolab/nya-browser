@@ -9,6 +9,8 @@ import {
   putTargetGrantsSchema,
   createSessionSchema,
   IDLE_TIMEOUT_MINUTES_MAX,
+  typeTextSchema,
+  TYPE_TEXT_MAX,
 } from './schemas.js';
 import { normalizeTimezone, DEFAULT_TIMEZONE, isValidTimezone } from './timezones.js';
 import {
@@ -81,6 +83,11 @@ describe('schemas', () => {
     expect(() =>
       createSessionSchema.parse({ name: 's1', idleTimeoutMinutes: IDLE_TIMEOUT_MINUTES_MAX + 1 }),
     ).toThrow();
+  });
+
+  it('accepts IME type-text payloads', () => {
+    expect(typeTextSchema.parse({ text: '这个太平淡了' }).text).toBe('这个太平淡了');
+    expect(() => typeTextSchema.parse({ text: 'x'.repeat(TYPE_TEXT_MAX + 1) })).toThrow();
   });
 });
 

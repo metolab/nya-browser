@@ -86,9 +86,20 @@ describe('unicode keysyms', () => {
 
 describe('commit text', () => {
   it('prefers compositionend data, then textarea value', () => {
-    expect(commitTextFromEvents('你好', 'ignored')).toBe('你好');
+    expect(commitTextFromEvents('你好', '你好')).toBe('你好');
     expect(commitTextFromEvents('', '好')).toBe('好');
     expect(commitTextFromEvents(null, '')).toBe('');
+  });
+
+  it('uses the longer committed string when the IME split data and value', () => {
+    expect(commitTextFromEvents('个', '这个太平淡了')).toBe('这个太平淡了');
+    expect(commitTextFromEvents('我比较喜欢', '我')).toBe('我比较喜欢');
+  });
+
+  it('keeps only the committed segment when the next composition already started', () => {
+    expect(commitTextFromEvents('我', '我比较喜欢', true)).toBe('我');
+    expect(commitTextFromEvents('要有一', '要有一些剧情', true)).toBe('要有一');
+    expect(commitTextFromEvents('', '比较喜欢', true)).toBe('');
   });
 
   it('dedups the same commit across compositionend and input', () => {

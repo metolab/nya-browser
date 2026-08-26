@@ -184,12 +184,19 @@ export const api = {
         ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard`
         : `/api/sessions/${id}/clipboard`,
     ),
-  setClipboard: (id: string, text: string, subId?: string | null) =>
+    setClipboard: (id: string, text: string, subId?: string | null) =>
     request<{ ok: boolean }>(
       subId
         ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard`
         : `/api/sessions/${id}/clipboard`,
       { method: 'PUT', body: JSON.stringify({ text }) },
+    ),
+  typeText: (id: string, text: string, subId?: string | null) =>
+    request<{ ok: boolean }>(
+      subId
+        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/type`
+        : `/api/sessions/${id}/type`,
+      { method: 'POST', body: JSON.stringify({ text }) },
     ),
   listSubs: (id: string) =>
     request<{ subs: { id: string; display: number; running: boolean }[] }>(`/api/sessions/${id}/subs`),

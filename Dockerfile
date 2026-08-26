@@ -109,6 +109,7 @@ RUN set -eux; \
       libxtst6 \
       libatomic1 \
       procps \
+      python3 \
       xz-utils \
       zstd \
       passwd \

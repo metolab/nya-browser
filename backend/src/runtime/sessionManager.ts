@@ -32,6 +32,7 @@ import {
   startChromeLifecycle,
   stopChromeLifecycle,
 } from './chromeLifecycle.js';
+import { TYPE_TEXT_MAX, runXtype } from './xtype.js';
 
 const DISPLAY_BASE = Number(process.env.DISPLAY_BASE || 100);
 const SUB_DISPLAY_BASE = Number(process.env.SUB_DISPLAY_BASE || 2000);
@@ -475,7 +476,7 @@ function sessionEnv(runtime, extra = {}) {
   const session = getSession(runtime.id);
   const language = normalizeChromeLanguage(session?.chromeLanguage);
   const posix = posixLocale(language);
-  return {
+  const env = {
     ...process.env,
     DISPLAY: `:${runtime.display}`,
     HOME: home,
@@ -494,8 +495,16 @@ function sessionEnv(runtime, extra = {}) {
     GTK_CSD: '1',
     NO_AT_BRIDGE: '1',
     DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/dbus/system_bus_socket',
+    // Remote IME would swallow Unicode keysyms. Local IME commits are injected
+    // as finished text; the session must not compose again.
+    GTK_IM_MODULE: 'simple',
+    QT_IM_MODULE: 'simple',
+    XMODIFIERS: '@im=none',
     ...extra,
   };
+  delete env.IBUS_ADDRESS;
+  delete env.IBUS_DAEMON_PID;
+  return env;
 }
 
 function setDisplayCreds(runtime) {
@@ -2801,6 +2810,30 @@ export async function stopAllSessions() {
   for (const id of ids) {
     await stopSession(id);
   }
+}
+
+/** @type {Map<number, Promise<unknown>>} */
+const typeLocks = new Map();
+
+function withTypeLock(display, fn) {
+  const prev = typeLocks.get(display) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  typeLocks.set(display, next.catch(() => {}));
+  return next;
+}
+
+export async function typeText(sessionId, text, subId = null) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) throw new Error('Session is not running');
+  const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
+  const value = String(text ?? '');
+  if (!value) return { ok: true };
+  if (value.length > TYPE_TEXT_MAX) throw new Error('Text too long');
+  const display = holder.display ?? runtime.display;
+  await withTypeLock(display, () =>
+    runXtype(sessionEnv(runtime, { DISPLAY: `:${display}` }), value),
+  );
+  return { ok: true };
 }
 
 export function execOnDisplay(sessionId, file, args) {

@@ -87,6 +87,10 @@ test.describe('permission system', () => {
       await expectForbidden(await member.post(`/api/sessions/${session.id}/files/mkdir`, { data: { path: 'x' } }), 'mkdir');
       await expectForbidden(await member.get(`/api/sessions/${session.id}/clipboard`), 'clipboard');
       await expectForbidden(
+        await member.post(`/api/sessions/${session.id}/type`, { data: { text: '测' } }),
+        'type',
+      );
+      await expectForbidden(
         await member.post(`/api/sessions/${session.id}/display`, { data: { width: 800, height: 600 } }),
         'display',
       );

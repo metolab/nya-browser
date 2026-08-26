@@ -11,7 +11,6 @@ import {
   commitTextFromEvents,
   isFallbackInsert,
   keyboardEventInit,
-  sendUnicodeKeysyms,
   shouldForwardKey,
   shouldPreventDefaultKey,
   shouldSendCommit,
@@ -100,6 +99,7 @@ export default function VncViewer({
     x: 8,
     y: 8,
   });
+  const typeChain = useRef(Promise.resolve());
   const [imeUi, setImeUi] = useState({ composing: false, x: 8, y: 8, width: TRAP_MIN_W });
   const applied = useRef({ w: 0, h: 0 });
   const genRef = useRef(0);
@@ -140,24 +140,27 @@ export default function VncViewer({
   }, []);
 
   const sendCommit = useCallback((text: string) => {
-    const rfb = rfbRef.current;
     const wrap = wrapRef.current;
     const ime = imeRef.current;
-    if (!rfb || viewOnlyRef.current) {
-      setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
+    if (viewOnlyRef.current) {
+      if (!ime.composing) setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
       return;
     }
     const now = performance.now();
     if (!shouldSendCommit(text, now, ime.lastSent)) {
-      setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
+      if (!ime.composing) setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
       return;
     }
-    sendUnicodeKeysyms((keysym, code, down) => rfb.sendKey(keysym, code, down), text);
     ime.lastSent = { text, at: now };
     ime.lastCommitAt = now;
-    ime.x = advanceTrapX(ime.x, measureTrapText(text), wrap?.clientWidth || 0);
-    setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
-  }, []);
+    if (!ime.composing) {
+      ime.x = advanceTrapX(ime.x, measureTrapText(text), wrap?.clientWidth || 0);
+      setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
+    }
+    typeChain.current = typeChain.current
+      .then(() => api.typeText(sessionId, text, subId))
+      .catch(() => undefined);
+  }, [sessionId, subId]);
 
   const pushSize = useCallback((force = false) => {
     if (!resizeRemoteRef.current) return;
@@ -466,11 +469,22 @@ export default function VncViewer({
     };
 
     const onCompositionEnd = (e: CompositionEvent) => {
+      const snapshot = { data: e.data, value: trap.value };
       imeRef.current.composing = false;
-      const text = commitTextFromEvents(e.data, trap.value);
-      trap.value = '';
-      if (text) sendCommit(text);
-      else setImeUi({ composing: false, x: imeRef.current.x, y: imeRef.current.y, width: TRAP_MIN_W });
+      window.queueMicrotask(() => {
+        const chained = imeRef.current.composing;
+        const text = commitTextFromEvents(snapshot.data, snapshot.value, chained);
+        if (!chained) trap.value = '';
+        if (text) sendCommit(text);
+        else if (!chained) {
+          setImeUi({
+            composing: false,
+            x: imeRef.current.x,
+            y: imeRef.current.y,
+            width: TRAP_MIN_W,
+          });
+        }
+      });
     };
 
     const onInput = (e: Event) => {
