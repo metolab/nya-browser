@@ -16,6 +16,4 @@ nya/017-x11-egl-detach-from-xdisplay.patch
 nya/018-x11-readback-onscreen-surface.patch
 nya/019-x11-widget-child-added.patch
 nya/020-linux-child-frame-shadow.patch
-nya/021-x11-transient-extra-browsers.patch
-nya/022-x11-software-extra-browsers.patch
-nya/023-x11-gpu-extra-browsers.patch
+nya/021-x11-extra-normal-windows.patch

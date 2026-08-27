@@ -1,0 +1,320 @@
+diff --git a/chrome/browser/ui/nya/nya_one_compositor.h b/chrome/browser/ui/nya/nya_one_compositor.h
+--- a/chrome/browser/ui/nya/nya_one_compositor.h
++++ b/chrome/browser/ui/nya/nya_one_compositor.h
+@@ -11,20 +11,30 @@
+ 
+ namespace nya {
+ 
+-// --nya-x11-multi-display: Xvfb + in-process GPU can present exactly one
+-// AcceleratedWidget (EGL readback compositor) per X display. Extra chrome
+-// UI must be NativeWidgetAura layers on that compositor — still GPU
+-// rasterized, no second EGL pbuffer, no software compositor.
++// --nya-x11-multi-display: menus, bubbles, and window.open popups stay
++// NativeWidgetAura on the session GPU compositor. Extra type_normal
++// Browser windows (Ctrl+N / Chrome 新窗口) are real X11 Desktop widgets
++// so Openbox/tint2 can see them. Each extra normal window gets its own
++// EGL-readback present (named FBO, 013).
+ bool OneCompositorEnabled();
+ 
+-// Desktop host already open on |x11_display| (empty = primary). Null if this
+-// would be the first AcceleratedWidget on that X server.
++// True for an extra type_normal BrowserWidget that should be a real X11
++// window. params.name is "BrowserWidget" after BrowserWidget::Init;
++// wm_role_name is "browser" for type_normal (popups use "pop-up" or leave
++// it empty when hosted in-compositor).
++bool IsExtraDesktopBrowser(const views::Widget::InitParams& params);
++
++// Desktop host already open on |x11_display|. Empty display prefers the
++// active host, then any host. Null if this would be the first
++// AcceleratedWidget on that X server.
+ gfx::NativeView FindDesktopHost(const std::string& x11_display);
+ 
+ // Prefer params.parent / params.context; otherwise search by x11_display.
+ gfx::NativeView FindDesktopHost(const views::Widget::InitParams& params);
+ 
+ // True when this widget must not create a second Desktop AcceleratedWidget.
++// Extra type_normal BrowserWidget windows are excluded — they are real
++// X11 GPU windows.
+ bool ShouldHostInExistingCompositor(const views::Widget::InitParams& params);
+ 
+ }  // namespace nya
+diff --git a/chrome/browser/ui/nya/nya_one_compositor.cc b/chrome/browser/ui/nya/nya_one_compositor.cc
+--- a/chrome/browser/ui/nya/nya_one_compositor.cc
++++ b/chrome/browser/ui/nya/nya_one_compositor.cc
+@@ -16,7 +16,24 @@
+       switches::kNyaX11MultiDisplay);
+ }
+ 
++bool IsExtraDesktopBrowser(const views::Widget::InitParams& params) {
++  if (!OneCompositorEnabled()) {
++    return false;
++  }
++  if (params.name != "BrowserWidget") {
++    return false;
++  }
++  // AuraLinux GetWidgetParams sets "browser" for type_normal. Popups set
++  // "pop-up"; in-compositor Child widgets leave the role empty.
++  if (params.wm_role_name != "browser") {
++    return false;
++  }
++  return FindDesktopHost(params.x11_display) != nullptr;
++}
++
+ gfx::NativeView FindDesktopHost(const std::string& x11_display) {
++  gfx::NativeView fallback = nullptr;
++  gfx::NativeView active = nullptr;
+   for (aura::Window* window :
+        views::DesktopWindowTreeHostPlatform::GetAllOpenWindows()) {
+     views::Widget* widget = views::Widget::GetWidgetForNativeView(window);
+@@ -26,11 +43,20 @@
+     if (!widget) {
+       continue;
+     }
+-    if (widget->x11_display() == x11_display) {
++    if (!fallback) {
++      fallback = window;
++    }
++    if (widget->IsActive()) {
++      active = window;
++    }
++    if (!x11_display.empty() && widget->x11_display() == x11_display) {
+       return window;
+     }
+   }
+-  return nullptr;
++  if (!x11_display.empty()) {
++    return nullptr;
++  }
++  return active ? active : fallback;
+ }
+ 
+ gfx::NativeView FindDesktopHost(const views::Widget::InitParams& params) {
+@@ -47,6 +73,9 @@
+   if (!OneCompositorEnabled()) {
+     return false;
+   }
++  if (IsExtraDesktopBrowser(params)) {
++    return false;
++  }
+   return FindDesktopHost(params) != nullptr;
+ }
+ 
+diff --git a/chrome/browser/ui/views/chrome_views_delegate_linux.cc b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+--- a/chrome/browser/ui/views/chrome_views_delegate_linux.cc
++++ b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/environment.h"
+ #include "base/feature_list.h"
++#include "base/logging.h"
+ #include "base/nix/xdg_util.h"
+ #include "build/branding_buildflags.h"
+ #include "chrome/browser/ui/views/native_widget_factory.h"
+@@ -13,6 +14,7 @@
+ #include "chrome/common/channel_info.h"
+ #include "chrome/grit/chrome_unscaled_resources.h"
+ #include "components/version_info/channel.h"
++#include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/base/resource/resource_bundle.h"
+ #include "ui/base/ui_base_features.h"
+ #include "ui/linux/linux_ui.h"
+@@ -46,12 +48,13 @@
+ 
+ NativeWidgetType GetNativeWidgetTypeForInitParams(
+     const views::Widget::InitParams& params) {
+-  // One GPU compositor per X display. Extra widgets (menus, bubbles,
+-  // security surfaces, helper TYPE_WINDOW) are NativeWidgetAura layers on
+-  // that compositor. The factory upgrades NativeWidgetAura to Desktop when
+-  // parent/context/child are all unset, so CreateNativeWidget attaches the
+-  // host before calling through.
++  // One EGL-readback compositor per X display. Menus/bubbles/window.open
++  // stay NativeWidgetAura on that compositor. Extra type_normal Browser
++  // windows are a second X11 window with GPU readback present.
+   if (nya::OneCompositorEnabled()) {
++    if (nya::IsExtraDesktopBrowser(params)) {
++      return NativeWidgetType::kDesktopNativeWidgetAura;
++    }
+     if (nya::ShouldHostInExistingCompositor(params) || params.parent ||
+         params.context || params.child) {
+       return NativeWidgetType::kNativeWidgetAura;
+@@ -100,7 +103,18 @@
+     views::Widget::InitParams* params,
+     views::internal::NativeWidgetDelegate* delegate) {
+   if (nya::OneCompositorEnabled()) {
+-    if (gfx::NativeView host = nya::FindDesktopHost(*params)) {
++    if (nya::IsExtraDesktopBrowser(*params)) {
++      // Extra type_normal window: real X11 so tint2/Openbox see it. GPU
++      // readback present so WebContents can paint.
++      params->parent = nullptr;
++      params->context = nullptr;
++      params->child = false;
++      params->show_state = ui::mojom::WindowShowState::kNormal;
++      params->use_accelerated_widget_override = true;
++      LOG(ERROR) << "nya-widget extra-browser desktop gpu display="
++                 << params->x11_display
++                 << " bounds=" << params->bounds.ToString();
++    } else if (gfx::NativeView host = nya::FindDesktopHost(*params)) {
+       if (!params->parent) {
+         params->parent = host;
+       }
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
+--- a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
++++ b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
++#include "base/logging.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/shell_integration_linux.h"
+ #include "chrome/browser/ui/browser.h"
+@@ -17,9 +18,13 @@
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/common/chrome_switches.h"
+ #include "chrome/common/pref_names.h"
++#include "ui/aura/window.h"
++#include "ui/base/mojom/window_show_state.mojom.h"
++#include "ui/gfx/geometry/rect.h"
+ #include "ui/ozone/public/ozone_platform.h"
+ #include "ui/views/widget/widget.h"
+ 
++#include <algorithm>
+ 
+ BrowserNativeWidgetAuraLinux::BrowserNativeWidgetAuraLinux(
+     BrowserWidget* browser_widget,
+@@ -74,6 +79,26 @@
+     params.wayland_app_id = params.wm_class_class;
+   }
+ 
++  if (nya::OneCompositorEnabled()) {
++    gfx::NativeView host = nya::FindDesktopHost(params.x11_display);
++    if (host) {
++      params.force_software_compositing = false;
++      params.show_state = ui::mojom::WindowShowState::kNormal;
++      gfx::Rect hb = host->GetBoundsInScreen();
++      if (!hb.IsEmpty()) {
++        const int w = std::max(640, hb.width() * 3 / 4);
++        const int h = std::max(480, hb.height() * 3 / 4);
++        const int fit_w = std::min(w, std::max(400, hb.width() - 72));
++        const int fit_h = std::min(h, std::max(300, hb.height() - 72));
++        params.bounds = gfx::Rect(hb.x() + (hb.width() - fit_w) / 2,
++                                  hb.y() + (hb.height() - fit_h) / 2, fit_w,
++                                  fit_h);
++      }
++      LOG(ERROR) << "nya-widget extra-browser GetWidgetParams gpu bounds="
++                 << params.bounds.ToString();
++    }
++  }
++
+   return params;
+ }
+ 
+@@ -118,6 +143,27 @@
+   return host_ && host_->SupportsClientFrameShadow() && UseCustomFrame();
+ }
+ 
++bool BrowserNativeWidgetAuraLinux::ShouldRestorePreviousBrowserWidgetState()
++    const {
++  if (nya::OneCompositorEnabled() && browser_view() &&
++      browser_view()->browser() &&
++      nya::FindDesktopHost(
++          browser_view()->browser()->create_params().nya_x11_display)) {
++    return false;
++  }
++  return BrowserNativeWidgetAura::ShouldRestorePreviousBrowserWidgetState();
++}
++
++bool BrowserNativeWidgetAuraLinux::ShouldSaveWindowPlacement() const {
++  if (nya::OneCompositorEnabled() && browser_view() &&
++      browser_view()->browser() &&
++      nya::FindDesktopHost(
++          browser_view()->browser()->create_params().nya_x11_display)) {
++    return false;
++  }
++  return BrowserNativeWidgetAura::ShouldSaveWindowPlacement();
++}
++
+ void BrowserNativeWidgetAuraLinux::OnUseCustomChromeFrameChanged() {
+   if (!browser_widget()) {
+     return;
+@@ -140,9 +186,13 @@
+     const std::string& display =
+         browser_view->browser()->create_params().nya_x11_display;
+     if (nya::FindDesktopHost(display)) {
+-      // window.open / undocked DevTools / PiP on a display that already has
+-      // the session GPU compositor. BrowserNativeWidgetAura is a Desktop
+-      // widget and would create a second EGL pbuffer.
++      if (browser_view->browser()->is_type_normal()) {
++        // Ctrl+N / Chrome 新窗口: real X11 Desktop widget with GPU
++        // readback so tint2 sees it and WebContents paints.
++        return new BrowserNativeWidgetAuraLinux(browser_widget, browser_view);
++      }
++      // window.open / DevTools / PiP: NativeWidgetAura on the session
++      // compositor (014). A second EGL pbuffer is not created.
+       return new nya::BrowserNativeWidgetChild(browser_widget, browser_view);
+     }
+   }
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
+--- a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
+@@ -28,6 +28,11 @@
+ 
+   bool ShouldDrawRestoredFrameShadow() const override;
+ 
++  // Extra type_normal windows on a display that already has the GPU
++  // compositor must not inherit --start-maximized / saved placement.
++  bool ShouldRestorePreviousBrowserWidgetState() const override;
++  bool ShouldSaveWindowPlacement() const override;
++
+   void set_host(BrowserDesktopWindowTreeHostLinux* host) { host_ = host; }
+ 
+  protected:
+diff --git a/ui/ozone/platform/x11/x11_readback_present_cache.cc b/ui/ozone/platform/x11/x11_readback_present_cache.cc
+--- a/ui/ozone/platform/x11/x11_readback_present_cache.cc
++++ b/ui/ozone/platform/x11/x11_readback_present_cache.cc
+@@ -6,6 +6,7 @@
+ #include <map>
+ #include <string>
+ 
++#include "base/logging.h"
+ #include "base/no_destructor.h"
+ #include "base/synchronization/lock.h"
+ #include "base/task/single_thread_task_runner.h"
+@@ -64,11 +65,18 @@
+   auto& map = GetMap();
+   base::AutoLock lock(map.lock);
+   auto it = map.egl_view_by_display.find(display);
+-  if (it == map.egl_view_by_display.end() || it->second == widget) {
++  if (it != map.egl_view_by_display.end() && it->second != widget) {
++    // Extra type_normal X11 windows need their own readback present.
++    // 013's named FBO keeps glReadPixels off FBO 0. Refusing here blanked
++    // WebContents or froze the session (MIT-SHM fallback).
++    LOG(ERROR) << "nya-present extra EGL readback widget="
++               << static_cast<uint32_t>(widget)
++               << " display already has widget="
++               << static_cast<uint32_t>(it->second);
++  } else {
+     map.egl_view_by_display[display] = widget;
+-    return true;
+   }
+-  return false;
++  return true;
+ }
+ 
+ void X11ReadbackPresentCache::ReleaseEglView(gfx::AcceleratedWidget widget) {
+diff --git a/ui/ozone/platform/x11/x11_readback_present_cache.h b/ui/ozone/platform/x11/x11_readback_present_cache.h
+--- a/ui/ozone/platform/x11/x11_readback_present_cache.h
++++ b/ui/ozone/platform/x11/x11_readback_present_cache.h
+@@ -28,9 +28,9 @@
+   static bool Lookup(gfx::AcceleratedWidget widget,
+                      X11ReadbackPresentTarget* out);
+   static bool Contains(gfx::AcceleratedWidget widget);
+-  // Last-resort freeze tripwire: at most one EGL-readback view per X display.
+-  // Extra widgets must be NativeWidgetAura (014). A second pbuffer on
+-  // in-process GPU stalls present; refuse before creating it.
++  // Extra type_normal X11 windows may also claim a readback view. Named
++  // FBO present (013) keeps two pbuffers from sharing FBO 0. Refusing a
++  // second view blanked WebContents or fell back to MIT-SHM (freeze).
+   static bool TryClaimEglView(gfx::AcceleratedWidget widget);
+   static void ReleaseEglView(gfx::AcceleratedWidget widget);
+ };
