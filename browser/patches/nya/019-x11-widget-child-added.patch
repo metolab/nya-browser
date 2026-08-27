@@ -1,0 +1,109 @@
+diff --git a/ui/views/widget/sublevel_manager.cc b/ui/views/widget/sublevel_manager.cc
+--- a/ui/views/widget/sublevel_manager.cc
++++ b/ui/views/widget/sublevel_manager.cc
+@@ -7,6 +7,8 @@
+ #include <algorithm>
+ 
+ #include "build/build_config.h"
++#include "base/logging.h"
++#include "base/strings/stringprintf.h"
+ #include "ui/views/widget/native_widget_private.h"
+ #include "ui/views/widget/widget.h"
+ 
+@@ -36,6 +38,16 @@
+ #endif
+ }
+ 
++std::string DescribeWidget(const views::Widget* widget) {
++  if (!widget) {
++    return "null";
++  }
++  return base::StringPrintf("%p name=%s toplevel=%d parent=%p",
++                            static_cast<const void*>(widget),
++                            widget->GetName().c_str(),
++                            widget->is_top_level() ? 1 : 0,
++                            static_cast<const void*>(widget->parent()));
++}
++
+ }  // namespace
+ 
+ namespace views {
+@@ -89,16 +101,38 @@
+ }
+ 
+ void SublevelManager::OnWidgetChildAdded(Widget* owner, Widget* child) {
+-  CHECK_EQ(owner, owner_);
+-  CHECK(!std::ranges::contains(children_, child));
+-  CHECK_EQ(child->parent(), owner_);
++  // Nya hosts extra UI on one GPU compositor. CreateNativeWidget may attach
++  // params.parent after Widget::parent_ was bound, so Init both reparents
++  // (OnChildAdded) and then notifies again at the end of Init. A CHECK here
++  // kills the whole browser because --in-process-gpu shares the process.
++  if (owner != owner_) {
++    LOG(ERROR) << "nya-widget child-added owner mismatch observer="
++               << DescribeWidget(owner_) << " notify=" << DescribeWidget(owner)
++               << " child=" << DescribeWidget(child);
++    return;
++  }
++  if (!child) {
++    LOG(ERROR) << "nya-widget child-added null child owner="
++               << DescribeWidget(owner_);
++    return;
++  }
++  if (std::ranges::contains(children_, child)) {
++    LOG(ERROR) << "nya-widget child-added duplicate owner="
++               << DescribeWidget(owner_) << " child=" << DescribeWidget(child);
++    return;
++  }
++  if (child->parent() != owner_) {
++    LOG(ERROR) << "nya-widget child-added parent mismatch owner="
++               << DescribeWidget(owner_) << " child=" << DescribeWidget(child);
++    return;
++  }
+   children_.push_back(child);
+ }
+ 
+ void SublevelManager::OnWidgetChildRemoved(Widget* owner, Widget* child) {
+-  CHECK_EQ(owner, owner_);
++  if (owner != owner_) {
++    LOG(ERROR) << "nya-widget child-removed owner mismatch observer="
++               << DescribeWidget(owner_) << " notify=" << DescribeWidget(owner)
++               << " child=" << DescribeWidget(child);
++    return;
++  }
+   // During shutdown a child might get untracked more than once by the same
+   // parent. We don't want to DCHECK on that.
+   std::erase(children_, child);
+diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
+--- a/ui/views/widget/widget.cc
++++ b/ui/views/widget/widget.cc
+@@ -550,8 +550,31 @@
+   internal::NativeWidgetPrivate* native_widget_raw_ptr =
+       CreateNativeWidget(params, this)->AsNativeWidgetPrivate();
+   // CreateNativeWidget (Nya) may set params.child after OnBeforeWidgetInit.
++  // It may also set params.parent so extra UI shares the session compositor.
++  // Bind parent_ *before* InitNativeWidget: otherwise native reparent notifies
++  // OnChildAdded, then Init's trailing parent_->OnChildAdded fires again and
++  // SublevelManager CHECK-crashes the in-process GPU browser.
+   is_top_level_ = !params.child;
++  if (params.parent) {
++    if (Widget* hosted_parent = GetWidgetForNativeView(params.parent)) {
++      if (parent_.get() != hosted_parent) {
++        parent_ = hosted_parent->GetWeakPtr();
++        parent_paint_as_active_subscription_ =
++            parent_->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
++                &Widget::OnParentShouldPaintAsActiveChanged,
++                base::Unretained(this)));
++#if BUILDFLAG(IS_LINUX)
++        if (x11_display_.empty()) {
++          x11_display_ = parent_->x11_display();
++          params.x11_display = x11_display_;
++        }
++#endif
++      }
++    }
++  }
+   native_widget_ = native_widget_raw_ptr->GetWeakPtr();
+   if (params.ownership == InitParams::WIDGET_OWNS_NATIVE_WIDGET) {
+     owned_native_widget_ = base::WrapUnique(native_widget_raw_ptr);
+   }

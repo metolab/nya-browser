@@ -33,6 +33,7 @@ import {
   stopChromeLifecycle,
 } from './chromeLifecycle.js';
 import { TYPE_TEXT_MAX, runXtype } from './xtype.js';
+import { logChromeCrash } from './chromeCrashLog.js';
 
 const DISPLAY_BASE = Number(process.env.DISPLAY_BASE || 100);
 const SUB_DISPLAY_BASE = Number(process.env.SUB_DISPLAY_BASE || 2000);
@@ -1249,10 +1250,17 @@ async function startChrome(runtime) {
     logFile,
     onExit: (code, signal) => {
       console.log(`[chrome ${runtime.id}] exited code=${code} signal=${signal}`);
+      if (runtime.allowRecover) {
+        try {
+          logChromeCrash(runtime, code, signal);
+        } catch (err) {
+          console.error(`[chrome-crash] session=${runtime.id} summary failed:`, err.message);
+        }
+      }
       runtime.chrome = null;
       stopChromeLifecycle(runtime.id);
       if (runtime.allowRecover && runtimes.has(runtime.id)) {
-        scheduleChromeRecover(runtime, 'exit');
+        scheduleChromeRecover(runtime, signal ? `exit-${signal}` : `exit-${code}`);
       }
     },
   });
