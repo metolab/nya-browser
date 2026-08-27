@@ -129,8 +129,10 @@ ARG NYA_GITHUB_REPO=metolab/nya-browser
 ARG CHROMIUM_URL=
 COPY browser/VERSION /tmp/CHROMIUM_VERSION
 COPY browser/CHROMIUM.sha256 /tmp/CHROMIUM.sha256
+COPY browser/TAMPERMONKEY.sha256 /tmp/TAMPERMONKEY.sha256
 COPY cache/ /tmp/chromium-cache/
 COPY scripts/install-chromium.sh /tmp/install-chromium.sh
+COPY scripts/install-tampermonkey.sh /tmp/install-tampermonkey.sh
 RUN --mount=type=secret,id=github_token,required=false \
     CHROMIUM_VERSION="$(tr -d ' \n' < /tmp/CHROMIUM_VERSION)" \
     NYA_GITHUB_REPO="${NYA_GITHUB_REPO}" \
@@ -138,7 +140,9 @@ RUN --mount=type=secret,id=github_token,required=false \
     CHROMIUM_CACHE_DIR=/tmp/chromium-cache \
     GITHUB_TOKEN="$( [ -f /run/secrets/github_token ] && cat /run/secrets/github_token || true )" \
     bash /tmp/install-chromium.sh \
-    && rm -rf /tmp/chromium-cache /tmp/install-chromium.sh /tmp/CHROMIUM_VERSION /tmp/CHROMIUM.sha256 \
+    && TAMPERMONKEY_CACHE_DIR=/tmp/chromium-cache bash /tmp/install-tampermonkey.sh \
+    && rm -rf /tmp/chromium-cache /tmp/install-chromium.sh /tmp/install-tampermonkey.sh \
+          /tmp/CHROMIUM_VERSION /tmp/CHROMIUM.sha256 /tmp/TAMPERMONKEY.sha256 \
     && mkdir -p /data /etc/chromium/policies/managed
 
 COPY --from=build /app/package.json /app/package.json

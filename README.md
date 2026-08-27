@@ -39,6 +39,8 @@ bash scripts/publish-chromium.sh
 
 Release tag：`chromium-<version>`，附件：`nya-chromium-<version>-linux64.tar.xz`。
 
+镜像构建时会从 [Tampermonkey](https://www.tampermonkey.net/crx/tampermonkey_stable.crx) 安装油猴（`browser/TAMPERMONKEY.sha256` 钉版本），会话默认加载、高级模式、不打开新手页。本地可把 CRX 放到 `cache/tampermonkey_stable.crx` 供离线构建。
+
 无网络 Release、只在本机构镜像时：
 
 ```bash

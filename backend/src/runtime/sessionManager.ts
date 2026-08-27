@@ -35,6 +35,7 @@ import {
 } from './chromeLifecycle.js';
 import { TYPE_TEXT_MAX, runXtype } from './xtype.js';
 import { logChromeCrash } from './chromeCrashLog.js';
+import { TAMPERMONKEY_ID, resolveTampermonkeyDir } from './tampermonkey.js';
 
 const DISPLAY_BASE = Number(process.env.DISPLAY_BASE || 100);
 const SUB_DISPLAY_BASE = Number(process.env.SUB_DISPLAY_BASE || 2000);
@@ -671,6 +672,11 @@ function writeChromePolicies() {
       'https://www.google.com/search?q={searchTerms}',
     DefaultSearchProviderSuggestURL:
       'https://www.google.com/complete/search?client=chrome&q={searchTerms}',
+    ExtensionSettings: {
+      [TAMPERMONKEY_ID]: {
+        toolbar_pin: 'force_pinned',
+      },
+    },
   };
   const body = `${JSON.stringify(policy, null, 2)}\n`;
   for (const dir of CHROME_POLICY_DIRS) {
@@ -747,6 +753,21 @@ function writeChromePreferences(sessionId, startUrl) {
     ip_handling_policy: 'disable_non_proxied_udp',
     multiple_routes_enabled: false,
     nonproxied_udp_enabled: false,
+  };
+  const tmSettings = (prefs.extensions && prefs.extensions.settings && prefs.extensions.settings[TAMPERMONKEY_ID]) || {};
+  prefs.extensions = {
+    ...(prefs.extensions || {}),
+    ui: {
+      ...((prefs.extensions && prefs.extensions.ui) || {}),
+      developer_mode: true,
+    },
+    settings: {
+      ...((prefs.extensions && prefs.extensions.settings) || {}),
+      [TAMPERMONKEY_ID]: {
+        ...tmSettings,
+        user_scripts_enabled: true,
+      },
+    },
   };
   fs.writeFileSync(prefsPath, JSON.stringify(prefs));
 
@@ -1104,6 +1125,11 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     args.push(`--proxy-server=http://127.0.0.1:${localProxyPort}`);
   } else {
     args.push('--no-proxy-server');
+  }
+  const tampermonkeyDir = resolveTampermonkeyDir();
+  if (tampermonkeyDir) {
+    args.push(`--load-extension=${tampermonkeyDir}`);
+    args.push(`--allowlisted-extension-id=${TAMPERMONKEY_ID}`);
   }
   return args;
 }
