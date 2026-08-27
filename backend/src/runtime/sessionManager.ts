@@ -1002,12 +1002,11 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     '--enable-webgl',
     '--enable-webgl2',
     '--disable-ipv6',
-    // One EGL compositor per X display (Chromium patches 014/015/022).
+    // One EGL-readback compositor per X display (Chromium patches 014/015/023).
     // Menus/bubbles stay NativeWidgetAura on that compositor. Extra Browser
-    // windows (window.open, 新窗口) are a second X11 window with software
-    // compositing so Openbox can move them and tint2 can list them — a second
-    // EGL pbuffer would freeze in-process GPU. In-process GPU is required so
-    // UI-thread present cache and the GPU thread share address space.
+    // windows (window.open, 新窗口) are a second X11 window with GPU readback
+    // present so WebContents paints and tint2 can list them. In-process GPU is
+    // required so UI-thread present cache and the GPU thread share address space.
     '--nya-x11-multi-display',
     '--in-process-gpu',
     // LOG(ERROR) "nya-present …" in the session chrome.log. Heartbeat every
