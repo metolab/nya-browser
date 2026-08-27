@@ -1,0 +1,183 @@
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget.h b/chrome/browser/ui/views/frame/browser_native_widget.h
+--- a/chrome/browser/ui/views/frame/browser_native_widget.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget.h
+@@ -72,6 +72,12 @@
+   // Called when the tab drag kind for this frame changes.
+   virtual void TabDraggingKindChanged(TabDragKind tab_drag_kind) {}
+ 
++#if BUILDFLAG(IS_LINUX)
++  // Client-side restored frame shadow needs a DesktopWindowTreeHost.
++  // In-compositor child Browser windows (Nya extra windows) have none.
++  virtual bool ShouldDrawRestoredFrameShadow() const { return false; }
++#endif
++
+ #if BUILDFLAG(IS_MAC)
+   // Causes the screen reader to announce |text| against the remote window. If
+   // the current user is not using a screen reader or if there is no remote
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
+--- a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
+@@ -26,7 +26,7 @@
+   void OnHostClosed() override;
+   bool UseCustomFrame() const override;
+ 
+-  bool ShouldDrawRestoredFrameShadow() const;
++  bool ShouldDrawRestoredFrameShadow() const override;
+ 
+   void set_host(BrowserDesktopWindowTreeHostLinux* host) { host_ = host; }
+ 
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
+--- a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
++++ b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
+@@ -102,6 +102,9 @@
+ 
+ void BrowserNativeWidgetAuraLinux::TabDraggingKindChanged(
+     TabDragKind tab_drag_kind) {
++  if (!host_) {
++    return;
++  }
+   host_->TabDraggingKindChanged(tab_drag_kind);
+ }
+ 
+@@ -111,7 +114,7 @@
+ }
+ 
+ bool BrowserNativeWidgetAuraLinux::ShouldDrawRestoredFrameShadow() const {
+-  return host_->SupportsClientFrameShadow() && UseCustomFrame();
++  return host_ && host_->SupportsClientFrameShadow() && UseCustomFrame();
+ }
+ 
+ void BrowserNativeWidgetAuraLinux::OnUseCustomChromeFrameChanged() {
+@@ -124,7 +127,9 @@
+       UseCustomFrame() ? views::Widget::FrameType::kForceCustom
+                        : views::Widget::FrameType::kForceNative);
+   browser_widget()->FrameTypeChanged();
+-  host_->UpdateFrameHints();
++  if (host_) {
++    host_->UpdateFrameHints();
++  }
+ }
+ 
+ BrowserNativeWidget* BrowserNativeWidgetFactory::Create(
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_linux.cc b/chrome/browser/ui/views/frame/browser_frame_view_linux.cc
+--- a/chrome/browser/ui/views/frame/browser_frame_view_linux.cc
++++ b/chrome/browser/ui/views/frame/browser_frame_view_linux.cc
+@@ -6,7 +6,7 @@
+ 
+ #include "base/notreached.h"
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+-#include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
++#include "chrome/browser/ui/views/frame/browser_native_widget.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "ui/base/hit_test.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -91,9 +91,8 @@
+ }
+ 
+ bool BrowserFrameViewLinux::ShouldDrawRestoredFrameShadow() const {
+-  return static_cast<BrowserNativeWidgetAuraLinux*>(
+-             browser_widget()->browser_native_widget())
+-      ->ShouldDrawRestoredFrameShadow();
++  BrowserNativeWidget* native = browser_widget()->browser_native_widget();
++  return native && native->ShouldDrawRestoredFrameShadow();
+ }
+ 
+ void BrowserFrameViewLinux::OnWindowButtonOrderingChange() {
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc b/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
+--- a/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
++++ b/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
+@@ -21,7 +21,7 @@
+ #include "chrome/browser/ui/views/frame/browser_frame_view_layout_linux.h"
+ #include "chrome/browser/ui/views/frame/browser_frame_view_layout_linux_native.h"
+ #include "chrome/browser/ui/views/frame/browser_frame_view_linux_native.h"
+-#include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
++#include "chrome/browser/ui/views/frame/browser_native_widget.h"
+ #include "chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+ #include "ui/linux/linux_ui.h"
+@@ -57,15 +57,15 @@
+     auto nav_button_provider =
+         linux_ui_theme->CreateNavButtonProvider(ui::FrameType::kBrowser);
+     if (nav_button_provider) {
+-      auto* native_widget = static_cast<BrowserNativeWidgetAuraLinux*>(
+-          widget->browser_native_widget());
++      auto* native_widget = widget->browser_native_widget();
+       auto* layout = new BrowserFrameViewLayoutLinuxNative(
+           nav_button_provider.get(),
+           base::BindRepeating(
+-              [](BrowserNativeWidgetAuraLinux* native_widget,
++              [](BrowserNativeWidget* native_widget,
+                  ui::LinuxUiTheme* linux_ui_theme, bool tiled, bool maximized) {
+                 const bool solid_frame =
+-                    !native_widget->ShouldDrawRestoredFrameShadow();
++                    !native_widget ||
++                    !native_widget->ShouldDrawRestoredFrameShadow();
+                 return linux_ui_theme->GetWindowFrameProvider(
+                     ui::FrameType::kBrowser, solid_frame, tiled, maximized);
+               },
+diff --git a/chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.cc b/chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.cc
+--- a/chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.cc
++++ b/chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.cc
+@@ -8,7 +8,7 @@
+ #include "chrome/browser/themes/theme_service_factory.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+-#include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
++#include "chrome/browser/ui/views/frame/browser_native_widget.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "third_party/skia/include/core/SkRRect.h"
+ #include "ui/gfx/canvas.h"
+@@ -40,9 +40,9 @@
+   auto* profile = browser_view->browser()->profile();
+   auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(profile);
+   auto* theme_service_factory = ThemeServiceFactory::GetForProfile(profile);
+   if (linux_ui_theme && theme_service_factory->UsingSystemTheme()) {
+-    bool solid_frame = !static_cast<BrowserNativeWidgetAuraLinux*>(
+-                            widget->browser_native_widget())
+-                            ->ShouldDrawRestoredFrameShadow();
++    BrowserNativeWidget* native = widget->browser_native_widget();
++    bool solid_frame =
++        !native || !native->ShouldDrawRestoredFrameShadow();
+ 
+     // This may return null, but that's handled below.
+     window_frame_provider_ = linux_ui_theme->GetWindowFrameProvider(
+@@ -160,9 +160,8 @@
+ }
+ 
+ bool PictureInPictureBrowserFrameViewLinux::ShouldDrawFrameShadow() const {
+-  return static_cast<BrowserNativeWidgetAuraLinux*>(
+-             browser_widget()->browser_native_widget())
+-      ->ShouldDrawRestoredFrameShadow();
++  BrowserNativeWidget* native = browser_widget()->browser_native_widget();
++  return native && native->ShouldDrawRestoredFrameShadow();
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+diff --git a/chrome/browser/ui/nya/nya_browser_native_widget.h b/chrome/browser/ui/nya/nya_browser_native_widget.h
+--- a/chrome/browser/ui/nya/nya_browser_native_widget.h
++++ b/chrome/browser/ui/nya/nya_browser_native_widget.h
+@@ -31,6 +31,7 @@
+   views::Widget::InitParams GetWidgetParams(
+       views::Widget::InitParams::Ownership ownership) override;
+   bool UseCustomFrame() const override;
++  bool ShouldDrawRestoredFrameShadow() const override;
+   bool UsesNativeSystemMenu() const override;
+   bool ShouldSaveWindowPlacement() const override;
+   void GetWindowPlacement(
+diff --git a/chrome/browser/ui/nya/nya_browser_native_widget.cc b/chrome/browser/ui/nya/nya_browser_native_widget.cc
+--- a/chrome/browser/ui/nya/nya_browser_native_widget.cc
++++ b/chrome/browser/ui/nya/nya_browser_native_widget.cc
+@@ -56,6 +56,12 @@
+ bool BrowserNativeWidgetChild::UseCustomFrame() const {
+   return true;
+ }
++
++bool BrowserNativeWidgetChild::ShouldDrawRestoredFrameShadow() const {
++  // Hosted as NativeWidgetAura on the session compositor — no
++  // DesktopWindowTreeHost, so Linux CSD shadows would null-deref.
++  return false;
++}
+ 
+ bool BrowserNativeWidgetChild::UsesNativeSystemMenu() const {
+   return false;
+}

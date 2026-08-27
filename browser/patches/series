@@ -15,3 +15,4 @@ nya/015-x11-safe-extra-widgets.patch
 nya/017-x11-egl-detach-from-xdisplay.patch
 nya/018-x11-readback-onscreen-surface.patch
 nya/019-x11-widget-child-added.patch
+nya/020-linux-child-frame-shadow.patch
