@@ -20,6 +20,7 @@ export interface BuildSingboxConfigOptions {
   listenHost?: string;
   listenPort: number;
   proxy: SingboxProxyInput;
+  via?: SingboxProxyInput[];
   logPath?: string;
   blockLoopback?: boolean;
 }
@@ -77,7 +78,10 @@ function vlessTransport(extra: ProxyExtra) {
   };
 }
 
-export function buildSingboxOutbound(proxy: SingboxProxyInput): Record<string, unknown> {
+export function buildSingboxOutbound(
+  proxy: SingboxProxyInput,
+  opts: { tag?: string; detour?: string } = {},
+): Record<string, unknown> {
   if (!isProxyType(proxy.type)) {
     throw new Error('Invalid proxy type');
   }
@@ -87,10 +91,13 @@ export function buildSingboxOutbound(proxy: SingboxProxyInput): Record<string, u
   const extra = extraOf(proxy);
   const server = serverOf(proxy);
   const port = proxy.port;
-  const tag = 'proxy';
+  const tag = opts.tag || 'proxy';
+  const detour = opts.detour;
+
+  let outbound: Record<string, unknown>;
 
   if (proxy.type === 'http' || proxy.type === 'https') {
-    const outbound: Record<string, unknown> = {
+    outbound = {
       type: 'http',
       tag,
       server,
@@ -100,11 +107,8 @@ export function buildSingboxOutbound(proxy: SingboxProxyInput): Record<string, u
     if (proxy.password) outbound.password = proxy.password;
     const tls = tlsObject({ ...proxy, extra: { ...extra, security: 'tls' } }, proxy.type === 'https');
     if (tls) outbound.tls = tls;
-    return outbound;
-  }
-
-  if (proxy.type === 'socks5') {
-    const outbound: Record<string, unknown> = {
+  } else if (proxy.type === 'socks5') {
+    outbound = {
       type: 'socks',
       tag,
       server,
@@ -113,12 +117,9 @@ export function buildSingboxOutbound(proxy: SingboxProxyInput): Record<string, u
     };
     if (proxy.username) outbound.username = proxy.username;
     if (proxy.password) outbound.password = proxy.password;
-    return outbound;
-  }
-
-  if (proxy.type === 'ss') {
+  } else if (proxy.type === 'ss') {
     if (!proxy.password) throw new Error('Shadowsocks password is required');
-    const outbound: Record<string, unknown> = {
+    outbound = {
       type: 'shadowsocks',
       tag,
       server,
@@ -130,13 +131,10 @@ export function buildSingboxOutbound(proxy: SingboxProxyInput): Record<string, u
       outbound.plugin = extra.plugin;
       if (extra.pluginOpts) outbound.plugin_opts = extra.pluginOpts;
     }
-    return outbound;
-  }
-
-  if (proxy.type === 'anytls') {
+  } else if (proxy.type === 'anytls') {
     if (!proxy.password) throw new Error('AnyTLS password is required');
     const tls = tlsObject({ ...proxy, extra: { ...extra, security: extra.security === 'none' ? 'tls' : extra.security } }, true);
-    return {
+    outbound = {
       type: 'anytls',
       tag,
       server,
@@ -144,11 +142,9 @@ export function buildSingboxOutbound(proxy: SingboxProxyInput): Record<string, u
       password: proxy.password,
       tls,
     };
-  }
-
-  if (proxy.type === 'vless') {
+  } else if (proxy.type === 'vless') {
     if (!proxy.password) throw new Error('VLESS uuid is required');
-    const outbound: Record<string, unknown> = {
+    outbound = {
       type: 'vless',
       tag,
       server,
@@ -161,16 +157,23 @@ export function buildSingboxOutbound(proxy: SingboxProxyInput): Record<string, u
     if (tls) outbound.tls = tls;
     const transport = vlessTransport(extra);
     if (transport) outbound.transport = transport;
-    return outbound;
+  } else {
+    throw new Error(`Unsupported proxy type: ${proxy.type}`);
   }
 
-  throw new Error(`Unsupported proxy type: ${proxy.type}`);
+  if (detour) outbound.detour = detour;
+  return outbound;
 }
 
 export function buildSingboxConfig(opts: BuildSingboxConfigOptions): Record<string, unknown> {
   const listenHost = opts.listenHost || '127.0.0.1';
   const blockLoopback = opts.blockLoopback !== false;
-  const outbound = buildSingboxOutbound(opts.proxy);
+  const via = opts.via || [];
+  const viaTags = via.map((_, i) => `via-${i}`);
+  const outbounds = [
+    buildSingboxOutbound(opts.proxy, { tag: 'proxy', detour: viaTags[0] }),
+    ...via.map((hop, i) => buildSingboxOutbound(hop, { tag: viaTags[i], detour: viaTags[i + 1] })),
+  ];
   const rules: Record<string, unknown>[] = [];
   if (blockLoopback) {
     rules.push(
@@ -196,7 +199,7 @@ export function buildSingboxConfig(opts: BuildSingboxConfigOptions): Record<stri
         listen_port: opts.listenPort,
       },
     ],
-    outbounds: [outbound],
+    outbounds,
     route: {
       rules,
       final: 'proxy',

@@ -3,9 +3,10 @@ import fs from 'fs';
 import net from 'net';
 import os from 'os';
 import path from 'path';
-import { buildSingboxConfig, emptyProxyExtra, type ProxyConfig } from '@nya/shared';
+import { buildSingboxConfig, type ProxyConfig, type SingboxProxyInput } from '@nya/shared';
 import { DATA_DIR, SING_BOX_BIN } from '../config.js';
 import { logger } from '../logger.js';
+import { proxyChainInputs } from '../store.js';
 
 export type SingboxHandle = {
   child: ChildProcess;
@@ -170,17 +171,11 @@ export async function startSingboxSidecar(opts: {
   const dir = opts.configDir || runtimeDir();
   const configPath = path.join(dir, `${opts.id}.json`);
   const logPath = path.join(dir, `${opts.id}.log`);
-  const extra = opts.proxy.extra || emptyProxyExtra();
+  const chain = proxyChainInputs(opts.proxy);
   const config = buildSingboxConfig({
     listenPort: opts.listenPort,
-    proxy: {
-      type: opts.proxy.type,
-      host: opts.proxy.host,
-      port: opts.proxy.port,
-      username: opts.proxy.username,
-      password: opts.proxy.password,
-      extra,
-    },
+    proxy: chain.proxy,
+    via: chain.via,
     logPath,
     blockLoopback: true,
   });
@@ -192,7 +187,10 @@ export async function startSingboxSidecar(opts: {
     await stopSingboxSidecar(child);
     throw err;
   }
-  logger.info({ id: opts.id, port: opts.listenPort, type: opts.proxy.type }, 'sing-box sidecar started');
+  logger.info(
+    { id: opts.id, port: opts.listenPort, type: opts.proxy.type, via: chain.via.length },
+    'sing-box sidecar started',
+  );
   return {
     port: opts.listenPort,
     handle: { child, port: opts.listenPort, configPath, logPath },
@@ -202,7 +200,7 @@ export async function startSingboxSidecar(opts: {
 export async function withEphemeralSidecar<T>(
   proxy: ProxyConfig,
   fn: (port: number) => Promise<T>,
-  opts: { blockLoopback?: boolean } = {},
+  opts: { blockLoopback?: boolean; via?: SingboxProxyInput[] } = {},
 ): Promise<T> {
   const bin = resolveSingboxBin();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nya-singbox-'));
@@ -217,19 +215,25 @@ export async function withEphemeralSidecar<T>(
     });
     server.on('error', reject);
   });
-  const extra = proxy.extra || emptyProxyExtra();
+  const chain = opts.via
+    ? {
+        proxy: {
+          type: proxy.type as Exclude<ProxyConfig['type'], 'none'>,
+          host: proxy.host,
+          port: proxy.port,
+          username: proxy.username,
+          password: proxy.password,
+          extra: proxy.extra,
+        },
+        via: opts.via,
+      }
+    : proxyChainInputs(proxy);
   writeConfig(
     configPath,
     buildSingboxConfig({
       listenPort: port,
-      proxy: {
-        type: proxy.type as Exclude<ProxyConfig['type'], 'none'>,
-        host: proxy.host,
-        port: proxy.port,
-        username: proxy.username,
-        password: proxy.password,
-        extra,
-      },
+      proxy: chain.proxy,
+      via: chain.via,
       logPath,
       blockLoopback: opts.blockLoopback !== false,
     }),

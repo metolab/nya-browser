@@ -77,6 +77,7 @@ export const proxyFieldsSchema = z.object({
   username: z.string().max(200).optional().default(''),
   password: z.string().max(2048).optional().default(''),
   extra: proxyExtraSchema.optional(),
+  viaProxyId: z.string().min(1).nullable().optional(),
 });
 
 export const createProxySchema = proxyFieldsSchema.superRefine((value, ctx) => {

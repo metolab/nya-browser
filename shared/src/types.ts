@@ -15,6 +15,7 @@ export interface ProxyConfig {
   username: string;
   password: string;
   extra: ProxyExtra;
+  viaProxyId?: string | null;
 }
 
 export interface ProxyTestResult {
@@ -36,6 +37,7 @@ export interface ProxyRecord {
   username: string;
   password: string;
   extra: ProxyExtra;
+  viaProxyId: string | null;
   createdAt: string;
   lastTestAt: string | null;
   lastTest: ProxyTestResult | null;
@@ -203,4 +205,5 @@ export const emptyProxy = (): ProxyConfig => ({
   username: '',
   password: '',
   extra: emptyProxyExtra(),
+  viaProxyId: null,
 });

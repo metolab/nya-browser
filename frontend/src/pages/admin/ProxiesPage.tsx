@@ -75,6 +75,8 @@ function needsSni(type: ProxyRecord['type']) {
   return type === 'https' || type === 'anytls' || type === 'vless';
 }
 
+const NONE_KEY = '__none__';
+
 export default function ProxiesPage() {
   const [rows, setRows] = useState<ProxyRecord[]>([]);
   const [open, setOpen] = useState(false);
@@ -87,6 +89,7 @@ export default function ProxiesPage() {
   const [port, setPort] = useState('1080');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [viaProxyId, setViaProxyId] = useState(NONE_KEY);
   const [extra, setExtra] = useState<ProxyExtra>(emptyProxyExtra());
 
   const load = useCallback(async () => {
@@ -109,6 +112,7 @@ export default function ProxiesPage() {
     setPort('1080');
     setUsername('');
     setPassword('');
+    setViaProxyId(NONE_KEY);
     setExtra(emptyProxyExtra());
     setOpen(true);
   };
@@ -122,6 +126,7 @@ export default function ProxiesPage() {
     setPort(String(p.port));
     setUsername(p.username);
     setPassword('');
+    setViaProxyId(p.viaProxyId || NONE_KEY);
     setExtra({ ...emptyProxyExtra(), ...p.extra });
     setOpen(true);
   };
@@ -150,6 +155,7 @@ export default function ProxiesPage() {
       port: Number(port),
       username: needsUser(type) ? username : '',
       extra,
+      viaProxyId: viaProxyId === NONE_KEY ? null : viaProxyId,
     };
     const req = editing
       ? api.updateProxy(editing.id, {
@@ -182,6 +188,7 @@ export default function ProxiesPage() {
           <TableRow>
             <TableHead>名称</TableHead>
             <TableHead>类型</TableHead>
+            <TableHead>前置</TableHead>
             <TableHead>地址</TableHead>
             <TableHead>地区</TableHead>
             <TableHead>最近测试</TableHead>
@@ -193,6 +200,9 @@ export default function ProxiesPage() {
             <TableRow key={p.id}>
               <TableCell className="font-medium">{p.name}</TableCell>
               <TableCell>{TYPE_LABELS[p.type] || p.type}</TableCell>
+              <TableCell>
+                {p.viaProxyId ? rows.find((r) => r.id === p.viaProxyId)?.name || p.viaProxyId : '-'}
+              </TableCell>
               <TableCell>
                 {p.host}:{p.port}
               </TableCell>
@@ -299,6 +309,27 @@ export default function ProxiesPage() {
               </Select>
               <p className="text-xs text-muted-foreground">
                 Chrome 只连本机 HTTP，协议由 sing-box sidecar 处理
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label>前置代理</Label>
+              <Select value={viaProxyId} onValueChange={setViaProxyId}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE_KEY}>无</SelectItem>
+                  {rows
+                    .filter((r) => r.id !== editing?.id)
+                    .map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.name} ({TYPE_LABELS[r.type] || r.type})
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                先经前置节点再连本节点，用于入口不通的线路
               </p>
             </div>
             <div className="grid gap-2">

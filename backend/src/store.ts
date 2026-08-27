@@ -95,7 +95,62 @@ export function normalizeProxyConfig(input: Partial<ProxyConfig> | null | undefi
     username: String(input?.username || ''),
     password: String(input?.password || ''),
     extra: normalizeProxyExtra(input?.extra),
+    viaProxyId: normalizeViaId(input?.viaProxyId),
   };
+}
+
+export const PROXY_CHAIN_MAX = 8;
+
+export function normalizeViaId(value: unknown): string | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  return s || null;
+}
+
+export function assertProxyChain(selfId: string | null, viaProxyId: string | null) {
+  const via = normalizeViaId(viaProxyId);
+  if (!via) return;
+  if (selfId && via === selfId) throw new Error('A proxy cannot chain through itself');
+  const seen = new Set<string>(selfId ? [selfId] : []);
+  let cur: string | null = via;
+  let depth = 0;
+  while (cur) {
+    if (seen.has(cur)) throw new Error('Proxy chain contains a cycle');
+    if (depth >= PROXY_CHAIN_MAX) throw new Error('Proxy chain is too long');
+    depth += 1;
+    seen.add(cur);
+    const hop = getProxy(cur);
+    if (!hop) throw new Error('Front proxy not found');
+    cur = hop.viaProxyId;
+  }
+}
+
+function toSingboxInput(proxy: ProxyRecord | ProxyConfig) {
+  if (!proxy.type || proxy.type === 'none') {
+    throw new Error('Invalid proxy type');
+  }
+  return {
+    type: proxy.type,
+    host: proxy.host,
+    port: proxy.port,
+    username: proxy.username,
+    password: proxy.password,
+    extra: proxy.extra || emptyProxyExtra(),
+  };
+}
+
+export function proxyChainInputs(proxy: ProxyRecord | ProxyConfig) {
+  const selfId = 'id' in proxy ? proxy.id : null;
+  assertProxyChain(selfId, proxy.viaProxyId);
+  const via = [];
+  let cur = normalizeViaId(proxy.viaProxyId);
+  while (cur) {
+    const hop = getProxy(cur);
+    if (!hop) throw new Error('Front proxy not found');
+    via.push(toSingboxInput(hop));
+    cur = hop.viaProxyId;
+  }
+  return { proxy: toSingboxInput(proxy), via };
 }
 
 function parseExtra(raw: string | null | undefined) {
@@ -137,6 +192,7 @@ export function getProxy(id: string | null | undefined): ProxyRecord | null {
     username: row.username,
     password: row.password,
     extra: parseExtra(row.extra),
+    viaProxyId: row.viaProxyId || null,
     createdAt: row.createdAt,
     lastTestAt: row.lastTestAt,
     lastTest: parseTest(row.lastTest),
@@ -157,6 +213,7 @@ export function listProxies(): ProxyRecord[] {
       username: row.username,
       password: row.password,
       extra: parseExtra(row.extra),
+      viaProxyId: row.viaProxyId || null,
       createdAt: row.createdAt,
       lastTestAt: row.lastTestAt,
       lastTest: parseTest(row.lastTest),
@@ -171,7 +228,10 @@ export function createProxyRecord(input: {
   username?: string;
   password?: string;
   extra?: ProxyRecord['extra'];
+  viaProxyId?: string | null;
 }): ProxyRecord {
+  const viaProxyId = normalizeViaId(input.viaProxyId);
+  assertProxyChain(null, viaProxyId);
   const now = new Date().toISOString();
   const row = {
     id: nanoid(10),
@@ -182,6 +242,7 @@ export function createProxyRecord(input: {
     username: input.username || '',
     password: input.password || '',
     extra: JSON.stringify(normalizeProxyExtra(input.extra)),
+    viaProxyId,
     createdAt: now,
     lastTestAt: null as string | null,
     lastTest: null as string | null,
@@ -200,6 +261,7 @@ export function updateProxyRecord(
     username: string;
     password: string;
     extra: ProxyRecord['extra'];
+    viaProxyId: string | null;
     lastTestAt: string | null;
     lastTest: ProxyTestResult | null;
   }>,
@@ -210,6 +272,9 @@ export function updateProxyRecord(
     patch.extra !== undefined
       ? normalizeProxyExtra({ ...current.extra, ...patch.extra })
       : current.extra;
+  const viaProxyId =
+    patch.viaProxyId !== undefined ? normalizeViaId(patch.viaProxyId) : current.viaProxyId;
+  if (patch.viaProxyId !== undefined) assertProxyChain(id, viaProxyId);
   const next = {
     name: patch.name !== undefined ? patch.name.trim() : current.name,
     type: patch.type ?? current.type,
@@ -218,6 +283,7 @@ export function updateProxyRecord(
     username: patch.username !== undefined ? patch.username : current.username,
     password: patch.password !== undefined ? patch.password : current.password,
     extra: JSON.stringify(extra),
+    viaProxyId,
     lastTestAt: patch.lastTestAt !== undefined ? patch.lastTestAt : current.lastTestAt,
     lastTest: patch.lastTest !== undefined ? JSON.stringify(patch.lastTest) : JSON.stringify(current.lastTest),
   };
@@ -229,6 +295,14 @@ export function deleteProxyRecord(id: string) {
   const using = db.select({ id: sessionsTable.id }).from(sessionsTable).where(eq(sessionsTable.proxyId, id)).all();
   if (using.length) {
     throw new Error('Proxy is in use by sessions');
+  }
+  const chained = db
+    .select({ id: proxiesTable.id })
+    .from(proxiesTable)
+    .where(eq(proxiesTable.viaProxyId, id))
+    .all();
+  if (chained.length) {
+    throw new Error('Proxy is used as a front proxy');
   }
   const r = db.delete(proxiesTable).where(eq(proxiesTable.id, id)).run();
   return r.changes > 0;
@@ -243,6 +317,7 @@ export function proxyToConfig(proxy: ProxyRecord | null): ProxyConfig {
     username: proxy.username,
     password: proxy.password,
     extra: proxy.extra || emptyProxyExtra(),
+    viaProxyId: proxy.viaProxyId || null,
   };
 }
 

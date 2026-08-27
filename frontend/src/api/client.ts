@@ -273,6 +273,7 @@ export const api = {
     username?: string;
     password?: string;
     extra?: ProxyRecord['extra'];
+    viaProxyId?: string | null;
   }) =>
     request<{ proxy: ProxyRecord }>('/api/proxies', {
       method: 'POST',

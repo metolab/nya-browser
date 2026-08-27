@@ -309,6 +309,32 @@ describe.skipIf(skip())('sing-box sidecar live', () => {
       );
       expect(body, item.name).toContain('colo=TEST');
     }
+
+    const chained = await withEphemeralSidecar(
+      {
+        type: 'ss',
+        host: '127.0.0.1',
+        port: ssPort,
+        username: '',
+        password: 'ss-secret',
+        extra: { ...emptyProxyExtra(), method: 'aes-256-gcm' },
+      },
+      (port) => requestViaProxy(port, originUrl),
+      {
+        blockLoopback: false,
+        via: [
+          {
+            type: 'http',
+            host: '127.0.0.1',
+            port: httpPort,
+            username: '',
+            password: '',
+            extra: emptyProxyExtra(),
+          },
+        ],
+      },
+    );
+    expect(chained, 'ss-via-http').toContain('colo=TEST');
   });
 
   it('rejects localhost destinations by default', async () => {

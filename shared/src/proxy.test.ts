@@ -192,4 +192,39 @@ describe('buildSingboxConfig', () => {
     });
     expect(cfg.route).toEqual(expect.objectContaining({ rules: [] }));
   });
+
+  it('chains a leaf outbound through a front proxy', () => {
+    const cfg = buildSingboxConfig({
+      listenPort: 18001,
+      blockLoopback: false,
+      proxy: {
+        type: 'anytls',
+        host: '49.0.0.1',
+        port: 443,
+        username: '',
+        password: 'leaf-secret',
+        extra: { ...emptyProxyExtra(), sni: 'www.example.com', insecure: true },
+      },
+      via: [
+        {
+          type: 'https',
+          host: 'front.example.com',
+          port: 443,
+          username: 'u',
+          password: 'p',
+          extra: emptyProxyExtra(),
+        },
+      ],
+    });
+    expect(cfg.outbounds).toEqual([
+      expect.objectContaining({ type: 'anytls', tag: 'proxy', detour: 'via-0', server: '49.0.0.1' }),
+      expect.objectContaining({
+        type: 'http',
+        tag: 'via-0',
+        server: 'front.example.com',
+        tls: expect.objectContaining({ enabled: true }),
+      }),
+    ]);
+    expect((cfg.outbounds as { detour?: string }[])[1].detour).toBeUndefined();
+  });
 });

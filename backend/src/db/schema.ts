@@ -18,6 +18,7 @@ export const proxies = sqliteTable('proxies', {
   username: text('username').notNull(),
   password: text('password').notNull(),
   extra: text('extra').notNull().default('{}'),
+  viaProxyId: text('via_proxy_id'),
   createdAt: text('created_at').notNull(),
   lastTestAt: text('last_test_at'),
   lastTest: text('last_test'),

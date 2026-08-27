@@ -34,6 +34,7 @@ test('proxy catalog and test', async () => {
     data: { name: `socks-${Date.now()}`, type: 'socks5', host: '127.0.0.1', port: 1080 },
   });
   expect(socks.status()).toBe(201);
+  const socksId = (await socks.json()).proxy.id;
 
   const ss = await admin.post('/api/proxies', {
     data: {
@@ -70,11 +71,18 @@ test('proxy catalog and test', async () => {
     },
   });
   expect(anytls.status()).toBe(201);
+  const anytlsId = (await anytls.json()).proxy.id;
+
+  const chained = await admin.patch(`/api/proxies/${anytlsId}`, {
+    data: { viaProxyId: socksId },
+  });
+  expect(chained.ok()).toBeTruthy();
+  expect((await chained.json()).proxy.viaProxyId).toBe(socksId);
 
   await admin.delete(`/api/proxies/${proxy.id}`);
-  await admin.delete(`/api/proxies/${(await socks.json()).proxy.id}`);
+  await admin.delete(`/api/proxies/${anytlsId}`);
+  await admin.delete(`/api/proxies/${socksId}`);
   await admin.delete(`/api/proxies/${(await ss.json()).proxy.id}`);
   await admin.delete(`/api/proxies/${(await vless.json()).proxy.id}`);
-  await admin.delete(`/api/proxies/${(await anytls.json()).proxy.id}`);
   await admin.dispose();
 });
