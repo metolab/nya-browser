@@ -1,0 +1,147 @@
+diff --git a/chrome/browser/ui/nya/nya_one_compositor.h b/chrome/browser/ui/nya/nya_one_compositor.h
+--- a/chrome/browser/ui/nya/nya_one_compositor.h
++++ b/chrome/browser/ui/nya/nya_one_compositor.h
+@@ -17,8 +17,10 @@
+ // rasterized, no second EGL pbuffer, no software compositor.
+ bool OneCompositorEnabled();
+ 
+-// Desktop host already open on |x11_display| (empty = primary). Null if this
+-// would be the first AcceleratedWidget on that X server.
++// Desktop host already open on |x11_display|. Empty display prefers the
++// active host (so window.open from a sub-display stays on that compositor),
++// then any host. Null if this would be the first AcceleratedWidget on that
++// X server.
+ gfx::NativeView FindDesktopHost(const std::string& x11_display);
+ 
+ // Prefer params.parent / params.context; otherwise search by x11_display.
+diff --git a/chrome/browser/ui/nya/nya_one_compositor.cc b/chrome/browser/ui/nya/nya_one_compositor.cc
+--- a/chrome/browser/ui/nya/nya_one_compositor.cc
++++ b/chrome/browser/ui/nya/nya_one_compositor.cc
+@@ -17,6 +17,8 @@
+ }
+ 
+ gfx::NativeView FindDesktopHost(const std::string& x11_display) {
++  gfx::NativeView fallback = nullptr;
++  gfx::NativeView active = nullptr;
+   for (aura::Window* window :
+        views::DesktopWindowTreeHostPlatform::GetAllOpenWindows()) {
+     views::Widget* widget = views::Widget::GetWidgetForNativeView(window);
+@@ -26,11 +28,20 @@
+     if (!widget) {
+       continue;
+     }
+-    if (widget->x11_display() == x11_display) {
++    if (!fallback) {
++      fallback = window;
++    }
++    if (widget->IsActive()) {
++      active = window;
++    }
++    if (!x11_display.empty() && widget->x11_display() == x11_display) {
+       return window;
+     }
+   }
+-  return nullptr;
++  if (!x11_display.empty()) {
++    return nullptr;
++  }
++  return active ? active : fallback;
+ }
+ 
+ gfx::NativeView FindDesktopHost(const views::Widget::InitParams& params) {
+diff --git a/chrome/browser/ui/nya/nya_browser_native_widget.h b/chrome/browser/ui/nya/nya_browser_native_widget.h
+--- a/chrome/browser/ui/nya/nya_browser_native_widget.h
++++ b/chrome/browser/ui/nya/nya_browser_native_widget.h
+@@ -26,6 +26,10 @@
+ 
+   // views::NativeWidgetAura:
+   void ClientDestroyedWidget() override;
++  // tint2 never sees in-compositor windows, so Hide()-on-minimize would lose
++  // the popup. Stack under the host instead; Restore raises it again.
++  void Minimize() override;
++  void Restore() override;
+ 
+   // BrowserNativeWidget:
+   views::Widget::InitParams GetWidgetParams(
+diff --git a/chrome/browser/ui/nya/nya_browser_native_widget.cc b/chrome/browser/ui/nya/nya_browser_native_widget.cc
+--- a/chrome/browser/ui/nya/nya_browser_native_widget.cc
++++ b/chrome/browser/ui/nya/nya_browser_native_widget.cc
+@@ -5,11 +5,13 @@
+ 
+ #include <string>
+ 
++#include "base/logging.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/nya/nya_one_compositor.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "content/public/browser/keyboard_event_processing_result.h"
++#include "ui/aura/window.h"
+ #include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/views/widget/widget.h"
+ 
+@@ -30,6 +32,21 @@
+   NativeWidgetAura::ClientDestroyedWidget();
+ }
+ 
++void BrowserNativeWidgetChild::Minimize() {
++  aura::Window* window = GetNativeWindow();
++  if (window && window->parent()) {
++    window->parent()->StackChildAtBottom(window);
++  }
++}
++
++void BrowserNativeWidgetChild::Restore() {
++  NativeWidgetAura::Restore();
++  aura::Window* window = GetNativeWindow();
++  if (window && window->parent()) {
++    window->parent()->StackChildAtTop(window);
++  }
++}
++
+ views::Widget::InitParams BrowserNativeWidgetChild::GetWidgetParams(
+     views::Widget::InitParams::Ownership ownership) {
+   views::Widget::InitParams params(ownership);
+@@ -49,7 +66,10 @@
+   // layout stays correct, while NativeWidgetAura still paints into the host
+   // compositor. child=true would make screen bounds relative to a bubble.
+   params.child = false;
++  params.show_state = ui::mojom::WindowShowState::kNormal;
+   params.x11_display = display;
++  LOG(ERROR) << "nya-widget extra-browser display=" << display
++             << " host=" << host << " child=0 show=normal";
+   return params;
+ }
+ 
+@@ -90,7 +110,10 @@
+ 
+ bool BrowserNativeWidgetChild::ShouldRestorePreviousBrowserWidgetState()
+     const {
+-  return true;
++  // Extra in-compositor windows must not inherit the session's maximized
++  // placement (--start-maximized). window.open popups would otherwise open
++  // fullscreen, cover Gmail, and look like a second X11 window.
++  return false;
+ }
+ 
+ bool BrowserNativeWidgetChild::ShouldUseInitialVisibleOnAllWorkspaces() const {
+diff --git a/chrome/browser/ui/views/chrome_views_delegate_linux.cc b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+--- a/chrome/browser/ui/views/chrome_views_delegate_linux.cc
++++ b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+@@ -113,7 +113,15 @@
+       // to the bookmark bubble and treats screen bounds as bubble-relative, so
+       // the folder combobox opens off-screen. Keep those top-level transients
+       // on the browser compositor (still NativeWidgetAura, no extra X window).
+-      if (params->type != views::Widget::InitParams::TYPE_MENU &&
++      //
++      // TYPE_WINDOW (window.open / extra Browser windows) MUST stay
++      // transients too. child=true makes is_top_level_=false, so BrowserView
++      // never lays out WebContents (about:blank), bounds are parent-relative
++      // (fullscreen), and min/restore/move no-op. BrowserNativeWidgetChild
++      // already sets child=false; do not override it.
++      if (params->type != views::Widget::InitParams::TYPE_WINDOW &&
++          params->type != views::Widget::InitParams::TYPE_WINDOW_FRAMELESS &&
++          params->type != views::Widget::InitParams::TYPE_MENU &&
+           params->type != views::Widget::InitParams::TYPE_TOOLTIP) {
+         params->child = true;
+       }

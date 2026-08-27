@@ -1002,10 +1002,12 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     '--enable-webgl',
     '--enable-webgl2',
     '--disable-ipv6',
-    // One GPU compositor per X display (Chromium patches 014/015). Extra
+    // One GPU compositor per X display (Chromium patches 014/015/021). Extra
     // chrome UI is NativeWidgetAura on that compositor — still GPU, no
-    // second EGL pbuffer. In-process GPU is required so UI-thread present
-    // cache and the GPU thread share address space.
+    // second EGL pbuffer. Extra Browser windows (window.open) stay transients
+    // (child=false) so they layout, drag, and restore; they are not X11
+    // windows, so tint2 cannot list them. In-process GPU is required so
+    // UI-thread present cache and the GPU thread share address space.
     '--nya-x11-multi-display',
     '--in-process-gpu',
     // LOG(ERROR) "nya-present …" in the session chrome.log. Heartbeat every
