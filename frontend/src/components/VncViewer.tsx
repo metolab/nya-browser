@@ -73,6 +73,14 @@ function mountCanvas(mount: HTMLElement): HTMLCanvasElement | null {
   return el instanceof HTMLCanvasElement ? el : null;
 }
 
+const MAX_RECONNECTS = 3;
+const TAKEN_OVER_CODE = 4000;
+const TAKEN_OVER_REASON = 'taken_over';
+
+function isTakenOverClose(code: number, reason: string) {
+  return code === TAKEN_OVER_CODE || reason === TAKEN_OVER_REASON;
+}
+
 export default function VncViewer({
   sessionId,
   subId = null,
@@ -255,6 +263,8 @@ export default function VncViewer({
     let disposed = false;
     let retries = 0;
     let retryTimer: number | null = null;
+    let takenOver = false;
+    let reconnectOnFocus = false;
     let live: { rfb: RFB; mount: HTMLElement; session: VncSession } | null = null;
     let pending: { rfb: RFB; mount: HTMLElement; session: VncSession } | null = null;
     const ignoreDisconnect = new WeakSet<RFB>();
@@ -283,8 +293,50 @@ export default function VncViewer({
       canvas.addEventListener('contextrestored', restore);
     };
 
+    const clearRetryTimer = () => {
+      if (!retryTimer) return;
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    };
+
+    const failReconnect = () => {
+      reconnectOnFocus = false;
+      clearRetryTimer();
+      setError('画面连接中断，请刷新');
+    };
+
+    const scheduleReconnect = (immediate = false) => {
+      if (disposed || takenOver || pending || live) return;
+      if (retries >= MAX_RECONNECTS) {
+        failReconnect();
+        return;
+      }
+      if (!isDocumentVisible()) {
+        reconnectOnFocus = true;
+        clearRetryTimer();
+        return;
+      }
+      reconnectOnFocus = false;
+      clearRetryTimer();
+      const delay = immediate ? 0 : 400 * (retries + 1);
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        if (disposed || takenOver || pending || live) return;
+        if (!isDocumentVisible()) {
+          reconnectOnFocus = true;
+          return;
+        }
+        if (retries >= MAX_RECONNECTS) {
+          failReconnect();
+          return;
+        }
+        retries += 1;
+        connect('retry');
+      }, delay);
+    };
+
     const connect = (reason: 'mount' | 'retry') => {
-      if (disposed || !hostRef.current || !wrapRef.current) return;
+      if (disposed || takenOver || !hostRef.current || !wrapRef.current) return;
       if (wrapRef.current.clientWidth < 40 || wrapRef.current.clientHeight < 40) {
         requestAnimationFrame(() => connect(reason));
         return;
@@ -306,9 +358,11 @@ export default function VncViewer({
         ws.binaryType = 'arraybuffer';
         trackVncSocket(ws);
         vncLog('construct', { reason, sessionId, hide });
+        let wsClose = { code: 0, reason: '' };
         ws.addEventListener(
           'close',
           (ev) => {
+            wsClose = { code: ev.code, reason: String(ev.reason || '') };
             vncLog('disconnect', { clean: ev.wasClean, code: ev.code, reason: ev.reason });
             if (pending?.mount === mount && live) return;
             const canvas = mountCanvas(mount);
@@ -346,6 +400,7 @@ export default function VncViewer({
         rfb.addEventListener('connect', () => {
           if (disposed) return;
           retries = 0;
+          reconnectOnFocus = false;
           session.onConnected();
           if (!live) {
             rfbRef.current = rfb;
@@ -354,7 +409,7 @@ export default function VncViewer({
           bindCanvasRestore(mount, session);
           syncRemoteSizeRef.current();
         });
-        rfb.addEventListener('disconnect', (e: { detail?: { clean?: boolean } }) => {
+        rfb.addEventListener('disconnect', () => {
           if (disposed || ignoreDisconnect.has(rfb)) return;
           session.dispose();
           if (pending?.rfb === rfb) pending = null;
@@ -366,12 +421,14 @@ export default function VncViewer({
             if (sessionRef.current === session) sessionRef.current = null;
             if (rfbRef.current === rfb) rfbRef.current = null;
           }
-          if (retries < (occupancyId ? 1 : 8)) {
-            retries += 1;
-            retryTimer = window.setTimeout(() => connect('retry'), 400 * retries);
+          if (occupancyId && isTakenOverClose(wsClose.code, wsClose.reason)) {
+            takenOver = true;
+            reconnectOnFocus = false;
+            clearRetryTimer();
+            setError('会话已被接管');
             return;
           }
-          if (!e?.detail?.clean) setError(occupancyId ? '会话已被接管' : '画面连接中断');
+          scheduleReconnect();
         });
         rfb.addEventListener('credentialsrequired', () => {
           rfb.sendCredentials({ password: '' });
@@ -387,18 +444,30 @@ export default function VncViewer({
 
     connect('mount');
 
+    const flushReconnectOnFocus = () => {
+      if (!reconnectOnFocus || takenOver || !isDocumentVisible()) return;
+      scheduleReconnect(true);
+    };
+
     const onVisibility = () => {
       if (disposed) return;
       const visible = isDocumentVisible();
       sessionRef.current?.setVisible(visible);
       pending?.session.setVisible(visible);
       if (visible && pendingSizeRef.current) schedulePushRef.current(true);
+      if (!visible && retryTimer && !pending && !live) {
+        clearRetryTimer();
+        reconnectOnFocus = true;
+        return;
+      }
+      flushReconnectOnFocus();
     };
     const onPageShow = () => {
       if (disposed) return;
       sessionRef.current?.restoreSurface();
       sessionRef.current?.setVisible(isDocumentVisible());
       if (isDocumentVisible() && pendingSizeRef.current) schedulePushRef.current(true);
+      flushReconnectOnFocus();
     };
 
     document.addEventListener('visibilitychange', onVisibility);

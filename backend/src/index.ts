@@ -73,8 +73,9 @@ server.on('upgrade', (req, socket, head) => {
       const occ = url.searchParams.get('occ');
       const expected = getWindowOccupancy(sessionId, subId || 'main');
       if (!expected || occ !== expected) {
-        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-        socket.destroy();
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          ws.close(4000, 'taken_over');
+        });
         return;
       }
     }
