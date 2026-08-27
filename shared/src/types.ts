@@ -1,8 +1,6 @@
+import { emptyProxyExtra, type ProxyExtra, type ProxyType, type ProxyTypeOrNone } from './proxy.js';
+
 export type Role = 'admin' | 'user';
-
-export type ProxyType = 'http' | 'https' | 'socks5';
-
-export type ProxyTypeOrNone = ProxyType | 'none';
 
 export interface FingerprintConfig {
   seed: string;
@@ -16,6 +14,7 @@ export interface ProxyConfig {
   port: number | null;
   username: string;
   password: string;
+  extra: ProxyExtra;
 }
 
 export interface ProxyTestResult {
@@ -36,6 +35,7 @@ export interface ProxyRecord {
   port: number;
   username: string;
   password: string;
+  extra: ProxyExtra;
   createdAt: string;
   lastTestAt: string | null;
   lastTest: ProxyTestResult | null;
@@ -183,6 +183,7 @@ export interface BackupManifest {
     host: string;
     port: number | null;
     username: string;
+    extra?: ProxyExtra;
   };
 }
 
@@ -201,4 +202,5 @@ export const emptyProxy = (): ProxyConfig => ({
   port: null,
   username: '',
   password: '',
+  extra: emptyProxyExtra(),
 });

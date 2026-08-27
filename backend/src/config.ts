@@ -13,3 +13,4 @@ export const INIT_ADMIN_PASSWORD =
   process.env.INIT_ADMIN_PASSWORD || process.env.AUTH_PASSWORD || 'nya';
 export const AUTH_TTL_MS = Number(process.env.AUTH_TTL_MS || 7 * 24 * 60 * 60 * 1000);
 export const CHROME_BIN = process.env.CHROME_BIN || '/opt/nya-chromium/chrome';
+export const SING_BOX_BIN = process.env.SING_BOX_BIN || '/usr/local/bin/sing-box';

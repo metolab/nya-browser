@@ -7,7 +7,7 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "test": "python3 scripts/xtype.py --selftest"
+    "test": "python3 scripts/xtype.py --selftest && vitest run"
   },
   "dependencies": {
     "@nya/shared": "*",
@@ -21,8 +21,6 @@
     "multer": "^1.4.5-lts.1",
     "nanoid": "^5.1.0",
     "pino": "^9.6.0",
-    "proxy-chain": "^2.5.0",
-    "socks-proxy-agent": "^8.0.5",
     "ws": "^8.18.0",
     "zod": "^3.24.2"
   },
@@ -35,6 +33,7 @@
     "@types/node": "^22.13.1",
     "@types/ws": "^8.5.14",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
   }
 }

@@ -35,7 +35,46 @@ test('proxy catalog and test', async () => {
   });
   expect(socks.status()).toBe(201);
 
+  const ss = await admin.post('/api/proxies', {
+    data: {
+      name: `ss-${Date.now()}`,
+      type: 'ss',
+      host: '127.0.0.1',
+      port: 8388,
+      password: 'secret',
+      extra: { method: 'aes-256-gcm' },
+    },
+  });
+  expect(ss.status()).toBe(201);
+
+  const vless = await admin.post('/api/proxies', {
+    data: {
+      name: `vless-${Date.now()}`,
+      type: 'vless',
+      host: 'example.com',
+      port: 443,
+      password: '11111111-1111-1111-1111-111111111111',
+      extra: { security: 'tls', sni: 'example.com' },
+    },
+  });
+  expect(vless.status()).toBe(201);
+
+  const anytls = await admin.post('/api/proxies', {
+    data: {
+      name: `anytls-${Date.now()}`,
+      type: 'anytls',
+      host: 'example.com',
+      port: 443,
+      password: 'secret',
+      extra: { sni: 'www.example.com', insecure: true },
+    },
+  });
+  expect(anytls.status()).toBe(201);
+
   await admin.delete(`/api/proxies/${proxy.id}`);
   await admin.delete(`/api/proxies/${(await socks.json()).proxy.id}`);
+  await admin.delete(`/api/proxies/${(await ss.json()).proxy.id}`);
+  await admin.delete(`/api/proxies/${(await vless.json()).proxy.id}`);
+  await admin.delete(`/api/proxies/${(await anytls.json()).proxy.id}`);
   await admin.dispose();
 });

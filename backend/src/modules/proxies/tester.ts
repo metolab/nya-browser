@@ -1,21 +1,12 @@
 import http from 'http';
 import https from 'https';
-import { SocksProxyAgent } from 'socks-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import type { ProxyRecord, ProxyTestResult } from '@nya/shared';
 import { regionFromLoc } from '@nya/shared';
+import { withEphemeralSidecar } from '../../runtime/singbox.js';
 
 const TEST_URL = process.env.PROXY_TEST_URL || 'https://cp.cloudflare.com/cdn-cgi/trace';
 const TIMEOUT_MS = Number(process.env.PROXY_TEST_TIMEOUT_MS || 12000);
-
-function proxyUrl(p: ProxyRecord) {
-  const auth =
-    p.username || p.password
-      ? `${encodeURIComponent(p.username)}:${encodeURIComponent(p.password)}@`
-      : '';
-  const scheme = p.type === 'socks5' ? 'socks5h' : p.type === 'https' ? 'https' : 'http';
-  return `${scheme}://${auth}${p.host}:${p.port}`;
-}
 
 function parseTrace(body: string) {
   const map: Record<string, string> = {};
@@ -66,19 +57,20 @@ export async function testProxy(proxy: ProxyRecord): Promise<ProxyTestResult> {
   const started = Date.now();
   const empty = { exitIp: null, loc: null, colo: null, region: null };
   try {
-    const url = proxyUrl(proxy);
-    const agent =
-      proxy.type === 'socks5' ? new SocksProxyAgent(url) : new HttpsProxyAgent(url);
-    const { status, body } = await requestText(TEST_URL, agent);
-    const latencyMs = Date.now() - started;
-    if (status < 200 || status >= 300) {
-      return { ok: false, latencyMs, ...empty, error: `HTTP ${status}` };
-    }
-    const parsed = parseTrace(body);
-    if (!parsed.exitIp && !parsed.loc) {
-      return { ok: false, latencyMs, ...empty, error: 'unexpected trace response' };
-    }
-    return { ok: true, latencyMs, ...parsed, error: null };
+    const result = await withEphemeralSidecar(proxy, async (port) => {
+      const agent = new HttpsProxyAgent(`http://127.0.0.1:${port}`);
+      const { status, body } = await requestText(TEST_URL, agent);
+      const latencyMs = Date.now() - started;
+      if (status < 200 || status >= 300) {
+        return { ok: false, latencyMs, ...empty, error: `HTTP ${status}` };
+      }
+      const parsed = parseTrace(body);
+      if (!parsed.exitIp && !parsed.loc) {
+        return { ok: false, latencyMs, ...empty, error: 'unexpected trace response' };
+      }
+      return { ok: true, latencyMs, ...parsed, error: null };
+    });
+    return result;
   } catch (err) {
     return {
       ok: false,

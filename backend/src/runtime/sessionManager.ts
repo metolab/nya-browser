@@ -1,12 +1,10 @@
 // @ts-nocheck
 import { spawn, execFile, execFileSync } from 'child_process';
 import crypto from 'crypto';
-import https from 'https';
 import net from 'net';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import ProxyChain from 'proxy-chain';
 import {
   chromeProfileDir,
   downloadsDir,
@@ -36,6 +34,7 @@ import {
 import { TYPE_TEXT_MAX, runXtype } from './xtype.js';
 import { logChromeCrash } from './chromeCrashLog.js';
 import { TAMPERMONKEY_ID, resolveTampermonkeyDir } from './tampermonkey.js';
+import { startSingboxSidecar, stopSingboxSidecar } from './singbox.js';
 
 const DISPLAY_BASE = Number(process.env.DISPLAY_BASE || 100);
 const SUB_DISPLAY_BASE = Number(process.env.SUB_DISPLAY_BASE || 2000);
@@ -533,82 +532,23 @@ function runAsSession(runtime, cmd, args, opts = {}) {
   });
 }
 
-function buildUpstreamUrl(proxy) {
-  if (!proxy || proxy.type === 'none') return null;
-  const auth =
-    proxy.username || proxy.password
-      ? `${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password)}@`
-      : '';
-    const scheme = proxy.type === 'socks5' ? 'socks5' : proxy.type === 'https' ? 'https' : 'http';
-  return `${scheme}://${auth}${proxy.host}:${proxy.port}`;
-}
-
-function destroyHttpsAgent(agent) {
-  if (!agent) return;
-  try {
-    agent.destroy();
-  } catch {
-    /* ignore */
-  }
-}
-
-async function startLocalProxy(slot, proxy) {
+async function startLocalProxy(sessionId, slot, proxy) {
   const port = LOCAL_PROXY_BASE + slot;
-  const upstream = buildUpstreamUrl(proxy);
-  if (!upstream) {
-    return { port: null, server: null, upstream: null, httpsAgent: null };
-  }
-  // proxy-chain CONNECT sets Host to the destination (e.g. example.com:443).
-  // Node then uses that Host as TLS SNI, so a multi-vhost HTTPS proxy serves
-  // its default (often self-signed) cert instead of the proxy hostname cert.
-  let httpsAgent = null;
-  if (String(upstream).startsWith('https:')) {
-    httpsAgent = new https.Agent({
-      servername: new URL(upstream).hostname,
-      keepAlive: true,
-    });
-  }
-  const server = new ProxyChain.Server({
-    port,
-    host: '127.0.0.1',
-    prepareRequestFunction: ({ hostname }) => {
-      const host = String(hostname || '').toLowerCase();
-      if (
-        host === 'localhost' ||
-        host === '::1' ||
-        host === '[::1]' ||
-        host === '0.0.0.0' ||
-        /^127\.\d+\.\d+\.\d+$/.test(host)
-      ) {
-        throw new ProxyChain.RequestError('Localhost is not reachable from sessions', 403);
-      }
-      return {
-        upstreamProxyUrl: upstream,
-        ...(httpsAgent ? { httpsAgent } : {}),
-      };
-    },
+  const started = await startSingboxSidecar({
+    id: sessionId,
+    proxy,
+    listenPort: port,
   });
-  await server.listen();
-  return { port, server, upstream, httpsAgent };
+  return { port: started.port, handle: started.handle };
 }
 
 async function restartLocalProxy(runtime, proxy) {
-  if (runtime.proxyServer) {
-    try {
-      await runtime.proxyServer.close(true);
-    } catch {
-      /* ignore */
-    }
-    runtime.proxyServer = null;
-    runtime.localProxyPort = null;
-  }
-  destroyHttpsAgent(runtime.httpsAgent);
-  runtime.httpsAgent = null;
-  const started = await startLocalProxy(runtime.slot, proxy);
-  runtime.proxyServer = started.server;
+  await stopSingboxSidecar(runtime.singbox);
+  runtime.singbox = null;
+  runtime.localProxyPort = null;
+  const started = await startLocalProxy(runtime.id, runtime.slot, proxy);
+  runtime.singbox = started.handle;
   runtime.localProxyPort = started.port;
-  runtime.upstream = started.upstream;
-  runtime.httpsAgent = started.httpsAgent;
   return started;
 }
 
@@ -1456,9 +1396,7 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
       userName: user.name,
       authFile,
       localProxyPort: null,
-      proxyServer: null,
-      httpsAgent: null,
-      upstream: null,
+      singbox: null,
       xvfb: null,
       openbox: null,
       chrome: null,
@@ -1521,11 +1459,9 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
       console.warn(`[display ${sessionId}] boot framebuffer failed:`, err.message);
     }
 
-    const proxy = await startLocalProxy(slot, session.proxy);
-    runtime.proxyServer = proxy.server;
+    const proxy = await startLocalProxy(sessionId, slot, session.proxy);
+    runtime.singbox = proxy.handle;
     runtime.localProxyPort = proxy.port;
-    runtime.upstream = proxy.upstream;
-    runtime.httpsAgent = proxy.httpsAgent;
     applyUidLoopbackFilter(runtime);
 
     // Start VNC before Chrome so the session is reachable even while Chrome boots.
@@ -1645,15 +1581,14 @@ async function forceCleanupRuntime(runtime) {
   } catch {
     /* ignore */
   }
-  if (runtime.proxyServer) {
+  if (runtime.singbox) {
     try {
-      await runtime.proxyServer.close(true);
+      await stopSingboxSidecar(runtime.singbox);
     } catch {
       /* ignore */
     }
+    runtime.singbox = null;
   }
-  destroyHttpsAgent(runtime.httpsAgent);
-  runtime.httpsAgent = null;
 }
 
 export async function stopSession(sessionId) {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { CHROME_LANGUAGE_LIST } from './languages.js';
 import { isValidTimezone } from './timezones.js';
+import { PROXY_TYPES, SS_METHODS } from './proxy.js';
 
 const timezoneSchema = z
   .string()
@@ -10,9 +11,26 @@ const timezoneSchema = z
 
 export const roleSchema = z.enum(['admin', 'user']);
 
-export const proxyTypeSchema = z.enum(['http', 'https', 'socks5']);
+export const proxyTypeSchema = z.enum(PROXY_TYPES);
 
-export const proxyTypeOrNoneSchema = z.enum(['http', 'https', 'socks5', 'none']);
+export const proxyTypeOrNoneSchema = z.union([proxyTypeSchema, z.literal('none')]);
+
+export const proxyExtraSchema = z.object({
+  sni: z.string().max(255).optional().default(''),
+  insecure: z.boolean().optional().default(false),
+  method: z.string().max(64).optional().default('aes-256-gcm'),
+  plugin: z.string().max(80).optional().default(''),
+  pluginOpts: z.string().max(500).optional().default(''),
+  flow: z.string().max(64).optional().default(''),
+  network: z.enum(['tcp', 'ws']).optional().default('tcp'),
+  wsPath: z.string().max(500).optional().default(''),
+  wsHost: z.string().max(255).optional().default(''),
+  security: z.enum(['none', 'tls', 'reality']).optional().default('tls'),
+  fingerprint: z.string().max(64).optional().default(''),
+  publicKey: z.string().max(200).optional().default(''),
+  shortId: z.string().max(32).optional().default(''),
+  alpn: z.string().max(64).optional().default(''),
+});
 
 export const loginSchema = z.object({
   username: z.string().trim().min(1).max(64),
@@ -51,16 +69,44 @@ export const putTargetGrantsSchema = z.object({
   userIds: z.array(z.string().min(1)),
 });
 
-export const createProxySchema = z.object({
+export const proxyFieldsSchema = z.object({
   name: z.string().trim().min(1).max(80),
   type: proxyTypeSchema,
   host: z.string().trim().min(1).max(255),
   port: z.number().int().min(1).max(65535),
   username: z.string().max(200).optional().default(''),
-  password: z.string().max(200).optional().default(''),
+  password: z.string().max(2048).optional().default(''),
+  extra: proxyExtraSchema.optional(),
 });
 
-export const updateProxySchema = createProxySchema.partial();
+export const createProxySchema = proxyFieldsSchema.superRefine((value, ctx) => {
+  if ((value.type === 'anytls' || value.type === 'ss' || value.type === 'vless') && !value.password) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: value.type === 'vless' ? 'UUID is required' : 'Password is required',
+      path: ['password'],
+    });
+  }
+  if (value.type === 'ss') {
+    const method = value.extra?.method || 'aes-256-gcm';
+    if (!(SS_METHODS as readonly string[]).includes(method) && method !== 'none') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Unsupported Shadowsocks method',
+        path: ['extra', 'method'],
+      });
+    }
+  }
+  if (value.type === 'vless' && value.extra?.security === 'reality' && !value.extra.publicKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Reality public key is required',
+      path: ['extra', 'publicKey'],
+    });
+  }
+});
+
+export const updateProxySchema = proxyFieldsSchema.partial();
 
 /** Idle auto-stop timeout stored on each session. Unit is minutes; 0 disables. */
 export const IDLE_TIMEOUT_MINUTES_MAX = 7 * 24 * 60;

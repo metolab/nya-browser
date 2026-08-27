@@ -145,6 +145,14 @@ RUN --mount=type=secret,id=github_token,required=false \
           /tmp/CHROMIUM_VERSION /tmp/CHROMIUM.sha256 /tmp/TAMPERMONKEY.sha256 \
     && mkdir -p /data /etc/chromium/policies/managed
 
+COPY third_party/sing-box/VERSION /tmp/SINGBOX_VERSION
+COPY third_party/sing-box/SHA256 /tmp/SINGBOX.sha256
+COPY scripts/install-singbox.sh /tmp/install-singbox.sh
+RUN SINGBOX_VERSION="$(tr -d ' \n' < /tmp/SINGBOX_VERSION)" \
+    SINGBOX_PREFIX=/usr/local/bin \
+    bash /tmp/install-singbox.sh \
+    && rm -f /tmp/install-singbox.sh /tmp/SINGBOX_VERSION /tmp/SINGBOX.sha256
+
 COPY --from=build /app/package.json /app/package.json
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/shared /app/shared

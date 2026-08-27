@@ -6,7 +6,10 @@ import {
   DEFAULT_HOME_URL,
   IDLE_TIMEOUT_MINUTES_MAX,
   emptyProxy,
+  emptyProxyExtra,
+  isProxyType,
   normalizeChromeLanguage,
+  normalizeProxyExtra,
   normalizeTimezone,
   type FingerprintConfig,
   type AccessGrant,
@@ -70,7 +73,7 @@ export function normalizeIdleTimeoutMinutes(input: unknown) {
 
 export function normalizeProxyConfig(input: Partial<ProxyConfig> | null | undefined): ProxyConfig {
   const type = input?.type || 'none';
-  if (!['http', 'https', 'socks5', 'none'].includes(type)) {
+  if (type !== 'none' && !isProxyType(type)) {
     throw new Error('Invalid proxy type');
   }
   const host = String(input?.host || '').trim();
@@ -91,7 +94,17 @@ export function normalizeProxyConfig(input: Partial<ProxyConfig> | null | undefi
     port: type === 'none' ? null : port,
     username: String(input?.username || ''),
     password: String(input?.password || ''),
+    extra: normalizeProxyExtra(input?.extra),
   };
+}
+
+function parseExtra(raw: string | null | undefined) {
+  if (!raw) return emptyProxyExtra();
+  try {
+    return normalizeProxyExtra(JSON.parse(raw));
+  } catch {
+    return emptyProxyExtra();
+  }
 }
 
 function parseFingerprint(raw: string): FingerprintConfig {
@@ -123,6 +136,7 @@ export function getProxy(id: string | null | undefined): ProxyRecord | null {
     port: row.port,
     username: row.username,
     password: row.password,
+    extra: parseExtra(row.extra),
     createdAt: row.createdAt,
     lastTestAt: row.lastTestAt,
     lastTest: parseTest(row.lastTest),
@@ -142,6 +156,7 @@ export function listProxies(): ProxyRecord[] {
       port: row.port,
       username: row.username,
       password: row.password,
+      extra: parseExtra(row.extra),
       createdAt: row.createdAt,
       lastTestAt: row.lastTestAt,
       lastTest: parseTest(row.lastTest),
@@ -155,6 +170,7 @@ export function createProxyRecord(input: {
   port: number;
   username?: string;
   password?: string;
+  extra?: ProxyRecord['extra'];
 }): ProxyRecord {
   const now = new Date().toISOString();
   const row = {
@@ -165,6 +181,7 @@ export function createProxyRecord(input: {
     port: input.port,
     username: input.username || '',
     password: input.password || '',
+    extra: JSON.stringify(normalizeProxyExtra(input.extra)),
     createdAt: now,
     lastTestAt: null as string | null,
     lastTest: null as string | null,
@@ -182,12 +199,17 @@ export function updateProxyRecord(
     port: number;
     username: string;
     password: string;
+    extra: ProxyRecord['extra'];
     lastTestAt: string | null;
     lastTest: ProxyTestResult | null;
   }>,
 ): ProxyRecord | null {
   const current = getProxy(id);
   if (!current) return null;
+  const extra =
+    patch.extra !== undefined
+      ? normalizeProxyExtra({ ...current.extra, ...patch.extra })
+      : current.extra;
   const next = {
     name: patch.name !== undefined ? patch.name.trim() : current.name,
     type: patch.type ?? current.type,
@@ -195,6 +217,7 @@ export function updateProxyRecord(
     port: patch.port ?? current.port,
     username: patch.username !== undefined ? patch.username : current.username,
     password: patch.password !== undefined ? patch.password : current.password,
+    extra: JSON.stringify(extra),
     lastTestAt: patch.lastTestAt !== undefined ? patch.lastTestAt : current.lastTestAt,
     lastTest: patch.lastTest !== undefined ? JSON.stringify(patch.lastTest) : JSON.stringify(current.lastTest),
   };
@@ -219,6 +242,7 @@ export function proxyToConfig(proxy: ProxyRecord | null): ProxyConfig {
     port: proxy.port,
     username: proxy.username,
     password: proxy.password,
+    extra: proxy.extra || emptyProxyExtra(),
   };
 }
 

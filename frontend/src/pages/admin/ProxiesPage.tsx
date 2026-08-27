@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { ProxyRecord } from '@nya/shared';
-import { regionFromLoc } from '@nya/shared';
+import type { ProxyExtra, ProxyRecord } from '@nya/shared';
+import {
+  emptyProxyExtra,
+  parseProxyUri,
+  regionFromLoc,
+  SS_METHODS,
+  TLS_FINGERPRINTS,
+} from '@nya/shared';
 import { api } from '../../api/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Table,
   TableBody,
@@ -39,6 +47,15 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
+const TYPE_LABELS: Record<ProxyRecord['type'], string> = {
+  http: 'HTTP',
+  https: 'HTTPS',
+  socks5: 'SOCKS5',
+  anytls: 'AnyTLS',
+  ss: 'Shadowsocks',
+  vless: 'VLESS',
+};
+
 function testLabel(p: ProxyRecord) {
   const t = p.lastTest;
   if (!t) return '-';
@@ -50,17 +67,27 @@ function testLabel(p: ProxyRecord) {
   return [region + colo, ip, ms].filter(Boolean).join(' · ');
 }
 
+function needsUser(type: ProxyRecord['type']) {
+  return type === 'http' || type === 'https' || type === 'socks5';
+}
+
+function needsSni(type: ProxyRecord['type']) {
+  return type === 'https' || type === 'anytls' || type === 'vless';
+}
+
 export default function ProxiesPage() {
   const [rows, setRows] = useState<ProxyRecord[]>([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<ProxyRecord | null>(null);
   const [pending, setPending] = useState<ProxyRecord | null>(null);
+  const [uri, setUri] = useState('');
   const [name, setName] = useState('');
   const [type, setType] = useState<ProxyRecord['type']>('http');
   const [host, setHost] = useState('');
   const [port, setPort] = useState('1080');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [extra, setExtra] = useState<ProxyExtra>(emptyProxyExtra());
 
   const load = useCallback(async () => {
     const d = await api.listProxies();
@@ -71,26 +98,48 @@ export default function ProxiesPage() {
     void load().catch((e: Error) => toast.error(e.message));
   }, [load]);
 
+  const patchExtra = (patch: Partial<ProxyExtra>) => setExtra((cur) => ({ ...cur, ...patch }));
+
   const startCreate = () => {
     setEditing(null);
+    setUri('');
     setName('');
     setType('http');
     setHost('');
     setPort('1080');
     setUsername('');
     setPassword('');
+    setExtra(emptyProxyExtra());
     setOpen(true);
   };
 
   const startEdit = (p: ProxyRecord) => {
     setEditing(p);
+    setUri('');
     setName(p.name);
     setType(p.type);
     setHost(p.host);
     setPort(String(p.port));
     setUsername(p.username);
     setPassword('');
+    setExtra({ ...emptyProxyExtra(), ...p.extra });
     setOpen(true);
+  };
+
+  const applyUri = () => {
+    try {
+      const parsed = parseProxyUri(uri);
+      setType(parsed.type);
+      setHost(parsed.host);
+      setPort(String(parsed.port));
+      setUsername(parsed.username);
+      setPassword(parsed.password);
+      setExtra({ ...emptyProxyExtra(), ...parsed.extra });
+      if (parsed.name && !name) setName(parsed.name);
+      toast.success('已解析链接');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '无法解析链接');
+    }
   };
 
   const save = () => {
@@ -99,7 +148,8 @@ export default function ProxiesPage() {
       type,
       host,
       port: Number(port),
-      username,
+      username: needsUser(type) ? username : '',
+      extra,
     };
     const req = editing
       ? api.updateProxy(editing.id, {
@@ -116,6 +166,10 @@ export default function ProxiesPage() {
       })
       .catch((e: Error) => toast.error(e.message));
   };
+
+  const passwordLabel = type === 'vless' ? 'UUID' : '密码';
+  const showTls = needsSni(type);
+  const showInsecure = type === 'https' || type === 'anytls' || (type === 'vless' && extra.security !== 'none');
 
   return (
     <div className="flex flex-col gap-4 p-6">
@@ -138,7 +192,7 @@ export default function ProxiesPage() {
           {rows.map((p) => (
             <TableRow key={p.id}>
               <TableCell className="font-medium">{p.name}</TableCell>
-              <TableCell>{p.type}</TableCell>
+              <TableCell>{TYPE_LABELS[p.type] || p.type}</TableCell>
               <TableCell>
                 {p.host}:{p.port}
               </TableCell>
@@ -201,7 +255,7 @@ export default function ProxiesPage() {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editing ? '编辑代理' : '添加代理'}</DialogTitle>
           </DialogHeader>
@@ -212,6 +266,18 @@ export default function ProxiesPage() {
               save();
             }}
           >
+            <div className="grid gap-2">
+              <Label htmlFor="proxy-uri">分享链接</Label>
+              <Textarea
+                id="proxy-uri"
+                value={uri}
+                onChange={(e) => setUri(e.target.value)}
+                placeholder="anytls://、ss://、vless://、socks5://、http://"
+              />
+              <Button type="button" variant="outline" size="sm" onClick={applyUri} disabled={!uri.trim()}>
+                解析并填入
+              </Button>
+            </div>
             <div className="grid gap-2">
               <Label htmlFor="proxy-name">名称</Label>
               <Input id="proxy-name" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -226,10 +292,13 @@ export default function ProxiesPage() {
                   <SelectItem value="http">HTTP 代理</SelectItem>
                   <SelectItem value="https">HTTPS 代理（连代理走 TLS）</SelectItem>
                   <SelectItem value="socks5">SOCKS5</SelectItem>
+                  <SelectItem value="anytls">AnyTLS</SelectItem>
+                  <SelectItem value="ss">Shadowsocks</SelectItem>
+                  <SelectItem value="vless">VLESS</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                访问 https 网站三种都可以。只有代理本身是 TLS（常见 443 端口）才选 HTTPS
+                Chrome 只连本机 HTTP，协议由 sing-box sidecar 处理
               </p>
             </div>
             <div className="grid gap-2">
@@ -248,20 +317,165 @@ export default function ProxiesPage() {
                 required
               />
             </div>
+            {needsUser(type) ? (
+              <div className="grid gap-2">
+                <Label htmlFor="proxy-user">用户名</Label>
+                <Input id="proxy-user" value={username} onChange={(e) => setUsername(e.target.value)} />
+              </div>
+            ) : null}
             <div className="grid gap-2">
-              <Label htmlFor="proxy-user">用户名</Label>
-              <Input id="proxy-user" value={username} onChange={(e) => setUsername(e.target.value)} />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="proxy-pass">密码</Label>
+              <Label htmlFor="proxy-pass">{passwordLabel}</Label>
               <Input
                 id="proxy-pass"
-                type="password"
+                type={type === 'vless' ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                required={!editing}
               />
               {editing ? <p className="text-xs text-muted-foreground">留空则不修改</p> : null}
             </div>
+            {type === 'ss' ? (
+              <div className="grid gap-2">
+                <Label>加密</Label>
+                <Select value={extra.method} onValueChange={(v: string) => patchExtra({ method: v })}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SS_METHODS.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {m}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+            {type === 'vless' ? (
+              <>
+                <div className="grid gap-2">
+                  <Label>传输</Label>
+                  <Select
+                    value={extra.network}
+                    onValueChange={(v: string) => patchExtra({ network: v as ProxyExtra['network'] })}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="tcp">TCP</SelectItem>
+                      <SelectItem value="ws">WebSocket</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {extra.network === 'ws' ? (
+                  <>
+                    <div className="grid gap-2">
+                      <Label htmlFor="proxy-ws-path">WS path</Label>
+                      <Input
+                        id="proxy-ws-path"
+                        value={extra.wsPath}
+                        onChange={(e) => patchExtra({ wsPath: e.target.value })}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="proxy-ws-host">WS host</Label>
+                      <Input
+                        id="proxy-ws-host"
+                        value={extra.wsHost}
+                        onChange={(e) => patchExtra({ wsHost: e.target.value })}
+                      />
+                    </div>
+                  </>
+                ) : null}
+                <div className="grid gap-2">
+                  <Label>TLS</Label>
+                  <Select
+                    value={extra.security}
+                    onValueChange={(v: string) => patchExtra({ security: v as ProxyExtra['security'] })}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">无</SelectItem>
+                      <SelectItem value="tls">TLS</SelectItem>
+                      <SelectItem value="reality">Reality</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="proxy-flow">flow</Label>
+                  <Input
+                    id="proxy-flow"
+                    value={extra.flow}
+                    onChange={(e) => patchExtra({ flow: e.target.value })}
+                    placeholder="xtls-rprx-vision"
+                  />
+                </div>
+              </>
+            ) : null}
+            {showTls ? (
+              <div className="grid gap-2">
+                <Label htmlFor="proxy-sni">SNI</Label>
+                <Input
+                  id="proxy-sni"
+                  value={extra.sni}
+                  onChange={(e) => patchExtra({ sni: e.target.value })}
+                  placeholder="留空则用主机名"
+                />
+              </div>
+            ) : null}
+            {type === 'vless' && extra.security !== 'none' ? (
+              <div className="grid gap-2">
+                <Label>uTLS 指纹</Label>
+                <Select
+                  value={extra.fingerprint || 'chrome'}
+                  onValueChange={(v: string) => patchExtra({ fingerprint: v })}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TLS_FINGERPRINTS.map((fp) => (
+                      <SelectItem key={fp} value={fp}>
+                        {fp}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+            {type === 'vless' && extra.security === 'reality' ? (
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="proxy-pbk">Reality public key</Label>
+                  <Input
+                    id="proxy-pbk"
+                    value={extra.publicKey}
+                    onChange={(e) => patchExtra({ publicKey: e.target.value })}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="proxy-sid">shortId</Label>
+                  <Input
+                    id="proxy-sid"
+                    value={extra.shortId}
+                    onChange={(e) => patchExtra({ shortId: e.target.value })}
+                  />
+                </div>
+              </>
+            ) : null}
+            {showInsecure ? (
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="proxy-insecure">跳过证书校验</Label>
+                <Switch
+                  id="proxy-insecure"
+                  checked={extra.insecure}
+                  onCheckedChange={(v: boolean) => patchExtra({ insecure: v })}
+                />
+              </div>
+            ) : null}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 取消

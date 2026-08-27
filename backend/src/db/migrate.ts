@@ -17,6 +17,7 @@ const STATEMENTS = [
     port INTEGER NOT NULL,
     username TEXT NOT NULL DEFAULT '',
     password TEXT NOT NULL DEFAULT '',
+    extra TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     last_test_at TEXT,
     last_test TEXT
@@ -87,6 +88,7 @@ export function migrate() {
     ensureColumn('sessions', 'group_id', 'TEXT');
     ensureColumn('sessions', 'idle_timeout_minutes', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn('sessions', 'chrome_language', "TEXT NOT NULL DEFAULT 'zh-CN'");
+    ensureColumn('proxies', 'extra', "TEXT NOT NULL DEFAULT '{}'");
     sqlite.exec('CREATE INDEX IF NOT EXISTS idx_sessions_group ON sessions(group_id)');
     sqlite.exec('DROP TABLE IF EXISTS session_assignments');
     sqlite.exec('COMMIT');

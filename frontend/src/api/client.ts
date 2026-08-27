@@ -1,19 +1,21 @@
-import type {
-  AuditLog,
-  FileEntry,
-  LiveSession,
-  MonitorSnapshot,
-  ProxyConfig,
-  ProxyRecord,
-  ProxyTestResult,
-  Session,
-  AccessGrant,
-  SessionGroup,
-  SessionWindow,
-  UserPublic,
+import {
+  emptyProxy,
+  type AuditLog,
+  type FileEntry,
+  type LiveSession,
+  type MonitorSnapshot,
+  type ProxyConfig,
+  type ProxyRecord,
+  type ProxyTestResult,
+  type Session,
+  type AccessGrant,
+  type SessionGroup,
+  type SessionWindow,
+  type UserPublic,
 } from '@nya/shared';
 import { withBase } from '../basePath';
 
+export { emptyProxy };
 export type { FileEntry, ProxyConfig, Session, UserPublic };
 
 export class ApiError extends Error {
@@ -265,11 +267,12 @@ export const api = {
   listProxies: () => request<{ proxies: ProxyRecord[] }>('/api/proxies'),
   createProxy: (payload: {
     name: string;
-    type: 'http' | 'https' | 'socks5';
+    type: ProxyRecord['type'];
     host: string;
     port: number;
     username?: string;
     password?: string;
+    extra?: ProxyRecord['extra'];
   }) =>
     request<{ proxy: ProxyRecord }>('/api/proxies', {
       method: 'POST',
@@ -308,11 +311,3 @@ export const api = {
     return data as { session: Session; proxyMatched: boolean };
   },
 };
-
-export const emptyProxy = (): ProxyConfig => ({
-  type: 'none',
-  host: '',
-  port: null,
-  username: '',
-  password: '',
-});
