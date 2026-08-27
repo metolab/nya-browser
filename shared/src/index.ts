@@ -6,3 +6,4 @@ export * from './timezones.js';
 export * from './languages.js';
 export * from './displayLimits.js';
 export * from './region.js';
+export * from './clipboardText.js';

@@ -171,8 +171,8 @@ export default function DeskPage() {
           display={display}
           sizeTick={sizeTick}
           onPaneChange={onPaneChange}
-          onRemoteClipboard={(text) => {
-            void clip.ingestRemote(text);
+          onRemoteClipboard={() => {
+            void clip.flushRemote().catch(() => undefined);
           }}
           onVncFocus={() => {
             void clip.flushLocal();

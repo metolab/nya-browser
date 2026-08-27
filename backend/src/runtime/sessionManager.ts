@@ -25,6 +25,7 @@ import {
   posixLocale,
   acceptLanguageHeader,
   AUDIT_ACTIONS,
+  normalizeClipboardText,
 } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
 import {
@@ -2874,23 +2875,36 @@ export async function getClipboard(sessionId, subId = null) {
   const runtime = runtimes.get(sessionId);
   if (!runtime) throw new Error('Session is not running');
   const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
+  const previous = typeof holder.clipboardText === 'string' ? holder.clipboardText : '';
   try {
-    const { stdout } = await execFileOnHolder(runtime, holder, 'timeout', [
-      '2',
-      'xclip',
-      '-selection',
-      'clipboard',
-      '-o',
-    ]);
-    const text = stdout;
-    holder.clipboardText = text;
-    return text;
+    const text = await readXclip(runtime, holder);
+    const next = normalizeClipboardText(text, previous);
+    if (next == null) return previous;
+    holder.clipboardText = next;
+    return next;
   } catch {
     if (typeof holder.clipboardText === 'string') {
       return holder.clipboardText;
     }
     return '';
   }
+}
+
+function readXclip(runtime, holder) {
+  const tryTarget = (target) =>
+    execFileOnHolder(runtime, holder, 'timeout', [
+      '2',
+      'xclip',
+      '-selection',
+      'clipboard',
+      '-o',
+      '-t',
+      target,
+    ]).then(({ stdout }) => String(stdout ?? ''));
+
+  return tryTarget('UTF8_STRING').catch(() =>
+    tryTarget('text/plain;charset=utf-8').catch(() => tryTarget('STRING')),
+  );
 }
 
 function execFileOnHolder(runtime, holder, file, args) {
@@ -2939,7 +2953,7 @@ export async function setClipboard(sessionId, text, subId = null) {
       spawnOpts.uid = runtime.uid;
       spawnOpts.gid = runtime.gid;
     }
-    const child = spawn('xclip', ['-selection', 'clipboard', '-i'], spawnOpts);
+    const child = spawn('xclip', ['-selection', 'clipboard', '-t', 'UTF8_STRING', '-i'], spawnOpts);
     child.on('error', reject);
     child.stdin.write(value, 'utf8');
     child.stdin.end();

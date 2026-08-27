@@ -564,18 +564,6 @@ export default function VncViewer({
       aria-label={title}
       onPointerDownCapture={(e) => {
         if (!focused && e.button === 0) onFocus();
-        const rfb = rfbRef.current;
-        if (!rfb || viewOnlyRef.current || !navigator.clipboard?.readText) return;
-        void navigator.clipboard
-          .readText()
-          .then((text) => {
-            try {
-              rfb.clipboardPasteFrom(text);
-            } catch {
-              /* ignore */
-            }
-          })
-          .catch(() => undefined);
       }}
       onPointerDown={placeTrap}
       onPointerUp={(e) => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { normalizeClipboardText } from '@nya/shared';
 
 const CLIP_MAX = 1024 * 1024;
 
@@ -55,16 +56,16 @@ export function useClipboardSync(opts: {
   const pushRemote = useCallback(async (value: string) => {
     const sid = sessionRef.current;
     if (!sid) return;
-    const next = clipText(value);
-    if (next === lastRef.current) return;
+    const next = normalizeClipboardText(clipText(value), lastRef.current);
+    if (next == null || next === lastRef.current) return;
     lastRef.current = next;
     await api.setClipboard(sid, next, subRef.current);
     setStatus('已同步到远程');
   }, []);
 
   const ingestRemote = useCallback(async (remote: string) => {
-    const next = clipText(remote);
-    if (next === lastRef.current) return;
+    const next = normalizeClipboardText(clipText(remote), lastRef.current);
+    if (next == null || next === lastRef.current) return;
     lastRef.current = next;
     if (!typingRef.current) {
       textRef.current = next;
@@ -84,25 +85,32 @@ export function useClipboardSync(opts: {
     try {
       const local = await readLocalClipboard();
       setPermission('granted');
-      if (local === lastRef.current) return;
-      applyText(local);
-      await pushRemote(local);
+      const next = normalizeClipboardText(local, lastRef.current);
+      if (next == null || next === lastRef.current) return;
+      applyText(next, false);
+      await pushRemote(next);
     } catch {
       if (permission === 'unknown') setPermission('denied');
     }
   }, [applyText, permission, pushRemote]);
+
+  const flushRemote = useCallback(async () => {
+    const sid = sessionRef.current;
+    if (!sid) return;
+    const data = await api.getClipboard(sid, subRef.current);
+    await ingestRemote(data.text);
+  }, [ingestRemote]);
 
   const pull = useCallback(async () => {
     const sid = sessionRef.current;
     if (!sid) return;
     setBusy(true);
     try {
-      const data = await api.getClipboard(sid, subRef.current);
-      await ingestRemote(data.text);
+      await flushRemote();
     } finally {
       setBusy(false);
     }
-  }, [ingestRemote]);
+  }, [flushRemote]);
 
   const push = useCallback(async () => {
     if (!sessionRef.current) return;
@@ -119,8 +127,10 @@ export function useClipboardSync(opts: {
       const local = await readLocalClipboard();
       setPermission('granted');
       if (autoRef.current) {
-        applyText(local);
-        await pushRemote(local);
+        const next = normalizeClipboardText(local, lastRef.current);
+        if (next == null) return;
+        applyText(next, false);
+        await pushRemote(next);
       }
     } catch {
       setPermission('denied');
@@ -178,8 +188,10 @@ export function useClipboardSync(opts: {
         window.setTimeout(() => void flushLocal(), 40);
         return;
       }
-      applyText(copied);
-      void pushRemote(copied).catch(() => undefined);
+      const next = normalizeClipboardText(copied, lastRef.current);
+      if (next == null) return;
+      applyText(next, false);
+      void pushRemote(next).catch(() => undefined);
     };
     const onFocus = () => void flushLocal();
 
@@ -209,6 +221,7 @@ export function useClipboardSync(opts: {
     status,
     ingestRemote,
     flushLocal,
+    flushRemote,
     pull,
     push,
     onTextChange,
