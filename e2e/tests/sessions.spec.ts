@@ -14,6 +14,7 @@ test('session crud description proxy homeUrl assignments', async () => {
     data: {
       name: `sess${stamp}`,
       description: 'hello',
+      notepad: 'session notes',
       proxyId,
       timezone: 'UTC',
       homeUrl: 'https://example.com/',
@@ -23,6 +24,8 @@ test('session crud description proxy homeUrl assignments', async () => {
   expect(created.status()).toBe(201);
   const session = (await created.json()).session;
   expect(session.description).toBe('hello');
+  expect(session.notepad).toBe('session notes');
+  expect(session.canNotepad).toBeTruthy();
   expect(session.proxyId).toBe(proxyId);
   expect(session.homeUrl).toContain('example.com');
   expect(session.timezone).toBe('UTC');
@@ -45,11 +48,12 @@ test('session crud description proxy homeUrl assignments', async () => {
   expect(list[0].kind).toBe('session');
 
   const patched = await admin.patch(`/api/sessions/${session.id}`, {
-    data: { description: 'updated', proxyId: null, idleTimeoutMinutes: 0 },
+    data: { description: 'updated', notepad: 'updated notes', proxyId: null, idleTimeoutMinutes: 0 },
   });
   const patchedSession = (await patched.json()).session;
   expect(patchedSession.proxy.type).toBe('none');
   expect(patchedSession.idleTimeoutMinutes).toBe(0);
+  expect(patchedSession.notepad).toBe('updated notes');
 
   await admin.delete(`/api/sessions/${session.id}`);
   await admin.delete(`/api/users/${user.id}`);

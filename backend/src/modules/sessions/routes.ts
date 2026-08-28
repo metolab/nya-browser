@@ -3,12 +3,13 @@ import {
   AUDIT_ACTIONS,
   createSessionSchema,
   createWindowSchema,
+  putNotepadSchema,
   putTargetGrantsSchema,
   startSessionSchema,
   updateSessionSchema,
 } from '@nya/shared';
 import { asyncHandler, requireAdmin } from '../../http/util.js';
-import { HttpError, assertSessionAccess, handleHttpError } from '../../http/access.js';
+import { HttpError, assertNotepadAccess, assertSessionAccess, handleHttpError } from '../../http/access.js';
 import { auditFromReq } from '../audit/service.js';
 import {
   createSession,
@@ -60,6 +61,7 @@ sessionsRouter.post(
       session = createSession({
         name: parsed.data.name,
         description: parsed.data.description,
+        notepad: parsed.data.notepad,
         groupId: parsed.data.groupId ?? null,
         proxyId: parsed.data.proxyId ?? null,
         timezone: parsed.data.timezone,
@@ -153,7 +155,7 @@ sessionsRouter.put(
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
     let grants;
     try {
-      grants = setSessionGrants(req.params.id, parsed.data.userIds);
+      grants = setSessionGrants(req.params.id, parsed.data.userIds, parsed.data.notepadUserIds);
     } catch (err) {
       return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -162,9 +164,45 @@ sessionsRouter.put(
       resourceType: 'session',
       resourceId: req.params.id,
       success: true,
-      detail: { userIds: parsed.data.userIds },
+      detail: { userIds: parsed.data.userIds, notepadUserIds: parsed.data.notepadUserIds },
     });
     res.json({ grants });
+  }),
+);
+
+sessionsRouter.get(
+  '/:id/notepad',
+  asyncHandler((req, res) => {
+    try {
+      const { session } = assertNotepadAccess(req, req.params.id);
+      res.json({ notepad: session.notepad || '' });
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionsRouter.put(
+  '/:id/notepad',
+  asyncHandler((req, res) => {
+    try {
+      assertNotepadAccess(req, req.params.id);
+      const parsed = putNotepadSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
+      }
+      const session = updateSession(req.params.id, { notepad: parsed.data.notepad });
+      if (!session) return res.status(404).json({ error: 'Not found' });
+      auditFromReq(req, {
+        action: AUDIT_ACTIONS.sessionNotepad,
+        resourceType: 'session',
+        resourceId: session.id,
+        success: true,
+      });
+      res.json({ notepad: session.notepad || '' });
+    } catch (err) {
+      handleHttpError(err, res);
+    }
   }),
 );
 

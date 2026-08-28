@@ -48,6 +48,7 @@ const LANGUAGE_OPTIONS = CHROME_LANGUAGES.map((code) => ({
 export type SessionFormValues = {
   name: string;
   description: string;
+  notepad: string;
   groupId: string | null;
   proxyId: string | null;
   timezone: string;
@@ -61,6 +62,7 @@ type Props = {
   title: string;
   initialName?: string;
   initialDescription?: string;
+  initialNotepad?: string;
   initialProxyId?: string | null;
   initialGroupId?: string | null;
   initialTimezone?: string;
@@ -81,6 +83,7 @@ export default function SessionFormDialog({
   title,
   initialName = '',
   initialDescription = '',
+  initialNotepad = '',
   initialProxyId = null,
   initialGroupId = null,
   initialTimezone = DEFAULT_TIMEZONE,
@@ -98,6 +101,7 @@ export default function SessionFormDialog({
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState(initialName);
   const [description, setDescription] = useState(initialDescription);
+  const [notepad, setNotepad] = useState(initialNotepad);
   const [timezone, setTimezone] = useState(initialTimezone);
   const [chromeLanguage, setChromeLanguage] = useState(initialChromeLanguage);
   const [homeUrl, setHomeUrl] = useState(initialHomeUrl);
@@ -109,6 +113,7 @@ export default function SessionFormDialog({
     if (!open) return;
     setName(initialName);
     setDescription(initialDescription);
+    setNotepad(initialNotepad);
     setTimezone(initialTimezone || DEFAULT_TIMEZONE);
     setChromeLanguage(initialChromeLanguage || DEFAULT_CHROME_LANGUAGE);
     setHomeUrl(initialHomeUrl || 'https://www.google.com/');
@@ -120,6 +125,7 @@ export default function SessionFormDialog({
     open,
     initialName,
     initialDescription,
+    initialNotepad,
     initialProxyId,
     initialGroupId,
     initialTimezone,
@@ -143,6 +149,7 @@ export default function SessionFormDialog({
             void onSubmit({
               name: name.trim() || initialName || 'Session',
               description,
+              notepad,
               timezone: timezone || DEFAULT_TIMEZONE,
               chromeLanguage: chromeLanguage || DEFAULT_CHROME_LANGUAGE,
               homeUrl: homeUrl || 'https://www.google.com/',
@@ -182,6 +189,16 @@ export default function SessionFormDialog({
                   placeholder="可选"
                   className="min-h-16"
                   onChange={(e) => setDescription(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="session-notepad">Notepad</Label>
+                <Textarea
+                  id="session-notepad"
+                  value={notepad}
+                  placeholder="会话便签，仅授权用户可在桌面查看和编辑"
+                  className="min-h-24"
+                  onChange={(e) => setNotepad(e.target.value)}
                 />
               </div>
               <div className="grid gap-4 sm:grid-cols-2">

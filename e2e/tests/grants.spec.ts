@@ -86,6 +86,11 @@ test.describe('permission system', () => {
       await expectForbidden(await member.get(`/api/sessions/${session.id}/files?path=.`), 'files');
       await expectForbidden(await member.post(`/api/sessions/${session.id}/files/mkdir`, { data: { path: 'x' } }), 'mkdir');
       await expectForbidden(await member.get(`/api/sessions/${session.id}/clipboard`), 'clipboard');
+      await expectForbidden(await member.get(`/api/sessions/${session.id}/notepad`), 'notepad get');
+      await expectForbidden(
+        await member.put(`/api/sessions/${session.id}/notepad`, { data: { notepad: 'x' } }),
+        'notepad put',
+      );
       await expectForbidden(
         await member.post(`/api/sessions/${session.id}/type`, { data: { text: '测' } }),
         'type',
@@ -122,6 +127,7 @@ test.describe('permission system', () => {
       expect(grants).toHaveLength(1);
       expect(grants[0].kind).toBe('session');
       expect(grants[0].userId).toBe(user.id);
+      expect(grants[0].allowNotepad).toBeFalsy();
 
       const { sessions, ids } = await sessionIds(member);
       expect(ids.has(session.id)).toBeTruthy();
@@ -129,6 +135,8 @@ test.describe('permission system', () => {
       const mine = sessions.find((s) => s.id === session.id)!;
       expect(mine.grants).toBeUndefined();
       expect(mine.maxWindows).toBeUndefined();
+      expect(mine.canNotepad).toBeFalsy();
+      expect(mine.notepad).toBeUndefined();
       expect(mine.proxy?.password === '' || mine.proxy?.password === '***').toBeTruthy();
 
       const mkdir = await member.post(`/api/sessions/${session.id}/files/mkdir`, { data: { path: 'inbox' } });
@@ -429,8 +437,65 @@ test.describe('permission system', () => {
       expect(row.grants).toEqual([]);
       expect((await admin.get(`/api/sessions/${session.id}/files?path=.`)).ok()).toBeTruthy();
       expect((await admin.post(`/api/sessions/${session.id}/files/mkdir`, { data: { path: 'a' } })).ok()).toBeTruthy();
+      expect((await admin.get(`/api/sessions/${session.id}/notepad`)).ok()).toBeTruthy();
     } finally {
       await admin.delete(`/api/sessions/${session.id}`).catch(() => undefined);
+      await admin.dispose();
+    }
+  });
+
+  test('notepad is gated by grant flag on session and folder', async () => {
+    const admin = await asAdmin();
+    const stamp = String(Date.now());
+    const user = await createUser(admin, stamp, 'np');
+    const folder = await createGroup(admin, `npF${stamp}`);
+    const inFolder = await createSession(admin, `npIn${stamp}`, { groupId: folder.id, notepad: 'folder-note' });
+    const direct = await createSession(admin, `npDir${stamp}`, { notepad: 'direct-note' });
+    const member = await asUser(user.username, 'pass1234');
+    try {
+      await admin.put(`/api/sessions/${direct.id}/grants`, { data: { userIds: [user.id] } });
+      await expectForbidden(await member.get(`/api/sessions/${direct.id}/notepad`), 'granted without notepad');
+      await expectForbidden(
+        await member.put(`/api/sessions/${direct.id}/notepad`, { data: { notepad: 'hack' } }),
+        'put without notepad',
+      );
+      expect((await sessionIds(member)).sessions.find((s) => s.id === direct.id)?.canNotepad).toBeFalsy();
+
+      await admin.put(`/api/sessions/${direct.id}/grants`, {
+        data: { userIds: [user.id], notepadUserIds: [user.id] },
+      });
+      const listed = (await sessionIds(member)).sessions.find((s) => s.id === direct.id)!;
+      expect(listed.canNotepad).toBeTruthy();
+      expect(listed.notepad).toBeUndefined();
+      const got = await member.get(`/api/sessions/${direct.id}/notepad`);
+      expect(got.ok(), await got.text()).toBeTruthy();
+      expect((await got.json()).notepad).toBe('direct-note');
+      const saved = await member.put(`/api/sessions/${direct.id}/notepad`, { data: { notepad: 'user-edit' } });
+      expect(saved.ok(), await saved.text()).toBeTruthy();
+      expect((await saved.json()).notepad).toBe('user-edit');
+      expect((await (await admin.get(`/api/sessions/${direct.id}/notepad`)).json()).notepad).toBe('user-edit');
+
+      await admin.put(`/api/groups/${folder.id}/grants`, { data: { userIds: [user.id] } });
+      await expectForbidden(await member.get(`/api/sessions/${inFolder.id}/notepad`), 'folder without notepad');
+      await admin.put(`/api/groups/${folder.id}/grants`, {
+        data: { userIds: [user.id], notepadUserIds: [user.id] },
+      });
+      expect((await (await member.get(`/api/sessions/${inFolder.id}/notepad`)).json()).notepad).toBe('folder-note');
+      const later = await createSession(admin, `npLater${stamp}`, { groupId: folder.id, notepad: 'later' });
+      expect((await (await member.get(`/api/sessions/${later.id}/notepad`)).json()).notepad).toBe('later');
+      await admin.delete(`/api/sessions/${later.id}`).catch(() => undefined);
+
+      await admin.put(`/api/users/${user.id}/grants`, {
+        data: { grants: [{ kind: 'session', targetId: direct.id, allowNotepad: true }] },
+      });
+      expect((await member.get(`/api/sessions/${inFolder.id}/notepad`)).status()).toBe(403);
+      expect((await member.get(`/api/sessions/${direct.id}/notepad`)).ok()).toBeTruthy();
+    } finally {
+      await admin.delete(`/api/sessions/${inFolder.id}`).catch(() => undefined);
+      await admin.delete(`/api/sessions/${direct.id}`).catch(() => undefined);
+      await admin.delete(`/api/groups/${folder.id}`).catch(() => undefined);
+      await admin.delete(`/api/users/${user.id}`).catch(() => undefined);
+      await member.dispose();
       await admin.dispose();
     }
   });

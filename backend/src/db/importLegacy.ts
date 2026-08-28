@@ -101,6 +101,7 @@ export function migrateJsonSessions() {
         id: s.id,
         name: String(s.name || s.id),
         description: String(s.description || ''),
+        notepad: '',
         proxyId,
         timezone,
         homeUrl,

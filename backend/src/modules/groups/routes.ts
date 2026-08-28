@@ -101,13 +101,13 @@ groupsRouter.put(
     const parsed = putTargetGrantsSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
     try {
-      const grants = setFolderGrants(req.params.id, parsed.data.userIds);
+      const grants = setFolderGrants(req.params.id, parsed.data.userIds, parsed.data.notepadUserIds);
       auditFromReq(req, {
         action: AUDIT_ACTIONS.assignmentSet,
         resourceType: 'group',
         resourceId: req.params.id,
         success: true,
-        detail: { userIds: parsed.data.userIds },
+        detail: { userIds: parsed.data.userIds, notepadUserIds: parsed.data.notepadUserIds },
       });
       res.json({ grants });
     } catch (err) {

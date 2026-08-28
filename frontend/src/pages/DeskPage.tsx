@@ -8,6 +8,7 @@ import { useAuth } from '../auth';
 import ClipboardPanel from '../components/ClipboardPanel';
 import { useClipboardSync } from '../lib/useClipboardSync';
 import FilePanel from '../components/FilePanel';
+import NotepadPanel from '../components/NotepadPanel';
 import { SessionTree } from '../components/SessionTree';
 import DeskFloat from '../desk/DeskFloat';
 import DeskLauncher from '../desk/DeskLauncher';
@@ -46,6 +47,7 @@ export default function DeskPage() {
   const [takeover, setTakeover] = useState<Session | null>(null);
   const [clipOpen, setClipOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [notepadOpen, setNotepadOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [display, setDisplay] = useState<DisplayPolicy>(defaultDisplayPolicy);
   const [sizeTick, setSizeTick] = useState(0);
@@ -90,9 +92,14 @@ export default function DeskPage() {
     if (active) return;
     setClipOpen(false);
     setFilesOpen(false);
+    setNotepadOpen(false);
     setDisplayOpen(false);
     setTabTitle('');
   }, [active]);
+
+  useEffect(() => {
+    if (!active?.session.canNotepad) setNotepadOpen(false);
+  }, [active?.session.canNotepad]);
 
   useEffect(() => {
     if (!active) {
@@ -153,11 +160,21 @@ export default function DeskPage() {
     setActive(null);
     setClipOpen(false);
     setFilesOpen(false);
+    setNotepadOpen(false);
     setDisplayOpen(false);
     setTabTitle('');
     if (cur?.session.id && cur.windowId) {
       await api.closeWindow(cur.session.id, cur.windowId).catch(() => undefined);
     }
+  };
+
+  const leaveActive = () => {
+    setActive(null);
+    setClipOpen(false);
+    setFilesOpen(false);
+    setNotepadOpen(false);
+    setDisplayOpen(false);
+    setTabTitle('');
   };
 
   return (
@@ -210,11 +227,19 @@ export default function DeskPage() {
         username={user.username}
         isAdmin={user.role === 'admin'}
         hasSession={Boolean(active)}
+        canNotepad={Boolean(active?.session.canNotepad)}
         sessionName={active?.session.name}
         sizeLabel={active ? formatSize(remote) : undefined}
         onAdmin={() => nav('/admin/sessions')}
         onLogout={() => {
           void api.logout().then(() => window.location.reload());
+        }}
+        onNotepad={() => {
+          if (!active) {
+            toast.warning('请先打开一个会话');
+            return;
+          }
+          setNotepadOpen(true);
         }}
         onDisplay={() => {
           if (!active) {
@@ -223,12 +248,19 @@ export default function DeskPage() {
           }
           setDisplayOpen(true);
         }}
-        onStop={() => {
+        onEnd={() => {
           if (!active) {
             toast.warning('请先打开一个会话');
             return;
           }
           void closeActive();
+        }}
+        onLeave={() => {
+          if (!active) {
+            toast.warning('请先打开一个会话');
+            return;
+          }
+          leaveActive();
         }}
         onClipboard={() => {
           if (!active) {
@@ -245,6 +277,14 @@ export default function DeskPage() {
           setFilesOpen(true);
         }}
       />
+
+      {active && notepadOpen ? (
+        <NotepadPanel
+          sessionId={active.session.id}
+          sessionName={active.session.name}
+          onClose={() => setNotepadOpen(false)}
+        />
+      ) : null}
 
       {active && displayOpen ? (
         <DeskFloat

@@ -62,6 +62,7 @@ export const api = {
   createSession: (payload: {
     name: string;
     description?: string;
+    notepad?: string;
     groupId?: string | null;
     proxyId?: string | null;
     timezone?: string;
@@ -78,6 +79,7 @@ export const api = {
     payload: Partial<{
       name: string;
       description: string;
+      notepad: string;
       groupId: string | null;
       proxyId: string | null;
       timezone: string;
@@ -106,10 +108,10 @@ export const api = {
   deleteGroup: (id: string) => request<{ ok: boolean }>(`/api/groups/${id}`, { method: 'DELETE' }),
   getFolderGrants: (id: string) =>
     request<{ grants: AccessGrant[] }>(`/api/groups/${id}/grants`),
-  setFolderGrants: (id: string, userIds: string[]) =>
+  setFolderGrants: (id: string, userIds: string[], notepadUserIds: string[] = []) =>
     request<{ grants: AccessGrant[] }>(`/api/groups/${id}/grants`, {
       method: 'PUT',
-      body: JSON.stringify({ userIds }),
+      body: JSON.stringify({ userIds, notepadUserIds }),
     }),
   startSession: (id: string, url?: string) =>
     request<{ runtime: Session['runtime']; session: Session }>(`/api/sessions/${id}/start`, {
@@ -134,10 +136,16 @@ export const api = {
     }),
   getSessionGrants: (id: string) =>
     request<{ grants: AccessGrant[] }>(`/api/sessions/${id}/grants`),
-  setSessionGrants: (id: string, userIds: string[]) =>
+  setSessionGrants: (id: string, userIds: string[], notepadUserIds: string[] = []) =>
     request<{ grants: AccessGrant[] }>(`/api/sessions/${id}/grants`, {
       method: 'PUT',
-      body: JSON.stringify({ userIds }),
+      body: JSON.stringify({ userIds, notepadUserIds }),
+    }),
+  getNotepad: (id: string) => request<{ notepad: string }>(`/api/sessions/${id}/notepad`),
+  putNotepad: (id: string, notepad: string) =>
+    request<{ notepad: string }>(`/api/sessions/${id}/notepad`, {
+      method: 'PUT',
+      body: JSON.stringify({ notepad }),
     }),
   createWindow: (id: string, payload?: { url?: string; takeover?: boolean }) =>
     request<{
@@ -257,7 +265,7 @@ export const api = {
   deleteUser: (id: string) => request<{ ok: boolean }>(`/api/users/${id}`, { method: 'DELETE' }),
   setUserGrants: (
     id: string,
-    grants: { kind: 'session' | 'folder'; targetId: string }[],
+    grants: { kind: 'session' | 'folder'; targetId: string; allowNotepad?: boolean }[],
   ) =>
     request<{ grants: AccessGrant[] }>(`/api/users/${id}/grants`, {
       method: 'PUT',

@@ -61,6 +61,8 @@ export default function UsersPage() {
   const [assignUser, setAssignUser] = useState<Row | null>(null);
   const [folderIds, setFolderIds] = useState<Set<string>>(new Set());
   const [sessionIds, setSessionIds] = useState<Set<string>>(new Set());
+  const [notepadFolderIds, setNotepadFolderIds] = useState<Set<string>>(new Set());
+  const [notepadSessionIds, setNotepadSessionIds] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<Row | null>(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -129,6 +131,20 @@ export default function UsersPage() {
                       );
                       setSessionIds(
                         new Set((u.grants || []).filter((g) => g.kind === 'session').map((g) => g.targetId)),
+                      );
+                      setNotepadFolderIds(
+                        new Set(
+                          (u.grants || [])
+                            .filter((g) => g.kind === 'folder' && g.allowNotepad)
+                            .map((g) => g.targetId),
+                        ),
+                      );
+                      setNotepadSessionIds(
+                        new Set(
+                          (u.grants || [])
+                            .filter((g) => g.kind === 'session' && g.allowNotepad)
+                            .map((g) => g.targetId),
+                        ),
                       );
                     }}
                   >
@@ -221,8 +237,12 @@ export default function UsersPage() {
             sessions={sessions}
             folderIds={folderIds}
             sessionIds={sessionIds}
+            notepadFolderIds={notepadFolderIds}
+            notepadSessionIds={notepadSessionIds}
             onFolderIds={setFolderIds}
             onSessionIds={setSessionIds}
+            onNotepadFolderIds={setNotepadFolderIds}
+            onNotepadSessionIds={setNotepadSessionIds}
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setAssignUser(null)}>
@@ -232,8 +252,16 @@ export default function UsersPage() {
               onClick={() => {
                 if (!assignUser) return;
                 const grants = [
-                  ...[...folderIds].map((targetId) => ({ kind: 'folder' as const, targetId })),
-                  ...[...sessionIds].map((targetId) => ({ kind: 'session' as const, targetId })),
+                  ...[...folderIds].map((targetId) => ({
+                    kind: 'folder' as const,
+                    targetId,
+                    allowNotepad: notepadFolderIds.has(targetId),
+                  })),
+                  ...[...sessionIds].map((targetId) => ({
+                    kind: 'session' as const,
+                    targetId,
+                    allowNotepad: notepadSessionIds.has(targetId),
+                  })),
                 ];
                 void api
                   .setUserGrants(assignUser.id, grants)

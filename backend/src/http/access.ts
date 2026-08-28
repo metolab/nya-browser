@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import { getSession, userCanAccessSession, type SessionRecord } from '../store.js';
+import { getSession, userCanAccessNotepad, userCanAccessSession, type SessionRecord } from '../store.js';
 
 export class HttpError extends Error {
   status: number;
@@ -25,6 +25,17 @@ export function assertSessionAccess(
   if (!userCanAccessSession(req.user.id, session)) throw new HttpError(403, 'Forbidden');
   if (opts.manage) throw new HttpError(403, 'Forbidden');
   return { session, admin: false };
+}
+
+export function assertNotepadAccess(
+  req: Request,
+  sessionId: string,
+): { session: SessionRecord; admin: boolean } {
+  const { session, admin } = assertSessionAccess(req, sessionId);
+  if (!admin && !userCanAccessNotepad(req.user!.id, session)) {
+    throw new HttpError(403, 'Forbidden');
+  }
+  return { session, admin };
 }
 
 export function handleHttpError(err: unknown, res: import('express').Response) {

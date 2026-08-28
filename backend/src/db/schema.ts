@@ -28,6 +28,7 @@ export const sessions = sqliteTable('sessions', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description').notNull(),
+  notepad: text('notepad').notNull().default(''),
   groupId: text('group_id'),
   proxyId: text('proxy_id'),
   timezone: text('timezone').notNull(),
@@ -51,6 +52,7 @@ export const accessGrants = sqliteTable('access_grants', {
   userId: text('user_id').notNull(),
   kind: text('kind').notNull(),
   targetId: text('target_id').notNull(),
+  allowNotepad: integer('allow_notepad').notNull(),
 });
 
 export const authTokens = sqliteTable('auth_tokens', {

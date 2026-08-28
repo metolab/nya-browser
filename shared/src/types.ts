@@ -67,6 +67,7 @@ export interface AccessGrant {
   kind: AccessKind;
   targetId: string;
   targetName?: string;
+  allowNotepad?: boolean;
 }
 
 export interface SessionWindow {
@@ -103,6 +104,8 @@ export interface Session {
   id: string;
   name: string;
   description: string;
+  notepad?: string;
+  canNotepad?: boolean;
   groupId: string | null;
   proxyId: string | null;
   proxy: ProxyConfig;
@@ -173,6 +176,7 @@ export interface BackupManifest {
   exportedAt: string;
   name: string;
   description: string;
+  notepad?: string;
   timezone: string;
   chromeLanguage?: string;
   homeUrl: string;

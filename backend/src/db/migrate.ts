@@ -93,6 +93,8 @@ export function migrate() {
     ensureColumn('proxies', 'via_proxy_id', 'TEXT');
     sqlite.exec('CREATE INDEX IF NOT EXISTS idx_sessions_group ON sessions(group_id)');
     sqlite.exec('DROP TABLE IF EXISTS session_assignments');
+    ensureColumn('sessions', 'notepad', "TEXT NOT NULL DEFAULT ''");
+    ensureColumn('access_grants', 'allow_notepad', 'INTEGER NOT NULL DEFAULT 0');
     sqlite.exec('COMMIT');
   } catch (err) {
     sqlite.exec('ROLLBACK');

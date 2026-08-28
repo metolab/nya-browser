@@ -325,6 +325,7 @@ export type SessionRecord = {
   id: string;
   name: string;
   description: string;
+  notepad: string;
   groupId: string | null;
   proxyId: string | null;
   proxy: ProxyConfig;
@@ -343,6 +344,7 @@ function hydrateSession(row: typeof sessionsTable.$inferSelect): SessionRecord {
     id: row.id,
     name: row.name,
     description: row.description || '',
+    notepad: row.notepad || '',
     groupId: row.groupId || null,
     proxyId: row.proxyId,
     proxy: proxyToConfig(proxy),
@@ -368,6 +370,7 @@ export function getSession(id: string): SessionRecord | null {
 export function createSession(input: {
   name?: string;
   description?: string;
+  notepad?: string;
   groupId?: string | null;
   proxyId?: string | null;
   timezone?: string;
@@ -387,6 +390,7 @@ export function createSession(input: {
     id,
     name: String(input.name || '').trim() || `Session ${all.length + 1}`,
     description: String(input.description || ''),
+    notepad: String(input.notepad || ''),
     groupId,
     proxyId: input.proxyId || null,
     proxy: proxyToConfig(getProxy(input.proxyId || null)),
@@ -404,6 +408,7 @@ export function createSession(input: {
       id: session.id,
       name: session.name,
       description: session.description,
+      notepad: session.notepad,
       groupId: session.groupId,
       proxyId: session.proxyId,
       timezone: session.timezone,
@@ -423,6 +428,7 @@ export function updateSession(
   patch: Partial<{
     name: string;
     description: string;
+    notepad: string;
     groupId: string | null;
     proxyId: string | null;
     timezone: string;
@@ -443,6 +449,7 @@ export function updateSession(
   const next = {
     name: patch.name !== undefined ? String(patch.name).trim() || current.name : current.name,
     description: patch.description !== undefined ? String(patch.description) : current.description,
+    notepad: patch.notepad !== undefined ? String(patch.notepad) : current.notepad,
     groupId: patch.groupId !== undefined ? patch.groupId : current.groupId,
     proxyId: patch.proxyId !== undefined ? patch.proxyId : current.proxyId,
     timezone:
@@ -542,6 +549,7 @@ function hydrateGrant(
     kind,
     targetId: row.targetId,
     targetName,
+    allowNotepad: Boolean(row.allowNotepad),
   };
 }
 
@@ -640,6 +648,31 @@ export function userCanAccessSession(userId: string, sessionOrId: SessionRecord 
   return folderRows.some((row) => ancestors.has(row.targetId));
 }
 
+export function userCanAccessNotepad(userId: string, sessionOrId: SessionRecord | string): boolean {
+  const session = typeof sessionOrId === 'string' ? getSession(sessionOrId) : sessionOrId;
+  if (!session) return false;
+  const direct = db
+    .select()
+    .from(accessGrants)
+    .where(
+      and(
+        eq(accessGrants.userId, userId),
+        eq(accessGrants.kind, 'session'),
+        eq(accessGrants.targetId, session.id),
+      ),
+    )
+    .get();
+  if (direct?.allowNotepad) return true;
+  if (!session.groupId) return false;
+  const ancestors = new Set(groupAncestorIds(session.groupId));
+  const folderRows = db
+    .select()
+    .from(accessGrants)
+    .where(and(eq(accessGrants.userId, userId), eq(accessGrants.kind, 'folder')))
+    .all();
+  return folderRows.some((row) => ancestors.has(row.targetId) && Boolean(row.allowNotepad));
+}
+
 export function listAccessibleSessions(userId: string): SessionRecord[] {
   const grants = db.select().from(accessGrants).where(eq(accessGrants.userId, userId)).all();
   const sessionIds = new Set<string>();
@@ -673,11 +706,14 @@ function uniqueIds(ids: string[]) {
   return [...new Set(ids.filter(Boolean))];
 }
 
-export function setUserGrants(userId: string, items: { kind: AccessKind; targetId: string }[]) {
+export function setUserGrants(
+  userId: string,
+  items: { kind: AccessKind; targetId: string; allowNotepad?: boolean }[],
+) {
   const user = db.select().from(usersTable).where(eq(usersTable.id, userId)).get();
   if (!user) throw new Error(`User not found: ${userId}`);
   const seen = new Set<string>();
-  const next: { kind: AccessKind; targetId: string }[] = [];
+  const next: { kind: AccessKind; targetId: string; allowNotepad: boolean }[] = [];
   for (const item of items) {
     const key = `${item.kind}:${item.targetId}`;
     if (seen.has(key)) continue;
@@ -689,20 +725,30 @@ export function setUserGrants(userId: string, items: { kind: AccessKind; targetI
     } else {
       throw new Error('Invalid grant kind');
     }
-    next.push(item);
+    next.push({
+      kind: item.kind,
+      targetId: item.targetId,
+      allowNotepad: Boolean(item.allowNotepad),
+    });
   }
   db.delete(accessGrants).where(eq(accessGrants.userId, userId)).run();
   for (const item of next) {
     db.insert(accessGrants)
-      .values({ userId, kind: item.kind, targetId: item.targetId })
+      .values({
+        userId,
+        kind: item.kind,
+        targetId: item.targetId,
+        allowNotepad: item.allowNotepad ? 1 : 0,
+      } as typeof accessGrants.$inferInsert)
       .run();
   }
   return listUserGrants(userId);
 }
 
-export function setSessionGrants(sessionId: string, userIds: string[]) {
+export function setSessionGrants(sessionId: string, userIds: string[], notepadUserIds: string[] = []) {
   if (!getSession(sessionId)) throw new Error(`Session not found: ${sessionId}`);
   const ids = uniqueIds(userIds);
+  const notepad = new Set(uniqueIds(notepadUserIds));
   for (const id of ids) {
     const user = db.select().from(usersTable).where(eq(usersTable.id, id)).get();
     if (!user) throw new Error(`User not found: ${id}`);
@@ -712,15 +758,21 @@ export function setSessionGrants(sessionId: string, userIds: string[]) {
     .run();
   for (const id of ids) {
     db.insert(accessGrants)
-      .values({ userId: id, kind: 'session', targetId: sessionId })
+      .values({
+        userId: id,
+        kind: 'session',
+        targetId: sessionId,
+        allowNotepad: notepad.has(id) ? 1 : 0,
+      } as typeof accessGrants.$inferInsert)
       .run();
   }
   return listSessionGrants(sessionId);
 }
 
-export function setFolderGrants(groupId: string, userIds: string[]) {
+export function setFolderGrants(groupId: string, userIds: string[], notepadUserIds: string[] = []) {
   if (!getGroup(groupId)) throw new Error(`Folder not found: ${groupId}`);
   const ids = uniqueIds(userIds);
+  const notepad = new Set(uniqueIds(notepadUserIds));
   for (const id of ids) {
     const user = db.select().from(usersTable).where(eq(usersTable.id, id)).get();
     if (!user) throw new Error(`User not found: ${id}`);
@@ -730,7 +782,12 @@ export function setFolderGrants(groupId: string, userIds: string[]) {
     .run();
   for (const id of ids) {
     db.insert(accessGrants)
-      .values({ userId: id, kind: 'folder', targetId: groupId })
+      .values({
+        userId: id,
+        kind: 'folder',
+        targetId: groupId,
+        allowNotepad: notepad.has(id) ? 1 : 0,
+      } as typeof accessGrants.$inferInsert)
       .run();
   }
   return listFolderGrants(groupId);

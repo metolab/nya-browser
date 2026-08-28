@@ -59,6 +59,7 @@ export const accessKindSchema = z.enum(['session', 'folder']);
 export const userGrantItemSchema = z.object({
   kind: accessKindSchema,
   targetId: z.string().min(1),
+  allowNotepad: z.boolean().optional().default(false),
 });
 
 export const putUserGrantsSchema = z.object({
@@ -67,6 +68,7 @@ export const putUserGrantsSchema = z.object({
 
 export const putTargetGrantsSchema = z.object({
   userIds: z.array(z.string().min(1)),
+  notepadUserIds: z.array(z.string().min(1)).optional().default([]),
 });
 
 export const proxyFieldsSchema = z.object({
@@ -114,9 +116,16 @@ export const IDLE_TIMEOUT_MINUTES_MAX = 7 * 24 * 60;
 
 export const idleTimeoutMinutesSchema = z.number().int().min(0).max(IDLE_TIMEOUT_MINUTES_MAX);
 
+export const notepadSchema = z.string();
+
+export const putNotepadSchema = z.object({
+  notepad: notepadSchema,
+});
+
 export const createSessionSchema = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional().default(''),
+  notepad: notepadSchema.optional().default(''),
   groupId: z.string().min(1).nullable().optional(),
   proxyId: z.string().min(1).nullable().optional(),
   timezone: timezoneSchema.optional(),
@@ -128,6 +137,7 @@ export const createSessionSchema = z.object({
 export const updateSessionSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
   description: z.string().max(500).optional(),
+  notepad: notepadSchema.optional(),
   groupId: z.string().min(1).nullable().optional(),
   proxyId: z.string().min(1).nullable().optional(),
   timezone: timezoneSchema.optional(),

@@ -9,6 +9,7 @@ import {
   putTargetGrantsSchema,
   createSessionSchema,
   IDLE_TIMEOUT_MINUTES_MAX,
+  putNotepadSchema,
   typeTextSchema,
   TYPE_TEXT_MAX,
 } from './schemas.js';
@@ -56,7 +57,20 @@ describe('schemas', () => {
   });
 
   it('accepts target grants', () => {
-    expect(putTargetGrantsSchema.parse({ userIds: ['u1', 'u2'] }).userIds).toEqual(['u1', 'u2']);
+    expect(putTargetGrantsSchema.parse({ userIds: ['u1', 'u2'] })).toEqual({
+      userIds: ['u1', 'u2'],
+      notepadUserIds: [],
+    });
+  });
+
+  it('accepts notepad grant flags', () => {
+    const parsed = putUserGrantsSchema.parse({
+      grants: [{ kind: 'session', targetId: 's1', allowNotepad: true }],
+    });
+    expect(parsed.grants[0].allowNotepad).toBe(true);
+    expect(
+      putTargetGrantsSchema.parse({ userIds: ['u1'], notepadUserIds: ['u1'] }).notepadUserIds,
+    ).toEqual(['u1']);
   });
 
   it('accepts proxy', () => {
@@ -72,6 +86,7 @@ describe('schemas', () => {
   it('defaults idle timeout to 0', () => {
     const s = createSessionSchema.parse({ name: 's1' });
     expect(s.idleTimeoutMinutes).toBe(0);
+    expect(s.notepad).toBe('');
   });
 
   it('accepts idle timeout minutes', () => {
@@ -88,6 +103,11 @@ describe('schemas', () => {
   it('accepts IME type-text payloads', () => {
     expect(typeTextSchema.parse({ text: '这个太平淡了' }).text).toBe('这个太平淡了');
     expect(() => typeTextSchema.parse({ text: 'x'.repeat(TYPE_TEXT_MAX + 1) })).toThrow();
+  });
+
+  it('accepts notepad payloads', () => {
+    expect(putNotepadSchema.parse({ notepad: 'ok' }).notepad).toBe('ok');
+    expect(putNotepadSchema.parse({ notepad: 'x'.repeat(40_000) }).notepad.length).toBe(40_000);
   });
 });
 

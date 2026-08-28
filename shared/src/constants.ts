@@ -31,6 +31,7 @@ export const AUDIT_ACTIONS = {
   sessionStop: 'session.stop',
   sessionRestart: 'session.restart',
   sessionFingerprint: 'session.fingerprint',
+  sessionNotepad: 'session.notepad',
   assignmentSet: 'grant.set',
   proxyCreate: 'proxy.create',
   proxyUpdate: 'proxy.update',

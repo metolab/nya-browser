@@ -47,6 +47,7 @@ export default function SessionsPage() {
   const [assign, setAssign] = useState<Session | null>(null);
   const [assignFolder, setAssignFolder] = useState<SessionGroup | null>(null);
   const [grantUserIds, setGrantUserIds] = useState<Set<string>>(new Set());
+  const [notepadUserIds, setNotepadUserIds] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<Session | null>(null);
   const [folderOpen, setFolderOpen] = useState(false);
   const [folderEditing, setFolderEditing] = useState<SessionGroup | null>(null);
@@ -133,6 +134,9 @@ export default function SessionsPage() {
             setAssignFolder(null);
             setAssign(s);
             setGrantUserIds(new Set((s.grants || []).map((g) => g.userId)));
+            setNotepadUserIds(
+              new Set((s.grants || []).filter((g) => g.allowNotepad).map((g) => g.userId)),
+            );
           }}
           onExportSession={(s) => {
             window.location.href = api.exportUrl(s.id);
@@ -144,10 +148,14 @@ export default function SessionsPage() {
           onAssignFolder={(g) => {
             setAssign(null);
             setGrantUserIds(new Set());
+            setNotepadUserIds(new Set());
             setAssignFolder(g);
             void api
               .getFolderGrants(g.id)
-              .then((d) => setGrantUserIds(new Set(d.grants.map((x) => x.userId))))
+              .then((d) => {
+                setGrantUserIds(new Set(d.grants.map((x) => x.userId)));
+                setNotepadUserIds(new Set(d.grants.filter((x) => x.allowNotepad).map((x) => x.userId)));
+              })
               .catch((e: Error) => toast.error(e.message));
           }}
         />
@@ -178,6 +186,7 @@ export default function SessionsPage() {
         groups={groups}
         initialName={edit?.name}
         initialDescription={edit?.description}
+        initialNotepad={edit?.notepad}
         initialGroupId={edit?.groupId}
         initialProxyId={edit?.proxyId}
         initialTimezone={edit?.timezone || DEFAULT_TIMEZONE}
@@ -210,10 +219,18 @@ export default function SessionsPage() {
           </DialogHeader>
           {assignFolder ? (
             <p className="text-sm text-muted-foreground">
-              被授权用户可以使用该目录及子目录下的全部会话，包括之后新建的。
+              被授权用户可以使用该目录及子目录下的全部会话，包括之后新建的。勾选 Notepad 才允许查看和编辑便签。
             </p>
-          ) : null}
-          <UserGrantList users={users} selected={grantUserIds} onChange={setGrantUserIds} />
+          ) : (
+            <p className="text-sm text-muted-foreground">勾选 Notepad 才允许该用户查看和编辑便签。</p>
+          )}
+          <UserGrantList
+            users={users}
+            selected={grantUserIds}
+            onChange={setGrantUserIds}
+            notepadSelected={notepadUserIds}
+            onNotepadChange={setNotepadUserIds}
+          />
           <DialogFooter>
             <Button
               variant="outline"
@@ -227,10 +244,11 @@ export default function SessionsPage() {
             <Button
               onClick={() => {
                 const ids = [...grantUserIds];
+                const notepadIds = [...notepadUserIds].filter((id) => grantUserIds.has(id));
                 const req = assignFolder
-                  ? api.setFolderGrants(assignFolder.id, ids)
+                  ? api.setFolderGrants(assignFolder.id, ids, notepadIds)
                   : assign
-                    ? api.setSessionGrants(assign.id, ids)
+                    ? api.setSessionGrants(assign.id, ids, notepadIds)
                     : null;
                 if (!req) return;
                 void req

@@ -9,6 +9,7 @@ type Props = {
   subtitle?: string;
   onClose: () => void;
   children: ReactNode;
+  actions?: ReactNode;
   className?: string;
   bodyClassName?: string;
 };
@@ -18,6 +19,7 @@ export default function DeskFloat({
   subtitle,
   onClose,
   children,
+  actions,
   className,
   bodyClassName,
 }: Props) {
@@ -49,16 +51,23 @@ export default function DeskFloat({
             <div className="truncate text-[11px] text-muted-foreground">{subtitle}</div>
           ) : null}
         </div>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label="关闭"
-          className="cursor-pointer"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={onClose}
-        >
-          <XIcon />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          {actions ? (
+            <div className="flex items-center" onPointerDown={(e) => e.stopPropagation()}>
+              {actions}
+            </div>
+          ) : null}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="关闭"
+            className="cursor-pointer"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onClose}
+          >
+            <XIcon />
+          </Button>
+        </div>
       </div>
       <div className={cn('min-h-0 p-2', bodyClassName)}>{children}</div>
     </div>

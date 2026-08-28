@@ -3,10 +3,13 @@ import {
   CircleStopIcon,
   ClipboardIcon,
   FolderIcon,
+  HouseIcon,
   LogOutIcon,
   MonitorIcon,
+  MoreHorizontalIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
+  StickyNoteIcon,
 } from 'lucide-react';
 import { useDeskDrag } from './useDeskDrag';
 import { Button } from '@/components/ui/button';
@@ -16,6 +19,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
@@ -31,14 +37,17 @@ type Props = {
   username: string;
   isAdmin: boolean;
   hasSession: boolean;
+  canNotepad: boolean;
   sessionName?: string;
   sizeLabel?: string;
   onAdmin: () => void;
   onLogout: () => void;
+  onNotepad: () => void;
   onClipboard: () => void;
   onFiles: () => void;
   onDisplay: () => void;
-  onStop: () => void;
+  onEnd: () => void;
+  onLeave: () => void;
 };
 
 function loadBadgePos() {
@@ -75,14 +84,17 @@ export default function DeskLauncher({
   username,
   isAdmin,
   hasSession,
+  canNotepad,
   sessionName,
   sizeLabel,
   onAdmin,
   onLogout,
+  onNotepad,
   onClipboard,
   onFiles,
   onDisplay,
-  onStop,
+  onEnd,
+  onLeave,
 }: Props) {
   const [hover, setHover] = useState(false);
   const [control, setControl] = useState(false);
@@ -97,7 +109,7 @@ export default function DeskLauncher({
   const expanded = Boolean((hover || control) && !drag.dragging);
   menuLock.current = control;
 
-  const menuW = isAdmin ? 360 : 300;
+  const menuW = canNotepad ? 420 : 340;
   const dockLeft = dir === 'left';
 
   useEffect(() => {
@@ -127,7 +139,7 @@ export default function DeskLauncher({
     setHover(true);
   };
 
-  const onLeave = () => {
+  const onLeaveHover = () => {
     window.clearTimeout(leaveTimer.current);
     leaveTimer.current = window.setTimeout(() => setHover(false), 200);
   };
@@ -162,11 +174,50 @@ export default function DeskLauncher({
 
   const menu = (
     <div className="flex items-center gap-0.5 whitespace-nowrap">
+      {canNotepad ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!hasSession}
+          onClick={() => {
+            setControl(false);
+            onNotepad();
+          }}
+        >
+          <StickyNoteIcon />
+          Notepad
+        </Button>
+      ) : null}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+        disabled={!hasSession}
+        onClick={() => {
+          setControl(false);
+          onEnd();
+        }}
+      >
+        <CircleStopIcon />
+        结束会话
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={!hasSession}
+        onClick={() => {
+          setControl(false);
+          onLeave();
+        }}
+      >
+        <HouseIcon />
+        退出会话
+      </Button>
       <DropdownMenu modal={false} open={control} onOpenChange={setControl}>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="sm">
-            <SlidersHorizontalIcon />
-            会话控制
+            <MoreHorizontalIcon />
+            更多
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -176,76 +227,88 @@ export default function DeskLauncher({
           onMouseEnter={onEnter}
           onPointerDown={(e: ReactPointerEvent) => e.stopPropagation()}
         >
-          {hasSession ? (
-            <DropdownMenuLabel className="max-w-52 font-normal">
-              <div className="truncate text-foreground">{sessionName}</div>
-              {sizeLabel ? <div className="truncate">{sizeLabel}</div> : null}
-            </DropdownMenuLabel>
-          ) : (
-            <DropdownMenuLabel>未打开会话</DropdownMenuLabel>
-          )}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <SlidersHorizontalIcon />
+              会话控制
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent
+              className="z-[80] min-w-44"
+              onMouseEnter={onEnter}
+              onPointerDown={(e: ReactPointerEvent) => e.stopPropagation()}
+            >
+              {hasSession ? (
+                <DropdownMenuLabel className="max-w-52 font-normal">
+                  <div className="truncate text-foreground">{sessionName}</div>
+                  {sizeLabel ? <div className="truncate">{sizeLabel}</div> : null}
+                </DropdownMenuLabel>
+              ) : (
+                <DropdownMenuLabel>未打开会话</DropdownMenuLabel>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={!hasSession}
+                onSelect={(event: Event) => {
+                  event.preventDefault();
+                  setControl(false);
+                  onDisplay();
+                }}
+              >
+                <MonitorIcon />
+                显示设置
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!hasSession}
+                onSelect={(event: Event) => {
+                  event.preventDefault();
+                  setControl(false);
+                  onClipboard();
+                }}
+              >
+                <ClipboardIcon />
+                剪贴板
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!hasSession}
+                onSelect={(event: Event) => {
+                  event.preventDefault();
+                  setControl(false);
+                  onFiles();
+                }}
+              >
+                <FolderIcon />
+                文件管理
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
           <DropdownMenuSeparator />
+          <DropdownMenuLabel className="max-w-52 font-normal">
+            <div className="truncate text-foreground">{username}</div>
+          </DropdownMenuLabel>
+          {isAdmin ? (
+            <DropdownMenuItem
+              onSelect={(event: Event) => {
+                event.preventDefault();
+                setControl(false);
+                onAdmin();
+              }}
+            >
+              <SettingsIcon />
+              管理
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
-            disabled={!hasSession}
             onSelect={(event: Event) => {
               event.preventDefault();
               setControl(false);
-              onDisplay();
+              onLogout();
             }}
           >
-            <MonitorIcon />
-            显示设置
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={!hasSession}
-            onSelect={(event: Event) => {
-              event.preventDefault();
-              setControl(false);
-              onClipboard();
-            }}
-          >
-            <ClipboardIcon />
-            剪贴板
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={!hasSession}
-            onSelect={(event: Event) => {
-              event.preventDefault();
-              setControl(false);
-              onFiles();
-            }}
-          >
-            <FolderIcon />
-            文件管理
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            disabled={!hasSession}
-            variant="destructive"
-            onSelect={(event: Event) => {
-              event.preventDefault();
-              setControl(false);
-              onStop();
-            }}
-          >
-            <CircleStopIcon />
-            停止会话
+            <LogOutIcon />
+            登出
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      {isAdmin ? (
-        <Button variant="ghost" size="sm" onClick={onAdmin}>
-          <SettingsIcon />
-          管理
-        </Button>
-      ) : null}
-      <span className="max-w-20 cursor-grab truncate px-1.5 text-[11px] text-muted-foreground select-none" title={username}>
-        {username}
-      </span>
-      <Button variant="ghost" size="sm" onClick={onLogout}>
-        <LogOutIcon />
-        登出
-      </Button>
     </div>
   );
 
@@ -277,7 +340,7 @@ export default function DeskLauncher({
           : { left, right: 'auto', top: 'auto' }),
       }}
       onMouseEnter={onEnter}
-      onMouseLeave={onLeave}
+      onMouseLeave={onLeaveHover}
       onPointerDown={onPillPointerDown}
       onPointerMove={drag.move}
       onPointerUp={onPillPointerUp}

@@ -4,6 +4,7 @@ import {
   listAccessibleSessions,
   listSessionGrants,
   listSessions,
+  userCanAccessNotepad,
   type SessionRecord,
 } from '../../store.js';
 import { getRuntimePublic, listWindows } from '../../runtime/sessionManager.js';
@@ -31,6 +32,7 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
     id: session.id,
     name: session.name,
     description: session.description,
+    canNotepad: admin || Boolean(user && userCanAccessNotepad(user.id, session)),
     groupId: session.groupId,
     proxyId: session.proxyId,
     proxy: redactProxy(session, Boolean(admin)),
@@ -44,6 +46,7 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
     runtime,
   };
   if (admin) {
+    base.notepad = session.notepad;
     base.grants = listSessionGrants(session.id);
   }
   if (!admin && runtime.windows && user) {

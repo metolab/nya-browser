@@ -81,6 +81,7 @@ backupRouter.get(
       exportedAt: new Date().toISOString(),
       name: session.name,
       description: session.description,
+      notepad: session.notepad,
       timezone: session.timezone,
       chromeLanguage: session.chromeLanguage,
       homeUrl: session.homeUrl,
@@ -173,6 +174,7 @@ backupRouter.post(
     const session = createSession({
       name: manifest.name,
       description: manifest.description,
+      notepad: manifest.notepad || '',
       timezone: manifest.timezone,
       chromeLanguage: manifest.chromeLanguage,
       homeUrl: manifest.homeUrl,
