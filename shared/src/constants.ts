@@ -21,6 +21,7 @@ export const AUDIT_ACTIONS = {
   userCreate: 'user.create',
   userUpdate: 'user.update',
   userDelete: 'user.delete',
+  passwordChange: 'user.password',
   groupCreate: 'group.create',
   groupUpdate: 'group.update',
   groupDelete: 'group.delete',

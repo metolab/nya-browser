@@ -54,6 +54,11 @@ export const updateUserSchema = z.object({
   disabled: z.boolean().optional(),
 });
 
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: z.string().min(4).max(200),
+});
+
 export const accessKindSchema = z.enum(['session', 'folder']);
 
 export const userGrantItemSchema = z.object({

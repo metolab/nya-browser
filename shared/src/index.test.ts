@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { clampDisplayGeom, DISPLAY_LIMITS } from './displayLimits.js';
 import {
   loginSchema,
+  changePasswordSchema,
   createUserSchema,
   createProxySchema,
   createGroupSchema,
@@ -39,6 +40,16 @@ describe('schemas', () => {
 
   it('rejects bad username', () => {
     expect(() => createUserSchema.parse({ username: 'bad name', password: '1234' })).toThrow();
+  });
+
+  it('accepts password change', () => {
+    expect(
+      changePasswordSchema.parse({ currentPassword: 'old', newPassword: '1234' }).newPassword,
+    ).toBe('1234');
+  });
+
+  it('rejects short new password', () => {
+    expect(() => changePasswordSchema.parse({ currentPassword: 'old', newPassword: '123' })).toThrow();
   });
 
   it('accepts group', () => {

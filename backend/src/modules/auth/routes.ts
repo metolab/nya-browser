@@ -1,9 +1,16 @@
 import { Router } from 'express';
-import { AUTH_COOKIE, AUDIT_ACTIONS, loginSchema } from '@nya/shared';
+import { AUTH_COOKIE, AUDIT_ACTIONS, changePasswordSchema, loginSchema } from '@nya/shared';
 import { asyncHandler, clientIp } from '../../http/util.js';
 import { BASE_PATH } from '../../config.js';
-import { cookieOptions, issueToken, revokeToken, verifyUser } from './service.js';
-import { writeAudit } from '../audit/service.js';
+import {
+  changeOwnPassword,
+  cookieOptions,
+  issueToken,
+  revokeToken,
+  revokeUserTokensExcept,
+  verifyUser,
+} from './service.js';
+import { auditFromReq, writeAudit } from '../audit/service.js';
 
 const loginHits = new Map<string, number[]>();
 
@@ -91,5 +98,40 @@ privateAuthRouter.get(
   '/me',
   asyncHandler((req, res) => {
     res.json({ user: req.user });
+  }),
+);
+
+privateAuthRouter.post(
+  '/me/password',
+  asyncHandler(async (req, res) => {
+    const parsed = changePasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
+    }
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const result = await changeOwnPassword(userId, parsed.data.currentPassword, parsed.data.newPassword);
+    if (result === 'missing') return res.status(401).json({ error: 'Unauthorized' });
+    if (result === 'bad_current') {
+      auditFromReq(req, {
+        action: AUDIT_ACTIONS.passwordChange,
+        resourceType: 'user',
+        resourceId: userId,
+        success: false,
+        detail: { reason: 'bad_current' },
+      });
+      return res.status(401).json({ error: '当前密码错误' });
+    }
+    if (result === 'same') {
+      return res.status(400).json({ error: '新密码不能与当前密码相同' });
+    }
+    revokeUserTokensExcept(userId, req.authToken);
+    auditFromReq(req, {
+      action: AUDIT_ACTIONS.passwordChange,
+      resourceType: 'user',
+      resourceId: userId,
+      success: true,
+    });
+    res.json({ ok: true });
   }),
 );

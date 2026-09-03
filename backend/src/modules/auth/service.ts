@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import argon2 from 'argon2';
-import { eq, lte } from 'drizzle-orm';
+import { and, eq, lte, ne } from 'drizzle-orm';
 import { AUTH_COOKIE } from '@nya/shared';
 import type { UserPublic } from '@nya/shared';
 import { AUTH_TTL_MS, BASE_PATH } from '../../config.js';
@@ -53,6 +53,33 @@ export function revokeToken(token: string | undefined) {
 
 export function revokeUserTokens(userId: string) {
   db.delete(authTokens).where(eq(authTokens.userId, userId)).run();
+}
+
+export function revokeUserTokensExcept(userId: string, keepToken: string | undefined) {
+  if (!keepToken) {
+    revokeUserTokens(userId);
+    return;
+  }
+  db.delete(authTokens)
+    .where(and(eq(authTokens.userId, userId), ne(authTokens.token, keepToken)))
+    .run();
+}
+
+export async function changeOwnPassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<'ok' | 'missing' | 'bad_current' | 'same'> {
+  const row = getUserById(userId);
+  if (!row || row.disabled) return 'missing';
+  const ok = await argon2.verify(row.passwordHash, currentPassword);
+  if (!ok) return 'bad_current';
+  if (currentPassword === newPassword) return 'same';
+  db.update(users)
+    .set({ passwordHash: await argon2.hash(newPassword) })
+    .where(eq(users.id, userId))
+    .run();
+  return 'ok';
 }
 
 function purgeExpired() {

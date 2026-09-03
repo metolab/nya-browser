@@ -13,8 +13,15 @@ test('desk login ui', async ({ page }) => {
   await expect(page.getByRole('button', { name: '结束会话' })).toBeVisible();
   await expect(page.getByRole('button', { name: '退出会话' })).toBeVisible();
   await page.getByRole('button', { name: '更多' }).click();
+  await expect(page.getByRole('menuitem', { name: '修改密码' })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: '管理' })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: '登出' })).toBeVisible();
+  await page.getByRole('menuitem', { name: '修改密码' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '修改密码' })).toBeVisible();
+  await expect(page.getByLabel('当前密码')).toBeVisible();
+  await expect(page.getByLabel('新密码', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('确认新密码')).toBeVisible();
   await expect(page.getByText('选择会话')).toBeVisible();
 });
 
@@ -51,4 +58,42 @@ test('files mkdir roundtrip', async () => {
   expect(entries.some((e: { name: string }) => e.name === 'inbox')).toBeTruthy();
   await admin.delete(`/api/sessions/${id}`);
   await admin.dispose();
+});
+
+test('change password from more menu', async ({ page }) => {
+  const admin = await asAdmin();
+  const name = `pwu${Date.now()}`;
+  const created = await admin.post('/api/users', {
+    data: { username: name, password: 'pass1234', role: 'user' },
+  });
+  expect(created.status()).toBe(201);
+  const userId = (await created.json()).user.id;
+  await admin.dispose();
+
+  await page.goto('/');
+  await page.getByPlaceholder('用户名').fill(name);
+  await page.getByPlaceholder('密码').fill('pass1234');
+  await page.getByRole('button', { name: /进\s*入/ }).click();
+  await page.locator('.brand').waitFor({ timeout: 15000 });
+  await page.locator('.brand').hover();
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: '修改密码' }).click();
+  await page.getByLabel('当前密码').fill('pass1234');
+  await page.getByLabel('新密码', { exact: true }).fill('pass5678');
+  await page.getByLabel('确认新密码').fill('pass5678');
+  await page.getByRole('button', { name: '保存' }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.locator('.brand')).toBeVisible();
+
+  await page.locator('.brand').hover();
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: '登出' }).click();
+  await page.getByPlaceholder('用户名').fill(name);
+  await page.getByPlaceholder('密码').fill('pass5678');
+  await page.getByRole('button', { name: /进\s*入/ }).click();
+  await page.locator('.brand').waitFor({ timeout: 15000 });
+
+  const cleanup = await asAdmin();
+  await cleanup.delete(`/api/users/${userId}`);
+  await cleanup.dispose();
 });

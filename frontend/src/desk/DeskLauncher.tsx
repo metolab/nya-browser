@@ -4,6 +4,7 @@ import {
   ClipboardIcon,
   FolderIcon,
   HouseIcon,
+  KeyRoundIcon,
   LogOutIcon,
   MonitorIcon,
   MoreHorizontalIcon,
@@ -24,6 +25,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import ChangePasswordDialog from '@/components/ChangePasswordDialog';
 import { cn } from '@/lib/utils';
 
 const BADGE_KEY = 'nya.desk.badge';
@@ -98,6 +100,7 @@ export default function DeskLauncher({
 }: Props) {
   const [hover, setHover] = useState(false);
   const [control, setControl] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [dir, setDir] = useState<Dir>('right');
   const [popupSide, setPopupSide] = useState<PopupSide>('top');
   const leaveTimer = useRef(0);
@@ -285,6 +288,16 @@ export default function DeskLauncher({
           <DropdownMenuLabel className="max-w-52 font-normal">
             <div className="truncate text-foreground">{username}</div>
           </DropdownMenuLabel>
+          <DropdownMenuItem
+            onSelect={(event: Event) => {
+              event.preventDefault();
+              setControl(false);
+              setPasswordOpen(true);
+            }}
+          >
+            <KeyRoundIcon />
+            修改密码
+          </DropdownMenuItem>
           {isAdmin ? (
             <DropdownMenuItem
               onSelect={(event: Event) => {
@@ -324,39 +337,42 @@ export default function DeskLauncher({
   );
 
   return (
-    <div
-      ref={drag.ref}
-      className={cn(
-        'brand pointer-events-auto fixed z-40 flex items-center rounded-full border border-border bg-background/90 p-1 text-foreground shadow-lg backdrop-blur-md',
-        'opacity-80 transition-[opacity,gap] duration-200 ease-out hover:opacity-100',
-        expanded ? 'gap-0.5 opacity-100' : 'gap-0',
-        drag.dragging && 'z-50 opacity-100',
-        expanded && 'opacity-100',
-      )}
-      style={{
-        bottom,
-        ...(dockLeft
-          ? { left: 'auto', right: Math.max(8, window.innerWidth - left - COLLAPSED), top: 'auto' }
-          : { left, right: 'auto', top: 'auto' }),
-      }}
-      onMouseEnter={onEnter}
-      onMouseLeave={onLeaveHover}
-      onPointerDown={onPillPointerDown}
-      onPointerMove={drag.move}
-      onPointerUp={onPillPointerUp}
-      onPointerCancel={drag.end}
-    >
-      {dockLeft ? (
-        <>
-          {menuSlot}
-          {mark}
-        </>
-      ) : (
-        <>
-          {mark}
-          {menuSlot}
-        </>
-      )}
-    </div>
+    <>
+      <div
+        ref={drag.ref}
+        className={cn(
+          'brand pointer-events-auto fixed z-40 flex items-center rounded-full border border-border bg-background/90 p-1 text-foreground shadow-lg backdrop-blur-md',
+          'opacity-80 transition-[opacity,gap] duration-200 ease-out hover:opacity-100',
+          expanded ? 'gap-0.5 opacity-100' : 'gap-0',
+          drag.dragging && 'z-50 opacity-100',
+          expanded && 'opacity-100',
+        )}
+        style={{
+          bottom,
+          ...(dockLeft
+            ? { left: 'auto', right: Math.max(8, window.innerWidth - left - COLLAPSED), top: 'auto' }
+            : { left, right: 'auto', top: 'auto' }),
+        }}
+        onMouseEnter={onEnter}
+        onMouseLeave={onLeaveHover}
+        onPointerDown={onPillPointerDown}
+        onPointerMove={drag.move}
+        onPointerUp={onPillPointerUp}
+        onPointerCancel={drag.end}
+      >
+        {dockLeft ? (
+          <>
+            {menuSlot}
+            {mark}
+          </>
+        ) : (
+          <>
+            {mark}
+            {menuSlot}
+          </>
+        )}
+      </div>
+      <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
+    </>
   );
 }
