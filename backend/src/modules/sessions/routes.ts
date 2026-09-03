@@ -40,6 +40,7 @@ import {
 import { sessionIoRouter } from './io.js';
 import { filesRouter } from '../files/routes.js';
 import { presentSession, presentSessions, visibleWindows } from './present.js';
+import { listSessionPasswords } from '../../runtime/sessionPasswords.js';
 
 export const sessionsRouter = Router();
 
@@ -179,6 +180,15 @@ sessionsRouter.get(
     } catch (err) {
       handleHttpError(err, res);
     }
+  }),
+);
+
+sessionsRouter.get(
+  '/:id/passwords',
+  requireAdmin,
+  asyncHandler((req, res) => {
+    if (!getSession(req.params.id)) return res.status(404).json({ error: 'Not found' });
+    res.json({ passwords: listSessionPasswords(req.params.id) });
   }),
 );
 

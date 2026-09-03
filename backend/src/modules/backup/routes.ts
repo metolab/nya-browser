@@ -17,6 +17,10 @@ import {
 } from '../../store.js';
 import { getRuntimePublic, stopSession } from '../../runtime/sessionManager.js';
 import { presentSession } from '../sessions/present.js';
+import {
+  snapshotSessionPasswords,
+  writePasswordOverlay,
+} from '../../runtime/sessionPasswords.js';
 
 fs.mkdirSync(path.join(os.tmpdir(), 'nya-import'), { recursive: true });
 
@@ -75,6 +79,7 @@ backupRouter.get(
     if (getRuntimePublic(session.id)) {
       await stopSession(session.id);
     }
+    const passwords = snapshotSessionPasswords(session.id);
     const proxy = getProxy(session.proxyId);
     const manifest: BackupManifest = {
       version: 1,
@@ -95,6 +100,7 @@ backupRouter.get(
         port: session.proxy.port,
         username: session.proxy.username,
       },
+      passwords,
     };
     const home = sessionDir(session.id);
     const manifestPath = path.join(home, 'manifest.json');
@@ -103,9 +109,11 @@ backupRouter.get(
     const filename = `${session.name.replace(/[^\w.-]+/g, '_') || 'session'}.nya-session.${ext}`;
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    const files = ['manifest.json', 'chrome'];
+    if (fs.existsSync(path.join(home, 'passwords.json'))) files.push('passwords.json');
     const child = spawn(
       'tar',
-      [...extra, '-C', home, '-cf', '-', ...EXCLUDES, 'manifest.json', 'chrome'],
+      [...extra, '-C', home, '-cf', '-', ...EXCLUDES, ...files],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     child.stdout.pipe(res);
@@ -187,6 +195,12 @@ backupRouter.post(
     const srcChrome = path.join(tmp, 'chrome');
     if (fs.existsSync(srcChrome)) {
       fs.cpSync(srcChrome, dest, { recursive: true });
+    }
+    const srcPasswords = path.join(tmp, 'passwords.json');
+    if (fs.existsSync(srcPasswords)) {
+      fs.copyFileSync(srcPasswords, path.join(sessionDir(session.id), 'passwords.json'));
+    } else if (manifest.passwords?.length) {
+      writePasswordOverlay(session.id, manifest.passwords);
     }
     fs.rmSync(tmp, { recursive: true, force: true });
     try {

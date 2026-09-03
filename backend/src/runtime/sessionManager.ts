@@ -31,6 +31,7 @@ import {
   startChromeLifecycle,
   stopChromeLifecycle,
 } from './chromeLifecycle.js';
+import { snapshotSessionPasswords } from './sessionPasswords.js';
 import { TYPE_TEXT_MAX, runXtype } from './xtype.js';
 import { logChromeCrash } from './chromeCrashLog.js';
 import { TAMPERMONKEY_ID, resolveTampermonkeyDir } from './tampermonkey.js';
@@ -582,6 +583,8 @@ function writeChromePolicies() {
     PrivacySandboxSiteEnabledAdsEnabled: false,
     PrivacySandboxAdMeasurementEnabled: false,
     UrlKeyedAnonymizedDataCollectionEnabled: false,
+    PasswordManagerEnabled: true,
+    PasswordManagerSaveEnabled: true,
     PasswordLeakDetectionEnabled: false,
     SafeBrowsingExtendedReportingEnabled: false,
     RelatedWebsiteSetsEnabled: false,
@@ -660,14 +663,23 @@ function writeChromePreferences(sessionId, startUrl) {
     directory_upgrade: true,
     prompt_for_download: false,
   };
+  prefs.credentials_enable_service = true;
+  prefs.credentials_enable_autosignin = true;
   prefs.profile = {
     ...(prefs.profile || {}),
+    password_manager_enabled: true,
+    password_manager_leak_detection: false,
+    password_manager_auto_signin: true,
     default_content_setting_values: {
       ...((prefs.profile && prefs.profile.default_content_setting_values) || {}),
       notifications: 2,
     },
     exit_type: 'Normal',
     exited_cleanly: true,
+  };
+  prefs.autofill = {
+    ...(prefs.autofill || {}),
+    profile_enabled: true,
   };
   prefs.browser = {
     ...(prefs.browser || {}),
@@ -1251,6 +1263,11 @@ async function stopChrome(runtime) {
   await killChromeProfile(runtime.id);
   await sleep(200);
   clearChromeLocks(runtime.id);
+  try {
+    snapshotSessionPasswords(runtime.id);
+  } catch {
+    /* Login Data may be absent on a fresh profile */
+  }
 }
 
 async function recoverChrome(runtime, reason) {

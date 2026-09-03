@@ -171,6 +171,13 @@ export interface MonitorSnapshot {
   sessions: SessionUsage[];
 }
 
+export interface SessionPassword {
+  origin: string;
+  username: string;
+  password: string;
+  note: string;
+}
+
 export interface BackupManifest {
   version: 1;
   exportedAt: string;
@@ -191,6 +198,7 @@ export interface BackupManifest {
     username: string;
     extra?: ProxyExtra;
   };
+  passwords?: SessionPassword[];
 }
 
 export interface LiveSession {

@@ -52,7 +52,7 @@ export default function BackupsPage() {
         <CardHeader>
           <CardTitle>导出</CardTitle>
           <CardDescription>
-            请到「会话管理」中点击导出。归档包含指纹、首页、书签/Cookie/历史等用户数据（不含缓存）。
+            请到「会话管理」中点击导出。归档包含指纹、首页、保存的密码、书签/Cookie/历史等用户数据（不含缓存）。
           </CardDescription>
         </CardHeader>
         <CardContent>

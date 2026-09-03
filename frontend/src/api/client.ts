@@ -11,6 +11,7 @@ import {
   type AccessGrant,
   type SessionGroup,
   type SessionWindow,
+  type SessionPassword,
   type UserPublic,
 } from '@nya/shared';
 import { withBase } from '../basePath';
@@ -152,6 +153,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ notepad }),
     }),
+  listSessionPasswords: (id: string) =>
+    request<{ passwords: SessionPassword[] }>(`/api/sessions/${id}/passwords`),
   createWindow: (id: string, payload?: { url?: string; takeover?: boolean }) =>
     request<{
       window: SessionWindow & { occupancyId?: string | null };

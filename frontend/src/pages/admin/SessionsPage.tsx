@@ -5,6 +5,7 @@ import { DEFAULT_CHROME_LANGUAGE, DEFAULT_TIMEZONE } from '@nya/shared';
 import { api } from '../../api/client';
 import { SessionTree } from '../../components/SessionTree';
 import SessionFormDialog from '../../components/SessionFormDialog';
+import { SessionPasswordsDialog } from '../../components/SessionPasswordsDialog';
 import { UserGrantList } from './GrantEditor';
 import { NONE_KEY, groupSelectOptions } from '@/lib/groups';
 import { Button } from '@/components/ui/button';
@@ -44,6 +45,7 @@ export default function SessionsPage() {
   const [createGroupId, setCreateGroupId] = useState<string | null>(null);
   const [openCreate, setOpenCreate] = useState(false);
   const [edit, setEdit] = useState<Session | null>(null);
+  const [passwords, setPasswords] = useState<Session | null>(null);
   const [assign, setAssign] = useState<Session | null>(null);
   const [assignFolder, setAssignFolder] = useState<SessionGroup | null>(null);
   const [grantUserIds, setGrantUserIds] = useState<Set<string>>(new Set());
@@ -130,6 +132,7 @@ export default function SessionsPage() {
           }}
           onEditSession={setEdit}
           onDeleteSession={setPendingDelete}
+          onViewPasswords={setPasswords}
           onAssignSession={(s) => {
             setAssignFolder(null);
             setAssign(s);
@@ -317,6 +320,8 @@ export default function SessionsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SessionPasswordsDialog session={passwords} onClose={() => setPasswords(null)} />
 
       <AlertDialog open={Boolean(pendingDelete)} onOpenChange={(v: boolean) => !v && setPendingDelete(null)}>
         <AlertDialogContent>

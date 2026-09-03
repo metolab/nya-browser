@@ -105,3 +105,40 @@ test('session groups tree crud and assignment', async () => {
   await admin.delete(`/api/groups/${childId}`);
   await admin.dispose();
 });
+
+test('session passwords are readable after export import', async () => {
+  const admin = await asAdmin();
+  const stamp = Date.now();
+  const created = await admin.post('/api/sessions', {
+    data: { name: `pw${stamp}`, description: 'with passwords' },
+  });
+  expect(created.status()).toBe(201);
+  const session = (await created.json()).session as { id: string };
+
+  const listed = await admin.get(`/api/sessions/${session.id}/passwords`);
+  expect(listed.ok()).toBeTruthy();
+  expect((await listed.json()).passwords).toEqual([]);
+
+  const exp = await admin.get(`/api/sessions/${session.id}/export`);
+  expect(exp.ok()).toBeTruthy();
+  const buf = Buffer.from(await exp.body());
+
+  const imp = await admin.post('/api/sessions/import', {
+    multipart: {
+      file: {
+        name: `pw${stamp}.nya-session.tar.gz`,
+        mimeType: 'application/gzip',
+        buffer: buf,
+      },
+    },
+  });
+  expect(imp.status()).toBe(201);
+  const imported = (await imp.json()).session as { id: string };
+  const restored = await admin.get(`/api/sessions/${imported.id}/passwords`);
+  expect(restored.ok()).toBeTruthy();
+  expect((await restored.json()).passwords).toEqual([]);
+
+  await admin.delete(`/api/sessions/${session.id}`);
+  await admin.delete(`/api/sessions/${imported.id}`);
+  await admin.dispose();
+});

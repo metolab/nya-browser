@@ -5,6 +5,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   InboxIcon,
+  KeyRoundIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -39,6 +40,7 @@ export type SessionTreeProps = {
   onEditSession?: (session: Session) => void;
   onDeleteSession?: (session: Session) => void;
   onAssignSession?: (session: Session) => void;
+  onViewPasswords?: (session: Session) => void;
   onExportSession?: (session: Session) => void;
   onMoveSession?: (sessionId: string, groupId: string | null) => void;
   onCreateSession?: (groupId: string | null) => void;
@@ -79,6 +81,7 @@ function SessionActions({
   onEditSession,
   onDeleteSession,
   onAssignSession,
+  onViewPasswords,
   onExportSession,
   onMoveSession,
 }: {
@@ -86,7 +89,12 @@ function SessionActions({
   groups: SessionGroup[];
 } & Pick<
   SessionTreeProps,
-  'onEditSession' | 'onDeleteSession' | 'onAssignSession' | 'onExportSession' | 'onMoveSession'
+  | 'onEditSession'
+  | 'onDeleteSession'
+  | 'onAssignSession'
+  | 'onViewPasswords'
+  | 'onExportSession'
+  | 'onMoveSession'
 >) {
   return (
     <DropdownMenu>
@@ -114,6 +122,10 @@ function SessionActions({
         <DropdownMenuItem onSelect={() => onAssignSession?.(session)}>
           <ShieldIcon />
           权限
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onViewPasswords?.(session)}>
+          <KeyRoundIcon />
+          密码
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onExportSession?.(session)}>
           <DownloadIcon />
@@ -149,6 +161,7 @@ function SessionRow({
   | 'onEditSession'
   | 'onDeleteSession'
   | 'onAssignSession'
+  | 'onViewPasswords'
   | 'onExportSession'
   | 'onMoveSession'
   | 'disabled'
@@ -216,6 +229,7 @@ function SessionList({
   | 'onEditSession'
   | 'onDeleteSession'
   | 'onAssignSession'
+  | 'onViewPasswords'
   | 'onExportSession'
   | 'onMoveSession'
   | 'disabled'
@@ -329,6 +343,7 @@ function FolderNode({
             onEditSession={rest.onEditSession}
             onDeleteSession={rest.onDeleteSession}
             onAssignSession={rest.onAssignSession}
+            onViewPasswords={rest.onViewPasswords}
             onExportSession={rest.onExportSession}
             onMoveSession={rest.onMoveSession}
             disabled={rest.disabled}
@@ -377,6 +392,7 @@ export function SessionTree(props: SessionTreeProps) {
     onEditSession: props.onEditSession,
     onDeleteSession: props.onDeleteSession,
     onAssignSession: props.onAssignSession,
+    onViewPasswords: props.onViewPasswords,
     onExportSession: props.onExportSession,
     onMoveSession: props.onMoveSession,
     onCreateSession: props.onCreateSession,
@@ -459,6 +475,7 @@ export function SessionTree(props: SessionTreeProps) {
               onEditSession={props.onEditSession}
               onDeleteSession={props.onDeleteSession}
               onAssignSession={props.onAssignSession}
+              onViewPasswords={props.onViewPasswords}
               onExportSession={props.onExportSession}
               onMoveSession={props.onMoveSession}
               disabled={props.disabled}
