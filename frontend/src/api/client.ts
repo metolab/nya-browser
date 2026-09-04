@@ -312,7 +312,9 @@ export const api = {
     ),
   audit: (query: Record<string, string> = {}) => {
     const q = new URLSearchParams(query).toString();
-    return request<{ logs: AuditLog[] }>(`/api/audit${q ? `?${q}` : ''}`);
+    return request<{ logs: AuditLog[]; total: number; limit: number; offset: number }>(
+      `/api/audit${q ? `?${q}` : ''}`,
+    );
   },
   exportUrl: (id: string) => withBase(`/api/sessions/${id}/export`),
   importSession: async (file: File) => {

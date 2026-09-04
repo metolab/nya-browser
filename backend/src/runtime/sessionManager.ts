@@ -2775,6 +2775,7 @@ export function getRuntimePids(sessionId) {
     openbox: runtime.openbox?.pid || null,
     x11vnc: runtime.x11vnc?.pid || null,
     tint2: runtime.tint2?.pid || null,
+    singbox: runtime.singbox?.child?.pid || runtime.singbox?.pid || null,
     subs: (runtime.subs || []).map((sub) => ({
       id: sub.id,
       xvfb: sub.xvfb?.pid || null,

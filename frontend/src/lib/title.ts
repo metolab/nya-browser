@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
+import pkg from '../../../package.json';
 
 export const APP_NAME = 'Nya Browser';
+export const APP_VERSION = pkg.version;
 export const MANAGEMENT_NAME = 'Nya Browser Management';
 
 export function useDocumentTitle(title: string) {

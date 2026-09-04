@@ -1,0 +1,18 @@
+---
+description: After code changes, rebuild and restart the local nya-browser container
+alwaysApply: true
+---
+
+# Update local server automatically
+
+When you finish implementing, fixing, or changing this project (frontend, backend, shared, or Docker-related files), rebuild and restart the local server without waiting for the user to ask.
+
+Use:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+Then confirm `http://127.0.0.1:8080/api/health` is ok.
+
+Skip only for pure questions, docs, or when no runtime code changed. Do not push or commit as part of this step.

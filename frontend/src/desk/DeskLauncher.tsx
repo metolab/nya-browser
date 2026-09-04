@@ -26,6 +26,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import ChangePasswordDialog from '@/components/ChangePasswordDialog';
+import { APP_NAME, APP_VERSION } from '@/lib/title';
 import { cn } from '@/lib/utils';
 
 const BADGE_KEY = 'nya.desk.badge';
@@ -320,6 +321,11 @@ export default function DeskLauncher({
             <LogOutIcon />
             登出
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel className="font-normal">
+            <div className="truncate text-foreground">{APP_NAME}</div>
+            <div className="tabular-nums">v{APP_VERSION}</div>
+          </DropdownMenuLabel>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

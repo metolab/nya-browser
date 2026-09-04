@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { ChevronDownIcon } from 'lucide-react';
-import type { MonitorSnapshot, Session } from '@nya/shared';
+import type { GpuUsage, MonitorSnapshot, Session, SessionUsage } from '@nya/shared';
 import { api } from '../../api/client';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
@@ -20,13 +21,122 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { cn } from '@/lib/utils';
+
+function fmtBytes(n: number) {
+  const bytes = n || 0;
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  return `${Math.round(bytes / 1024 / 1024)} MB`;
+}
+
+function fmtCpu(n: number) {
+  return `${(n || 0).toFixed(1)}%`;
+}
+
+function fmtGpu(gpu?: GpuUsage) {
+  if (!gpu?.available) return '—';
+  const mem = fmtBytes(gpu.memBytes);
+  return gpu.utilPercent > 0 ? `${fmtCpu(gpu.utilPercent)} · ${mem}` : mem;
+}
 
 function mb(n: number) {
-  return `${Math.round((n || 0) / 1024 / 1024)} MB`;
+  return fmtBytes(n);
 }
 
 const APP_LOG = '__app__';
+
+function SessionUsageTable({ rows }: { rows: SessionUsage[] }) {
+  const [open, setOpen] = useState<Set<string>>(new Set());
+
+  if (!rows.length) {
+    return <p className="px-1 text-sm text-muted-foreground">暂无会话</p>;
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-8" />
+          <TableHead>会话</TableHead>
+          <TableHead>状态</TableHead>
+          <TableHead className="text-right">CPU</TableHead>
+          <TableHead className="text-right">内存</TableHead>
+          <TableHead className="text-right">GPU</TableHead>
+          <TableHead className="text-right">磁盘</TableHead>
+          <TableHead className="text-right">窗口</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((r) => {
+          const expanded = open.has(r.sessionId);
+          return (
+            <Fragment key={r.sessionId}>
+              <TableRow className={cn(!r.running && 'text-muted-foreground')}>
+                <TableCell className="w-8 pr-0">
+                  {r.running && r.windows.length ? (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => {
+                        setOpen((prev) => {
+                          const copy = new Set(prev);
+                          if (copy.has(r.sessionId)) copy.delete(r.sessionId);
+                          else copy.add(r.sessionId);
+                          return copy;
+                        });
+                      }}
+                    >
+                      <ChevronDownIcon className={cn('transition-transform', expanded && 'rotate-180')} />
+                    </Button>
+                  ) : null}
+                </TableCell>
+                <TableCell className={cn('font-medium', r.running && 'text-foreground')}>{r.name}</TableCell>
+                <TableCell>
+                  <Badge variant={r.running ? 'secondary' : 'outline'}>{r.running ? '运行中' : '未运行'}</Badge>
+                </TableCell>
+                <TableCell className="text-right tabular-nums">{r.running ? fmtCpu(r.cpuPercent) : '—'}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.running ? fmtBytes(r.rssBytes) : '—'}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.running ? fmtGpu(r.gpu) : '—'}</TableCell>
+                <TableCell className="text-right tabular-nums">{fmtBytes(r.diskBytes)}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.running ? r.windows.length : '—'}</TableCell>
+              </TableRow>
+              {expanded && r.running ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={8} className="bg-muted/40 p-0">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="pl-12">窗口</TableHead>
+                          <TableHead>操作者</TableHead>
+                          <TableHead className="text-right">CPU</TableHead>
+                          <TableHead className="text-right">内存</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {r.windows.map((w) => (
+                          <TableRow key={w.id}>
+                            <TableCell className="pl-12">{w.id}</TableCell>
+                            <TableCell>{w.ownerUsername || '空闲'}</TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {w.usage ? fmtCpu(w.usage.cpuPercent) : '—'}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {w.usage ? fmtBytes(w.usage.rssBytes) : '—'}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </Fragment>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
 
 export default function MonitorPage() {
   const [snap, setSnap] = useState<MonitorSnapshot | null>(null);
@@ -67,13 +177,13 @@ export default function MonitorPage() {
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm font-medium text-muted-foreground">CPU</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">本项目 CPU</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{host.cpuPercent.toFixed(1)}%</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm font-medium text-muted-foreground">内存</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">本项目内存</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">
               {mb(host.memory.usedBytes)}
@@ -82,7 +192,7 @@ export default function MonitorPage() {
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm font-medium text-muted-foreground">磁盘</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">本项目磁盘</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">
               {mb(host.disk.usedBytes)}
@@ -91,43 +201,14 @@ export default function MonitorPage() {
           </Card>
         </div>
       )}
-      <div className="grid gap-2">
-        {(snap?.sessions || []).map((r) => (
-          <Collapsible key={r.sessionId} className="rounded-lg border">
-            <div className="flex items-center gap-3 p-3">
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="icon-sm">
-                  <ChevronDownIcon />
-                </Button>
-              </CollapsibleTrigger>
-              <div className="min-w-0 flex-1 font-medium">{r.name}</div>
-              <div className="text-sm text-muted-foreground">{mb(r.chrome.rssBytes)}</div>
-              <div className="text-sm text-muted-foreground">{r.chrome.cpuPercent}%</div>
-              <div className="text-sm text-muted-foreground">{r.windows.length} 窗口</div>
-            </div>
-            <CollapsibleContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>窗口</TableHead>
-                    <TableHead>操作者</TableHead>
-                    <TableHead>显示栈</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {r.windows.map((w) => (
-                    <TableRow key={w.id}>
-                      <TableCell>{w.id}</TableCell>
-                      <TableCell>{w.ownerUsername}</TableCell>
-                      <TableCell>{w.usage ? mb(w.usage.rssBytes) : '-'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CollapsibleContent>
-          </Collapsible>
-        ))}
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>会话占用</CardTitle>
+        </CardHeader>
+        <CardContent className="max-h-[min(40rem,70vh)] overflow-auto">
+          <SessionUsageTable rows={snap?.sessions || []} />
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle>日志</CardTitle>

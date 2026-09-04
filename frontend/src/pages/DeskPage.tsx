@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Loader2Icon } from 'lucide-react';
 import type { Session, SessionGroup } from '@nya/shared';
@@ -16,6 +16,7 @@ import DeskStage from '../desk/DeskStage';
 import DisplaySettings from '../desk/DisplaySettings';
 import { defaultDisplayPolicy, formatSize, resolveRemoteSize, type DisplayPolicy, type Size } from '../desk/display';
 import { formatDeskTitle, useDocumentTitle } from '../lib/title';
+import { openSessionDeskWindow, sessionDeskPath } from '../lib/sessionWindow';
 import { vncWindowExtra } from '../lib/vnc';
 import {
   AlertDialog,
@@ -37,13 +38,17 @@ type Active = {
 export default function DeskPage() {
   const { user } = useAuth();
   const nav = useNavigate();
+  const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [groups, setGroups] = useState<SessionGroup[]>([]);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState<Active | null>(null);
   const [busy, setBusy] = useState(false);
+  const [listReady, setListReady] = useState(false);
+  const [routeMiss, setRouteMiss] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const openingLock = useRef(false);
+  const startedRoute = useRef<string | null>(null);
   const [takeover, setTakeover] = useState<Session | null>(null);
   const [clipOpen, setClipOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -70,6 +75,7 @@ export default function DeskPage() {
     const [s, g] = await Promise.all([api.listSessions(), api.listGroups()]);
     setSessions(s.sessions);
     setGroups(g.groups);
+    setListReady(true);
     setActive((cur) => {
       if (!cur) return cur;
       const next = s.sessions.find((x) => x.id === cur.session.id);
@@ -123,6 +129,12 @@ export default function DeskPage() {
     };
   }, [active?.session.id, active?.windowId]);
 
+  const exitSessionWindow = () => {
+    if (!routeSessionId) return;
+    window.close();
+    nav('/', { replace: true });
+  };
+
   const openSession = async (session: Session, takeoverWindow = false) => {
     if (openingLock.current) return;
     openingLock.current = true;
@@ -141,6 +153,7 @@ export default function DeskPage() {
         occupancyId: created.window.occupancyId || null,
       });
       setTakeover(null);
+      setRouteMiss(false);
       await refresh();
     } catch (err) {
       if (err instanceof ApiError && err.code === 'WINDOW_OWNED') {
@@ -148,12 +161,51 @@ export default function DeskPage() {
         return;
       }
       toast.error(err instanceof Error ? err.message : String(err));
+      if (routeSessionId) setRouteMiss(true);
     } finally {
       openingLock.current = false;
       setBusy(false);
       setOpeningId(null);
     }
   };
+
+  const pickSession = (session: Session) => {
+    if (routeSessionId) {
+      if (session.id !== routeSessionId) {
+        startedRoute.current = null;
+        nav(sessionDeskPath(session.id));
+        return;
+      }
+      void openSession(session);
+      return;
+    }
+    const win = openSessionDeskWindow(session.id);
+    if (!win) toast.error('无法打开新窗口，请允许浏览器弹出窗口后重试');
+    else win.focus();
+  };
+
+  useEffect(() => {
+    if (!routeSessionId) {
+      startedRoute.current = null;
+      setRouteMiss(false);
+      return;
+    }
+    if (!listReady || openingLock.current || busy || takeover) return;
+    if (active?.session.id === routeSessionId) {
+      startedRoute.current = routeSessionId;
+      return;
+    }
+    if (startedRoute.current === routeSessionId) return;
+    const session = sessions.find((s) => s.id === routeSessionId);
+    if (!session) {
+      startedRoute.current = routeSessionId;
+      setRouteMiss(true);
+      toast.error('找不到该会话或没有权限');
+      return;
+    }
+    startedRoute.current = routeSessionId;
+    void openSession(session);
+  }, [routeSessionId, listReady, sessions, active, busy, takeover]);
 
   const closeActive = async () => {
     const cur = active;
@@ -166,6 +218,7 @@ export default function DeskPage() {
     if (cur?.session.id && cur.windowId) {
       await api.closeWindow(cur.session.id, cur.windowId).catch(() => undefined);
     }
+    exitSessionWindow();
   };
 
   const leaveActive = () => {
@@ -175,6 +228,7 @@ export default function DeskPage() {
     setNotepadOpen(false);
     setDisplayOpen(false);
     setTabTitle('');
+    exitSessionWindow();
   };
 
   return (
@@ -195,6 +249,14 @@ export default function DeskPage() {
             void clip.flushLocal();
           }}
         />
+      ) : routeSessionId && !takeover && !routeMiss ? (
+        <div className="flex h-full flex-col items-center justify-center gap-2">
+          <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
+          <div className="text-sm font-medium">
+            正在打开{openingId ? `「${sessions.find((s) => s.id === openingId)?.name || ''}」` : '会话'}
+          </div>
+          <p className="text-xs text-muted-foreground">请稍候，启动可能需要一些时间</p>
+        </div>
       ) : (
         <div className="flex h-full items-center justify-center p-6">
           <div className="relative flex h-[min(52rem,85vh)] w-full max-w-sm flex-col rounded-xl border bg-card p-3 shadow-xs">
@@ -208,7 +270,7 @@ export default function DeskPage() {
               onQueryChange={setQuery}
               disabled={busy}
               openingId={openingId}
-              onPick={(session) => void openSession(session)}
+              onPick={pickSession}
             />
             {busy ? (
               <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-xl bg-card/80 backdrop-blur-[2px]">

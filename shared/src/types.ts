@@ -89,6 +89,12 @@ export interface ProcessUsage {
   cpuPercent: number;
 }
 
+export interface GpuUsage {
+  available: boolean;
+  memBytes: number;
+  utilPercent: number;
+}
+
 export interface RuntimeInfo {
   running?: boolean;
   display?: number;
@@ -162,6 +168,10 @@ export interface SessionUsage {
   name: string;
   running: boolean;
   chrome: ProcessUsage;
+  cpuPercent: number;
+  rssBytes: number;
+  diskBytes: number;
+  gpu: GpuUsage;
   windows: SessionWindow[];
 }
 

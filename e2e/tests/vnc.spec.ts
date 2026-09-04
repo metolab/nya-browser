@@ -1,5 +1,5 @@
 import { CDPSession, expect, test } from '@playwright/test';
-import { ADMIN_PASS, ADMIN_USER, asAdmin, loginDesk } from '../helpers';
+import { ADMIN_PASS, ADMIN_USER, asAdmin, loginDesk, openDeskSession } from '../helpers';
 
 void ADMIN_USER;
 void ADMIN_PASS;
@@ -120,46 +120,46 @@ test.describe('VNC across networks', () => {
   });
 
   test('LAN first frame is painted and not black', async ({ page }) => {
-    const cdp = await page.context().newCDPSession(page);
-    await emulateNetwork(cdp, 'lan');
     await loginDesk(page);
-    await page.getByRole('button', { name: sessionName }).click();
-    const paint = await waitForPaint(page);
+    const sessionPage = await openDeskSession(page, sessionName);
+    const cdp = await sessionPage.context().newCDPSession(sessionPage);
+    await emulateNetwork(cdp, 'lan');
+    const paint = await waitForPaint(sessionPage);
     expect(paint.width).toBeGreaterThan(8);
     expect(paint.height).toBeGreaterThan(8);
     expect(paint.ok).toBeTruthy();
   });
 
   test('WAN delay keeps a painted frame after scroll', async ({ page }) => {
-    const cdp = await page.context().newCDPSession(page);
-    await emulateNetwork(cdp, 'wan');
     await loginDesk(page);
-    await page.getByRole('button', { name: sessionName }).click();
-    await waitForPaint(page);
-    const host = page.locator('.vnc-host');
+    const sessionPage = await openDeskSession(page, sessionName);
+    const cdp = await sessionPage.context().newCDPSession(sessionPage);
+    await emulateNetwork(cdp, 'wan');
+    await waitForPaint(sessionPage);
+    const host = sessionPage.locator('.vnc-host');
     await host.hover();
-    await page.mouse.wheel(0, 600);
-    await page.waitForTimeout(1500);
-    const paint = await samplePaint(page);
+    await sessionPage.mouse.wheel(0, 600);
+    await sessionPage.waitForTimeout(1500);
+    const paint = await samplePaint(sessionPage);
     expect(paint.ok, JSON.stringify(paint)).toBeTruthy();
   });
 
   test('slow link stays connected without a black canvas', async ({ page }) => {
-    const cdp = await page.context().newCDPSession(page);
-    await emulateNetwork(cdp, 'slow');
     await loginDesk(page);
-    await page.getByRole('button', { name: sessionName }).click();
-    await waitForPaint(page, 120000);
-    await page.waitForTimeout(2500);
-    expect(page.getByText('画面连接中断')).toHaveCount(0);
-    const paint = await samplePaint(page);
+    const sessionPage = await openDeskSession(page, sessionName);
+    const cdp = await sessionPage.context().newCDPSession(sessionPage);
+    await emulateNetwork(cdp, 'slow');
+    await waitForPaint(sessionPage, 120000);
+    await sessionPage.waitForTimeout(2500);
+    expect(sessionPage.getByText('画面连接中断')).toHaveCount(0);
+    const paint = await samplePaint(sessionPage);
     expect(paint.ok, JSON.stringify(paint)).toBeTruthy();
   });
 
   test('same-size resize stays painted', async ({ page }) => {
     await loginDesk(page);
-    await page.getByRole('button', { name: sessionName }).click();
-    const paint = await waitForPaint(page);
+    const sessionPage = await openDeskSession(page, sessionName);
+    const paint = await waitForPaint(sessionPage);
     const admin = await asAdmin();
     try {
       const res = await admin.post(`/api/sessions/${sessionId}/display`, {
@@ -169,16 +169,16 @@ test.describe('VNC across networks', () => {
     } finally {
       await admin.dispose();
     }
-    await page.waitForTimeout(800);
-    const after = await samplePaint(page);
+    await sessionPage.waitForTimeout(800);
+    const after = await samplePaint(sessionPage);
     expect(after.ok, JSON.stringify(after)).toBeTruthy();
   });
 
   test('reconnect keeps a painted frame', async ({ page }) => {
     await loginDesk(page);
-    await page.getByRole('button', { name: sessionName }).click();
-    await waitForPaint(page);
-    await page.evaluate(() => {
+    const sessionPage = await openDeskSession(page, sessionName);
+    await waitForPaint(sessionPage);
+    await sessionPage.evaluate(() => {
       const bag = window as Window & { __nyaVncSockets?: WebSocket[] };
       for (const ws of bag.__nyaVncSockets || []) {
         try {
@@ -191,12 +191,12 @@ test.describe('VNC across networks', () => {
     const deadline = Date.now() + 2500;
     let blank = false;
     while (Date.now() < deadline) {
-      const snap = await samplePaint(page);
+      const snap = await samplePaint(sessionPage);
       if (!snap.ok) blank = true;
-      await page.waitForTimeout(120);
+      await sessionPage.waitForTimeout(120);
     }
     expect(blank, 'visible surface went fully blank during reconnect').toBeFalsy();
-    const paint = await waitForPaint(page, 60000);
+    const paint = await waitForPaint(sessionPage, 60000);
     expect(paint.ok).toBeTruthy();
   });
 });

@@ -29,3 +29,11 @@ export async function loginDesk(page: Page) {
   await page.getByRole('button', { name: /进\s*入/ }).click();
   await page.locator('.brand').waitFor({ timeout: 15000 });
 }
+
+export async function openDeskSession(page: Page, sessionName: string) {
+  const popupPromise = page.waitForEvent('popup');
+  await page.getByRole('button', { name: sessionName }).click();
+  const sessionPage = await popupPromise;
+  await sessionPage.waitForLoadState('domcontentloaded');
+  return sessionPage;
+}

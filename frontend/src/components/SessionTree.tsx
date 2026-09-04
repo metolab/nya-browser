@@ -174,6 +174,7 @@ function SessionRow({
       <button
         type="button"
         disabled={disabled || opening}
+        title="在新窗口打开"
         className={cn(
           'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] hover:bg-muted disabled:pointer-events-none disabled:opacity-60',
           opening && 'bg-muted',

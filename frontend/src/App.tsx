@@ -49,6 +49,7 @@ export default function App() {
             <BrowserRouter basename={getBasePath()}>
               <Routes>
                 <Route path="/" element={<DeskPage />} />
+                <Route path="/s/:sessionId" element={<DeskPage />} />
                 <Route
                   path="/admin"
                   element={user.role === 'admin' ? <AdminLayout /> : <Navigate to="/" replace />}

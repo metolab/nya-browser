@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../auth';
 import { api } from '../../api/client';
-import { formatManagementTitle, useDocumentTitle } from '../../lib/title';
+import { APP_NAME, APP_VERSION, formatManagementTitle, useDocumentTitle } from '../../lib/title';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
@@ -41,7 +41,7 @@ export default function AdminLayout() {
             N
           </span>
           <div className="min-w-0 leading-tight">
-            <div className="truncate text-sm font-semibold">Nya</div>
+            <div className="truncate text-sm font-semibold">{APP_NAME}</div>
             <div className="text-xs text-muted-foreground">管理控制台</div>
           </div>
         </Link>
@@ -84,6 +84,7 @@ export default function AdminLayout() {
             <LogOutIcon />
             退出
           </Button>
+          <div className="px-2 pt-2 text-[11px] tabular-nums text-muted-foreground">v{APP_VERSION}</div>
         </div>
       </aside>
       <main className="relative min-w-0 flex-1">
