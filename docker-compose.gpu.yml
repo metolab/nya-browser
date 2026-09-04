@@ -21,3 +21,7 @@ services:
       __GLX_VENDOR_LIBRARY_NAME: nvidia
     devices:
       - /dev/dri
+    volumes:
+      # nvidia-smi inside the container often reports host PIDs; map them
+      # back to the container namespace for per-session GPU stats.
+      - /proc:/host/proc:ro

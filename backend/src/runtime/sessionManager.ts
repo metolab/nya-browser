@@ -932,9 +932,12 @@ function gpuAvailable() {
 
 function gpuBackend() {
   const explicit = String(process.env.NYA_GPU_BACKEND || '').trim().toLowerCase();
-  if (explicit) return explicit;
   const raw = String(process.env.NYA_GPU || '').toLowerCase();
-  if (raw === '0' || raw === 'false' || raw === 'off' || raw === 'swiftshader') return 'swiftshader';
+  if (raw === '0' || raw === 'false' || raw === 'off' || raw === 'swiftshader' || explicit === 'swiftshader') {
+    return 'swiftshader';
+  }
+  if (!gpuAvailable()) return 'swiftshader';
+  if (explicit) return explicit;
   if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'nvidia' || raw === 'auto' || gpuAvailable()) {
     return 'gl-egl';
   }

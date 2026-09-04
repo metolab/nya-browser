@@ -3,6 +3,11 @@ name: nya-browser
 # Production: pull the published image. Local builds belong in docker-compose.dev.yml.
 #   docker compose up -d
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# NVIDIA hosts must also load docker-compose.gpu.yml, otherwise the container
+# has no /dev/nvidia* and no nvidia-smi (GPU stats and hardware GL both fail):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+#   docker compose up -d
 
 services:
   nya-browser:

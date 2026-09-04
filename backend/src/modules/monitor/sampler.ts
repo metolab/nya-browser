@@ -112,44 +112,197 @@ function parseNvidiaPmon(out: string) {
   return byPid;
 }
 
+function parseSmiMemory(raw: string) {
+  const m = String(raw || '')
+    .trim()
+    .match(/^([\d.]+)\s*(KiB|MiB|GiB|B)?/i);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return 0;
+  const unit = (m[2] || 'MiB').toLowerCase();
+  if (unit === 'gib') return n * 1024 * 1024 * 1024;
+  if (unit === 'kib') return n * 1024;
+  if (unit === 'b') return n;
+  return n * 1024 * 1024;
+}
+
+function parseNvidiaXml(xml: string) {
+  const byPid = new Map<number, { memBytes: number; utilPercent: number }>();
+  const blocks = xml.match(/<process_info>[\s\S]*?<\/process_info>/g) || [];
+  for (const block of blocks) {
+    const pid = Number(block.match(/<pid>\s*(\d+)\s*<\/pid>/i)?.[1]);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    const mem = parseSmiMemory(block.match(/<used_memory>\s*([^<]+)<\/used_memory>/i)?.[1] || '');
+    const prev = byPid.get(pid) || { memBytes: 0, utilPercent: 0 };
+    byPid.set(pid, { memBytes: prev.memBytes + mem, utilPercent: prev.utilPercent });
+  }
+  return byPid;
+}
+
+function parseComputeApps(out: string) {
+  const byPid = new Map<number, { memBytes: number; utilPercent: number }>();
+  for (const raw of out.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.toLowerCase().startsWith('pid')) continue;
+    const [pidRaw, memRaw] = line.split(',').map((s) => s.trim());
+    const pid = Number(pidRaw);
+    const mem = Number(memRaw);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    byPid.set(pid, {
+      memBytes: Number.isFinite(mem) ? mem * 1024 * 1024 : 0,
+      utilPercent: 0,
+    });
+  }
+  return byPid;
+}
+
+function mergeGpuMaps(...maps: Array<Map<number, { memBytes: number; utilPercent: number }>>) {
+  const out = new Map<number, { memBytes: number; utilPercent: number }>();
+  for (const map of maps) {
+    for (const [pid, usage] of map) {
+      const prev = out.get(pid) || { memBytes: 0, utilPercent: 0 };
+      out.set(pid, {
+        memBytes: Math.max(prev.memBytes, usage.memBytes),
+        utilPercent: Math.max(prev.utilPercent, usage.utilPercent),
+      });
+    }
+  }
+  return out;
+}
+
+function nvidiaPresent() {
+  return fs.existsSync('/dev/nvidia0') || fs.existsSync('/dev/nvidiactl');
+}
+
+let nvidiaSmiBin: string | null | undefined;
+function resolveNvidiaSmi() {
+  if (nvidiaSmiBin !== undefined) return nvidiaSmiBin;
+  for (const bin of ['/usr/bin/nvidia-smi', '/usr/local/bin/nvidia-smi']) {
+    if (fs.existsSync(bin)) {
+      nvidiaSmiBin = bin;
+      return nvidiaSmiBin;
+    }
+  }
+  nvidiaSmiBin = null;
+  return null;
+}
+
+function mapNvidiaPid(pid: number) {
+  if (pid > 0 && fs.existsSync(`/proc/${pid}`)) return pid;
+  try {
+    const status = fs.readFileSync(`/host/proc/${pid}/status`, 'utf8');
+    const m = status.match(/^NSpid:\s+(.+)$/m);
+    if (!m) return pid;
+    const ids = m[1]
+      .trim()
+      .split(/\s+/)
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n > 0);
+    return ids[ids.length - 1] || pid;
+  } catch {
+    return pid;
+  }
+}
+
+function remapGpuPids(byPid: Map<number, { memBytes: number; utilPercent: number }>) {
+  const out = new Map<number, { memBytes: number; utilPercent: number }>();
+  for (const [pid, usage] of byPid) {
+    const mapped = mapNvidiaPid(pid);
+    const prev = out.get(mapped) || { memBytes: 0, utilPercent: 0 };
+    out.set(mapped, {
+      memBytes: prev.memBytes + usage.memBytes,
+      utilPercent: Math.max(prev.utilPercent, usage.utilPercent),
+    });
+  }
+  return out;
+}
+
+let gpuLog = '';
+function logGpu(msg: string) {
+  if (gpuLog === msg) return;
+  gpuLog = msg;
+  console.warn(`[monitor] ${msg}`);
+}
+
 function sampleGpu() {
   const now = Date.now();
   if (lastGpu.at && now - lastGpu.at < 5000) return lastGpu;
-  let available = false;
+  const present = nvidiaPresent();
+  const smi = resolveNvidiaSmi();
   let byPid = new Map<number, { memBytes: number; utilPercent: number }>();
+  const errors: string[] = [];
+
+  if (!smi) {
+    logGpu(
+      present
+        ? 'nvidia-smi not found; GPU memory/util unavailable'
+        : 'GPU unavailable: no /dev/nvidia* and no nvidia-smi',
+    );
+    lastGpu = { at: now, available: present, byPid };
+    return lastGpu;
+  }
+
   try {
-    const out = execFileSync('nvidia-smi', ['pmon', '-c', '1', '-s', 'um'], {
+    const xml = execFileSync(smi, ['-q', '-x'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    byPid = mergeGpuMaps(byPid, parseNvidiaXml(xml));
+  } catch (err) {
+    errors.push(`xml: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  try {
+    const out = execFileSync(smi, ['pmon', '-c', '1', '-s', 'um'], {
       encoding: 'utf8',
       timeout: 4000,
     });
-    available = true;
-    byPid = parseNvidiaPmon(out);
-  } catch {
+    byPid = mergeGpuMaps(byPid, parseNvidiaPmon(out));
+  } catch (err) {
+    errors.push(`pmon: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!byPid.size) {
     try {
       const out = execFileSync(
-        'nvidia-smi',
+        smi,
         ['--query-compute-apps=pid,used_gpu_memory', '--format=csv,noheader,nounits'],
         { encoding: 'utf8', timeout: 4000 },
       );
-      available = true;
-      for (const raw of out.split('\n')) {
-        const line = raw.trim();
-        if (!line || line.toLowerCase().startsWith('pid')) continue;
-        const [pidRaw, memRaw] = line.split(',').map((s) => s.trim());
-        const pid = Number(pidRaw);
-        const mem = Number(memRaw);
-        if (!Number.isInteger(pid) || pid <= 0) continue;
-        byPid.set(pid, {
-          memBytes: Number.isFinite(mem) ? mem * 1024 * 1024 : 0,
-          utilPercent: 0,
-        });
-      }
-    } catch {
-      available = false;
+      byPid = mergeGpuMaps(byPid, parseComputeApps(out));
+    } catch (err) {
+      errors.push(`compute-apps: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  byPid = remapGpuPids(byPid);
+  const available = present || byPid.size > 0;
+  if (!available) {
+    logGpu(`GPU sample failed (${errors.join('; ') || 'unknown'})`);
+  } else if (errors.length) {
+    logGpu(`GPU sample partial (${errors.join('; ')})`);
+  } else {
+    logGpu(`GPU sample ok (${byPid.size} process${byPid.size === 1 ? '' : 'es'})`);
   }
   lastGpu = { at: now, available, byPid };
   return lastGpu;
+}
+
+function pidHasNvidia(pid: number) {
+  try {
+    const dir = `/proc/${pid}/fd`;
+    for (const name of fs.readdirSync(dir)) {
+      try {
+        if (/^\/dev\/nvidia/.test(fs.readlinkSync(`${dir}/${name}`))) return true;
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
 }
 
 function gpuForPids(pids: number[]): GpuUsage {
@@ -162,6 +315,19 @@ function gpuForPids(pids: number[]): GpuUsage {
     if (!live.has(pid)) continue;
     memBytes += usage.memBytes;
     utilPercent = Math.max(utilPercent, usage.utilPercent);
+  }
+  if (memBytes === 0 && gpu.byPid.size && pids.some(pidHasNvidia)) {
+    const nvidiaSessions = listRunningIds().filter((id) =>
+      runtimeRootPids(id)
+        .flatMap((root) => walkPids(root))
+        .some(pidHasNvidia),
+    );
+    if (nvidiaSessions.length === 1) {
+      for (const usage of gpu.byPid.values()) {
+        memBytes += usage.memBytes;
+        utilPercent = Math.max(utilPercent, usage.utilPercent);
+      }
+    }
   }
   return {
     available: true,

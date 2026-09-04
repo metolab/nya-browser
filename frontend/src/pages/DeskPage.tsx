@@ -180,7 +180,7 @@ export default function DeskPage() {
       return;
     }
     const win = openSessionDeskWindow(session.id);
-    if (!win) toast.error('无法打开新窗口，请允许浏览器弹出窗口后重试');
+    if (!win) toast.error('无法打开新标签页，请允许浏览器弹出窗口后重试');
     else win.focus();
   };
 
