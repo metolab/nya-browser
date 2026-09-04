@@ -187,21 +187,55 @@ function resolveNvidiaSmi() {
   return null;
 }
 
+function nspidFromStatus(status: string) {
+  const m = status.match(/^NSpid:\s+(.+)$/m);
+  if (!m) return [];
+  return m[1]
+    .trim()
+    .split(/\s+/)
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+let hostPidIndex = {
+  at: 0,
+  toHost: new Map<number, number>(),
+  toNs: new Map<number, number>(),
+};
+
+function refreshHostPidIndex() {
+  const now = Date.now();
+  if (hostPidIndex.at && now - hostPidIndex.at < 2000) return hostPidIndex;
+  const toHost = new Map<number, number>();
+  const toNs = new Map<number, number>();
+  const dir = fs.existsSync('/host/proc') ? '/host/proc' : '/proc';
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!/^\d+$/.test(name)) continue;
+      const hostPid = Number(name);
+      try {
+        const ids = nspidFromStatus(fs.readFileSync(`${dir}/${name}/status`, 'utf8'));
+        if (!ids.length) continue;
+        const nsPid = ids[ids.length - 1];
+        toNs.set(hostPid, nsPid);
+        toHost.set(nsPid, hostPid);
+        toHost.set(hostPid, hostPid);
+        toNs.set(nsPid, nsPid);
+      } catch {
+        /* gone */
+      }
+    }
+  } catch {
+    /* no proc */
+  }
+  hostPidIndex = { at: now, toHost, toNs };
+  return hostPidIndex;
+}
+
 function mapNvidiaPid(pid: number) {
   if (pid > 0 && fs.existsSync(`/proc/${pid}`)) return pid;
-  try {
-    const status = fs.readFileSync(`/host/proc/${pid}/status`, 'utf8');
-    const m = status.match(/^NSpid:\s+(.+)$/m);
-    if (!m) return pid;
-    const ids = m[1]
-      .trim()
-      .split(/\s+/)
-      .map(Number)
-      .filter((n) => Number.isInteger(n) && n > 0);
-    return ids[ids.length - 1] || pid;
-  } catch {
-    return pid;
-  }
+  const mapped = refreshHostPidIndex().toNs.get(pid);
+  return mapped || pid;
 }
 
 function remapGpuPids(byPid: Map<number, { memBytes: number; utilPercent: number }>) {
@@ -290,17 +324,32 @@ function sampleGpu() {
 }
 
 function pidHasNvidia(pid: number) {
-  try {
-    const dir = `/proc/${pid}/fd`;
-    for (const name of fs.readdirSync(dir)) {
+  const candidates = new Set<number>([pid]);
+  const idx = refreshHostPidIndex();
+  const hostPid = idx.toHost.get(pid);
+  if (hostPid) candidates.add(hostPid);
+  const roots = ['/proc', '/host/proc'];
+  for (const n of candidates) {
+    for (const root of roots) {
       try {
-        if (/^\/dev\/nvidia/.test(fs.readlinkSync(`${dir}/${name}`))) return true;
+        const maps = fs.readFileSync(`${root}/${n}/maps`, 'utf8');
+        if (/\/dev\/nvidia|\bdri\b/.test(maps)) return true;
+      } catch {
+        /* ignore */
+      }
+      try {
+        const dir = `${root}/${n}/fd`;
+        for (const name of fs.readdirSync(dir)) {
+          try {
+            if (/^\/dev\/nvidia|^\/dev\/dri\//.test(fs.readlinkSync(`${dir}/${name}`))) return true;
+          } catch {
+            /* ignore */
+          }
+        }
       } catch {
         /* ignore */
       }
     }
-  } catch {
-    /* ignore */
   }
   return false;
 }
@@ -308,11 +357,18 @@ function pidHasNvidia(pid: number) {
 function gpuForPids(pids: number[]): GpuUsage {
   const gpu = sampleGpu();
   if (!gpu.available) return { available: false, memBytes: 0, utilPercent: 0 };
+  const idx = refreshHostPidIndex();
   const live = new Set(pids);
+  const liveHost = new Set<number>();
+  for (const pid of pids) {
+    const hostPid = idx.toHost.get(pid);
+    if (hostPid) liveHost.add(hostPid);
+  }
   let memBytes = 0;
   let utilPercent = 0;
   for (const [pid, usage] of gpu.byPid) {
-    if (!live.has(pid)) continue;
+    const nsPid = idx.toNs.get(pid) || pid;
+    if (!live.has(pid) && !live.has(nsPid) && !liveHost.has(pid)) continue;
     memBytes += usage.memBytes;
     utilPercent = Math.max(utilPercent, usage.utilPercent);
   }
@@ -322,7 +378,7 @@ function gpuForPids(pids: number[]): GpuUsage {
         .flatMap((root) => walkPids(root))
         .some(pidHasNvidia),
     );
-    if (nvidiaSessions.length === 1) {
+    if (nvidiaSessions.length <= 1) {
       for (const usage of gpu.byPid.values()) {
         memBytes += usage.memBytes;
         utilPercent = Math.max(utilPercent, usage.utilPercent);
@@ -549,6 +605,7 @@ export function getSnapshot() {
 }
 
 export function startSampler() {
+  sampleGpu();
   sampleNow();
   const t = setInterval(sampleNow, 2500);
   if (typeof t.unref === 'function') t.unref();

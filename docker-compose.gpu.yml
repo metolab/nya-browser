@@ -10,7 +10,12 @@
 services:
   nya-browser:
     runtime: nvidia
+    pid: host
     gpus: all
+    cap_add:
+      # Read /proc/<pid>/fd and maps so GPU use can be attributed when
+      # nvidia-smi reports host PIDs or stale process list entries.
+      - SYS_PTRACE
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
