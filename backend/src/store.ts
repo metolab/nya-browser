@@ -28,7 +28,13 @@ import {
   sessions as sessionsTable,
   users as usersTable,
 } from './db/schema.js';
-import { createFingerprint, normalizeFingerprint } from './runtime/fingerprint.js';
+import {
+  createFingerprint,
+  fingerprintsEqual,
+  mergeFingerprintPatch,
+  normalizeFingerprint,
+} from './runtime/fingerprint.js';
+import { proxyConnectivityChanged } from './runtime/proxyLastTest.js';
 
 export { DEFAULT_HOME_URL };
 
@@ -284,10 +290,27 @@ export function updateProxyRecord(
     password: patch.password !== undefined ? patch.password : current.password,
     extra: JSON.stringify(extra),
     viaProxyId,
-    lastTestAt: patch.lastTestAt !== undefined ? patch.lastTestAt : current.lastTestAt,
-    lastTest: patch.lastTest !== undefined ? JSON.stringify(patch.lastTest) : JSON.stringify(current.lastTest),
   };
-  db.update(proxiesTable).set(next).where(eq(proxiesTable.id, id)).run();
+  const connectivityChanged = proxyConnectivityChanged(current, {
+    type: next.type,
+    host: next.host,
+    port: next.port,
+    username: next.username,
+    password: next.password,
+    extra,
+    viaProxyId,
+  });
+  const invalidateStaleTest = connectivityChanged && patch.lastTest === undefined;
+  const row = {
+    ...next,
+    lastTestAt: patch.lastTestAt !== undefined ? patch.lastTestAt : invalidateStaleTest ? null : current.lastTestAt,
+    lastTest: patch.lastTest !== undefined
+      ? JSON.stringify(patch.lastTest)
+      : invalidateStaleTest
+        ? null
+        : JSON.stringify(current.lastTest),
+  };
+  db.update(proxiesTable).set(row).where(eq(proxiesTable.id, id)).run();
   return getProxy(id);
 }
 
@@ -375,6 +398,12 @@ export function createSession(input: {
   proxyId?: string | null;
   timezone?: string;
   chromeLanguage?: string;
+  gpuProfile?: string;
+  webrtcMode?: FingerprintConfig['webrtcMode'];
+  deviceName?: string;
+  mediaDevices?: Partial<FingerprintConfig['mediaDevices']>;
+  geo?: Partial<FingerprintConfig['geo']>;
+  fontProfile?: FingerprintConfig['fontProfile'];
   homeUrl?: string;
   idleTimeoutMinutes?: number;
   fingerprint?: FingerprintConfig;
@@ -394,7 +423,17 @@ export function createSession(input: {
     groupId,
     proxyId: input.proxyId || null,
     proxy: proxyToConfig(getProxy(input.proxyId || null)),
-    fingerprint: input.fingerprint ? normalizeFingerprint(input.fingerprint) : createFingerprint(),
+    fingerprint: input.fingerprint
+      ? normalizeFingerprint({
+          ...input.fingerprint,
+          gpuProfile: input.gpuProfile ?? input.fingerprint.gpuProfile,
+          webrtcMode: input.webrtcMode ?? input.fingerprint.webrtcMode,
+          deviceName: input.deviceName ?? input.fingerprint.deviceName,
+          mediaDevices: input.mediaDevices ?? input.fingerprint.mediaDevices,
+          geo: input.geo ?? input.fingerprint.geo,
+          fontProfile: input.fontProfile ?? input.fingerprint.fontProfile,
+        })
+      : createFingerprint(input.gpuProfile, input),
     timezone: normalizeTimezone(input.timezone),
     chromeLanguage: normalizeChromeLanguage(input.chromeLanguage),
     homeUrl: normalizeHomeUrl(input.homeUrl),
@@ -433,6 +472,12 @@ export function updateSession(
     proxyId: string | null;
     timezone: string;
     chromeLanguage: string;
+    gpuProfile: string;
+    webrtcMode: FingerprintConfig['webrtcMode'];
+    deviceName: string;
+    mediaDevices: Partial<FingerprintConfig['mediaDevices']>;
+    geo: Partial<FingerprintConfig['geo']>;
+    fontProfile: FingerprintConfig['fontProfile'];
     homeUrl: string;
     idleTimeoutMinutes: number;
     fingerprint: FingerprintConfig;
@@ -466,7 +511,14 @@ export function updateSession(
     fingerprint: JSON.stringify(
       patch.fingerprint !== undefined
         ? normalizeFingerprint(patch.fingerprint)
-        : current.fingerprint,
+        : patch.gpuProfile !== undefined ||
+            patch.webrtcMode !== undefined ||
+            patch.deviceName !== undefined ||
+            patch.mediaDevices !== undefined ||
+            patch.geo !== undefined ||
+            patch.fontProfile !== undefined
+          ? mergeFingerprintPatch(current.fingerprint, patch)
+          : current.fingerprint,
     ),
     updatedAt: new Date().toISOString(),
   };
@@ -475,23 +527,52 @@ export function updateSession(
 }
 
 export function ensureSessionFingerprint(id: string) {
-  const current = getSession(id);
-  if (!current) return null;
-  const fp = normalizeFingerprint(current.fingerprint);
-  if (
-    current.fingerprint &&
-    current.fingerprint.seed === fp.seed &&
-    current.fingerprint.hardwareConcurrency === fp.hardwareConcurrency &&
-    current.fingerprint.deviceMemory === fp.deviceMemory
-  ) {
-    return current.fingerprint;
+  const row = db.select().from(sessionsTable).where(eq(sessionsTable.id, id)).get();
+  if (!row) return null;
+  let parsed: unknown = {};
+  try {
+    parsed = JSON.parse(row.fingerprint);
+  } catch {
+    parsed = {};
   }
+  const fp = normalizeFingerprint(parsed);
+  const obj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+  const media =
+    obj.mediaDevices && typeof obj.mediaDevices === 'object'
+      ? (obj.mediaDevices as Record<string, unknown>)
+      : {};
+  const geo = obj.geo && typeof obj.geo === 'object' ? (obj.geo as Record<string, unknown>) : {};
+  const complete =
+    typeof obj.seed === 'string' &&
+    typeof obj.gpuProfile === 'string' &&
+    typeof obj.webrtcMode === 'string' &&
+    typeof obj.deviceName === 'string' &&
+    typeof obj.fontProfile === 'string' &&
+    'audioInput' in media &&
+    'audioOutput' in media &&
+    'videoInput' in media &&
+    'permission' in geo &&
+    'latitude' in geo &&
+    'longitude' in geo &&
+    'accuracy' in geo &&
+    fingerprintsEqual(fp, normalizeFingerprint(obj));
+  if (complete) return fp;
   return updateSession(id, { fingerprint: fp })?.fingerprint || fp;
 }
 
 export function regenerateSessionFingerprint(id: string) {
-  if (!getSession(id)) return null;
-  return updateSession(id, { fingerprint: createFingerprint() });
+  const current = getSession(id);
+  if (!current) return null;
+  const fp = current.fingerprint;
+  return updateSession(id, {
+    fingerprint: createFingerprint(fp.gpuProfile, {
+      webrtcMode: fp.webrtcMode,
+      deviceName: fp.deviceName,
+      mediaDevices: fp.mediaDevices,
+      geo: fp.geo,
+      fontProfile: fp.fontProfile,
+    }),
+  });
 }
 
 export function ensureSessionTimezone(id: string) {

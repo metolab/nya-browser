@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import { GPU_PROFILE_IDS } from './gpuProfiles.js';
+import { GEO_PERMISSIONS } from './geo.js';
+import { FONT_PROFILES } from './fontProfiles.js';
+import { WEBRTC_MODES } from './webrtc.js';
 import { CHROME_LANGUAGE_LIST } from './languages.js';
 import { isValidTimezone } from './timezones.js';
 import { PROXY_TYPES, SS_METHODS } from './proxy.js';
@@ -121,11 +125,67 @@ export const IDLE_TIMEOUT_MINUTES_MAX = 7 * 24 * 60;
 
 export const idleTimeoutMinutesSchema = z.number().int().min(0).max(IDLE_TIMEOUT_MINUTES_MAX);
 
+export const webrtcModeSchema = z.enum(WEBRTC_MODES);
+
+export const fontProfileSchema = z.enum(FONT_PROFILES);
+
+export const geoSchema = z.object({
+  permission: z.enum(GEO_PERMISSIONS).optional(),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
+  accuracy: z.number().int().min(10).max(5000).optional(),
+});
+
+export const mediaDevicesSchema = z.object({
+  audioInput: z.string().trim().max(80).optional(),
+  audioOutput: z.string().trim().max(80).optional(),
+  videoInput: z.string().trim().max(80).optional(),
+});
+
 export const notepadSchema = z.string();
 
 export const putNotepadSchema = z.object({
   notepad: notepadSchema,
 });
+
+export const fingerprintFieldsSchema = z.object({
+  gpuProfile: z.enum(GPU_PROFILE_IDS).optional(),
+  webrtcMode: webrtcModeSchema.optional(),
+  deviceName: z.string().trim().max(32).optional(),
+  mediaDevices: mediaDevicesSchema.optional(),
+  geo: geoSchema.optional(),
+  fontProfile: fontProfileSchema.optional(),
+});
+
+const sessionFingerprintFields = {
+  gpuProfile: z.enum(GPU_PROFILE_IDS).optional(),
+  webrtcMode: webrtcModeSchema.optional(),
+  deviceName: z.string().trim().max(32).optional(),
+  mediaDevices: mediaDevicesSchema.optional(),
+  geo: geoSchema.optional(),
+  fontProfile: fontProfileSchema.optional(),
+  fingerprint: fingerprintFieldsSchema.optional(),
+};
+
+export function pickSessionFingerprint(input: {
+  gpuProfile?: string;
+  webrtcMode?: z.infer<typeof webrtcModeSchema>;
+  deviceName?: string;
+  mediaDevices?: z.infer<typeof mediaDevicesSchema>;
+  geo?: z.infer<typeof geoSchema>;
+  fontProfile?: z.infer<typeof fontProfileSchema>;
+  fingerprint?: z.infer<typeof fingerprintFieldsSchema>;
+}) {
+  const nested = input.fingerprint || {};
+  return {
+    gpuProfile: input.gpuProfile ?? nested.gpuProfile,
+    webrtcMode: input.webrtcMode ?? nested.webrtcMode,
+    deviceName: input.deviceName ?? nested.deviceName,
+    mediaDevices: input.mediaDevices ?? nested.mediaDevices,
+    geo: input.geo ?? nested.geo,
+    fontProfile: input.fontProfile ?? nested.fontProfile,
+  };
+}
 
 export const createSessionSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -135,6 +195,7 @@ export const createSessionSchema = z.object({
   proxyId: z.string().min(1).nullable().optional(),
   timezone: timezoneSchema.optional(),
   chromeLanguage: z.enum(CHROME_LANGUAGE_LIST).optional(),
+  ...sessionFingerprintFields,
   homeUrl: z.string().max(2000).optional(),
   idleTimeoutMinutes: idleTimeoutMinutesSchema.optional().default(0),
 });
@@ -147,6 +208,7 @@ export const updateSessionSchema = z.object({
   proxyId: z.string().min(1).nullable().optional(),
   timezone: timezoneSchema.optional(),
   chromeLanguage: z.enum(CHROME_LANGUAGE_LIST).optional(),
+  ...sessionFingerprintFields,
   homeUrl: z.string().max(2000).optional(),
   idleTimeoutMinutes: idleTimeoutMinutesSchema.optional(),
 });

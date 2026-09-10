@@ -1,8 +1,12 @@
 import http from 'http';
-import { WebSocket } from 'ws';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { WebSocket } = require('ws');
 
 const API = process.env.NYA_API || 'http://127.0.0.1:8080';
-const PASSWORD = process.env.AUTH_PASSWORD || 'testpass';
+const USER = process.env.INIT_ADMIN_USER || 'admin';
+const PASSWORD = process.env.INIT_ADMIN_PASSWORD || process.env.AUTH_PASSWORD || 'testpass';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,33 +58,20 @@ function cookieHeader(cookies) {
     .join('; ');
 }
 
-async function cdpConnect(port) {
-  const started = Date.now();
-  let version = null;
-  while (Date.now() - started < 40000) {
-    try {
-      const { data } = await fetchJson(`http://127.0.0.1:${port}/json/version`);
-      if (data?.webSocketDebuggerUrl) {
-        version = data;
-        break;
-      }
-    } catch {
-      /* chrome not ready */
-    }
-    await sleep(400);
-  }
-  if (!version) throw new Error(`No CDP browser on port ${port}`);
-
-  const ws = new WebSocket(version.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
+function openCdpSocket(url) {
+  const ws = new WebSocket(url);
+  const pending = new Map();
+  const contexts = [];
+  let nextId = 0;
+  const ready = new Promise((resolve, reject) => {
     ws.once('open', resolve);
     ws.once('error', reject);
   });
-
-  let nextId = 0;
-  const pending = new Map();
   ws.on('message', (buf) => {
     const msg = JSON.parse(String(buf));
+    if (msg.method === 'Runtime.executionContextCreated' && msg.params?.context) {
+      contexts.push(msg.params.context);
+    }
     if (msg.id != null && pending.has(msg.id)) {
       const { resolve, reject } = pending.get(msg.id);
       pending.delete(msg.id);
@@ -88,38 +79,127 @@ async function cdpConnect(port) {
       else resolve(msg.result);
     }
   });
-
-  const send = (method, params = {}, sessionId) => {
+  const send = (method, params = {}) => {
     const id = ++nextId;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      const payload = { id, method, params };
-      if (sessionId) payload.sessionId = sessionId;
-      ws.send(JSON.stringify(payload));
+      ws.send(JSON.stringify({ id, method, params }));
       setTimeout(() => {
         if (pending.has(id)) {
           pending.delete(id);
           reject(new Error(`CDP timeout: ${method}`));
         }
-      }, 20000);
+      }, 35000);
     });
   };
+  return { ws, ready, send, contexts };
+}
 
-  const { targetInfos } = await send('Target.getTargets');
-  const page =
-    (targetInfos || []).find((t) => t.type === 'page' && /^https?:/i.test(t.url || '')) ||
-    (targetInfos || []).find((t) => t.type === 'page');
-  if (!page) throw new Error('No page target');
-  const attached = await send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
-  const sessionId = attached.sessionId;
-  const sessionSend = (method, params = {}) => send(method, params, sessionId);
-  await sessionSend('Page.enable');
-  await sessionSend('Runtime.enable');
+function pageContextId(contexts) {
+  const def = contexts.find((c) => c.auxData?.isDefault && /^https?:/i.test(c.origin || ''));
+  const http = contexts.find((c) => /^https?:/i.test(c.origin || ''));
+  return (def || http)?.id;
+}
+
+async function cdpConnect(port) {
+  const started = Date.now();
+  let page = null;
+  let version = null;
+  while (Date.now() - started < 50000) {
+    try {
+      const ver = await fetchJson(`http://127.0.0.1:${port}/json/version`);
+      if (ver.data?.webSocketDebuggerUrl) version = ver.data;
+      const list = await fetchJson(`http://127.0.0.1:${port}/json/list`);
+      const targets = Array.isArray(list.data) ? list.data : [];
+      page = targets.find((t) => t.type === 'page' && /^https?:/i.test(t.url || ''));
+      if (page?.webSocketDebuggerUrl) break;
+    } catch {
+      /* chrome not ready */
+    }
+    await sleep(400);
+  }
+  if (!page?.webSocketDebuggerUrl) throw new Error(`No CDP page on port ${port}`);
+
+  let pageSock = openCdpSocket(page.webSocketDebuggerUrl);
+  await pageSock.ready;
+  await pageSock.send('Runtime.enable');
+  await pageSock.send('Page.enable');
+  const ctxWait = Date.now();
+  while (Date.now() - ctxWait < 15000 && pageContextId(pageSock.contexts) == null) {
+    await sleep(200);
+  }
+  if (!/example\.com/i.test(page.url || '')) {
+    try {
+      await pageSock.send('Page.navigate', { url: 'https://example.com/' });
+    } catch {
+      /* page may already be loading */
+    }
+  }
+  const readyStarted = Date.now();
+  while (Date.now() - readyStarted < 20000) {
+    try {
+      const list = await fetchJson(`http://127.0.0.1:${port}/json/list`);
+      const targets = Array.isArray(list.data) ? list.data : [];
+      const httpsPage = targets.find((t) => t.type === 'page' && /example\.com/i.test(t.url || ''));
+      if (httpsPage?.webSocketDebuggerUrl && httpsPage.webSocketDebuggerUrl !== page.webSocketDebuggerUrl) {
+        try {
+          pageSock.ws.close();
+        } catch {
+          /* ignore */
+        }
+        page = httpsPage;
+        pageSock = openCdpSocket(page.webSocketDebuggerUrl);
+        await pageSock.ready;
+        await pageSock.send('Runtime.enable');
+        await pageSock.send('Page.enable');
+      }
+      const info = await pageSock.send('Runtime.evaluate', {
+        expression: '({ href: location.href, state: document.readyState })',
+        returnByValue: true,
+        ...(pageContextId(pageSock.contexts) != null
+          ? { contextId: pageContextId(pageSock.contexts) }
+          : {}),
+      });
+      const value = info?.result?.value;
+      if (value && /example\.com/i.test(value.href || '') && (value.state === 'interactive' || value.state === 'complete')) {
+        break;
+      }
+    } catch {
+      /* execution context not ready */
+    }
+    await sleep(300);
+  }
+
+  let browserSend = async () => {
+    throw new Error('no browser CDP');
+  };
+  let browserWs = null;
+  if (version?.webSocketDebuggerUrl) {
+    const browserSock = openCdpSocket(version.webSocketDebuggerUrl);
+    await browserSock.ready;
+    browserSend = browserSock.send;
+    browserWs = browserSock.ws;
+  }
+  const send = (method, params = {}) => {
+    if (method === 'Runtime.evaluate') {
+      const contextId = pageContextId(pageSock.contexts);
+      if (contextId != null && params.contextId == null) {
+        return pageSock.send(method, { ...params, contextId });
+      }
+    }
+    return pageSock.send(method, params);
+  };
   return {
-    send: sessionSend,
+    send,
+    browserSend,
     close: () => {
       try {
-        ws.close();
+        pageSock.ws.close();
+      } catch {
+        /* ignore */
+      }
+      try {
+        browserWs?.close();
       } catch {
         /* ignore */
       }
@@ -128,268 +208,167 @@ async function cdpConnect(port) {
 }
 
 async function evaluate(cdp, expression, awaitPromise = true) {
-  const result = await cdp.send('Runtime.evaluate', {
-    expression,
-    awaitPromise,
-    returnByValue: true,
-    timeout: 45000,
-  });
-  if (result?.exceptionDetails) {
-    const desc = result.exceptionDetails.exception?.description || result.exceptionDetails.text;
-    throw new Error(`evaluate failed: ${desc}`);
-  }
-  return result?.result?.value;
-}
-
-async function navigate(cdp, url, settleMs = 2500) {
-  const nav = cdp.send('Page.navigate', { url }).catch((err) => {
-    if (!String(err.message || err).includes('timeout')) throw err;
-  });
-  const start = Date.now();
-  while (Date.now() - start < 20000) {
+  let lastErr;
+  for (let i = 0; i < 8; i += 1) {
     try {
-      const info = await evaluate(
-        cdp,
-        '({ href: location.href, state: document.readyState })',
-        false,
-      );
-      if (info?.state === 'interactive' || info?.state === 'complete') break;
-    } catch {
-      /* renderer not ready yet */
-    }
-    await sleep(400);
-  }
-  await Promise.race([nav, sleep(0)]);
-  await sleep(settleMs);
-}
-
-const PROBE_SRC = `async () => {
-  const sha = async (input) => {
-    const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : new Uint8Array(input);
-    let h = 2166136261;
-    for (let i = 0; i < bytes.length; i += 1) {
-      h ^= bytes[i];
-      h = Math.imul(h, 16777619);
-    }
-    return (h >>> 0).toString(16).padStart(8, '0') + ':' + bytes.length;
-  };
-
-  const paint = (ctx) => {
-    ctx.fillStyle = 'rgb(255,102,0)';
-    ctx.fillRect(10, 10, 240, 50);
-    ctx.fillStyle = '#069';
-    ctx.font = '16px Arial';
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillText('Cwm fjordbank glyphs vext quiz, 😃', 12, 36);
-    ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-    ctx.font = '18px Times New Roman';
-    ctx.fillText('mmmmmmmmmmlli', 12, 54);
-  };
-
-  const canvas = document.createElement('canvas');
-  canvas.width = 280;
-  canvas.height = 70;
-  const ctx = canvas.getContext('2d');
-  paint(ctx);
-  const dataUrl = canvas.toDataURL();
-  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const canvas2 = document.createElement('canvas');
-  canvas2.width = 280;
-  canvas2.height = 70;
-  const ctx2 = canvas2.getContext('2d');
-  paint(ctx2);
-  const dataUrl2 = canvas2.toDataURL();
-
-  let webgl = { available: false };
-  try {
-    const glc = document.createElement('canvas');
-    glc.width = 256;
-    glc.height = 128;
-    const gl = glc.getContext('webgl') || glc.getContext('experimental-webgl');
-    if (gl) {
-      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-      gl.clearColor(0.21, 0.42, 0.63, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      const pixels = new Uint8Array(256 * 128 * 4);
-      gl.readPixels(0, 0, 256, 128, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-      webgl = {
-        available: true,
-        vendor: gl.getParameter(gl.VENDOR),
-        renderer: gl.getParameter(gl.RENDERER),
-        unmaskedVendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : null,
-        unmaskedRenderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null,
-        extensions: (gl.getSupportedExtensions() || []).slice(0, 40),
-        readPixelsSha: await sha(pixels.buffer),
-      };
-    }
-  } catch (err) {
-    webgl = { available: false, error: String(err) };
-  }
-
-  let audio = { available: false };
-  try {
-    const ac = new OfflineAudioContext(1, 44100, 44100);
-    const osc = ac.createOscillator();
-    osc.type = 'triangle';
-    osc.frequency.value = 10000;
-    const comp = ac.createDynamicsCompressor();
-    osc.connect(comp);
-    comp.connect(ac.destination);
-    osc.start(0);
-    const buf = await ac.startRendering();
-    const ch = buf.getChannelData(0);
-    const ch2 = buf.getChannelData(0);
-    audio = {
-      available: true,
-      sampleRate: buf.sampleRate,
-      sha: await sha(Float32Array.from(ch).buffer),
-      stable: ch[100] === ch2[100],
-      sample100: ch[100],
-    };
-  } catch (err) {
-    audio = { available: false, error: String(err) };
-  }
-
-  let webrtc = {
-    RTCPeerConnection: typeof RTCPeerConnection,
-    inWindow: 'RTCPeerConnection' in window,
-    webkit: typeof webkitRTCPeerConnection,
-    candidates: [],
-  };
-  if (typeof RTCPeerConnection === 'function') {
-    try {
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      const result = await cdp.send('Runtime.evaluate', {
+        expression,
+        awaitPromise,
+        returnByValue: true,
+        timeout: 45000,
       });
-      pc.createDataChannel('nya');
-      pc.onicecandidate = (ev) => {
-        if (ev.candidate && ev.candidate.candidate) webrtc.candidates.push(ev.candidate.candidate);
-      };
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await new Promise((r) => setTimeout(r, 2500));
-      pc.close();
+      if (result?.exceptionDetails) {
+        const desc = result.exceptionDetails.exception?.description || result.exceptionDetails.text;
+        throw new Error(`evaluate failed: ${desc}`);
+      }
+      return result?.result?.value;
     } catch (err) {
-      webrtc.error = String(err);
+      lastErr = err;
+      const msg = String(err.message || err);
+      if (!/execution context|Inspected target navigated|session with given id/i.test(msg)) throw err;
+      await sleep(400);
     }
   }
+  throw lastErr;
+}
 
-  let devices = [];
-  try {
-    devices = await navigator.mediaDevices.enumerateDevices();
-  } catch (err) {
-    devices = [{ error: String(err) }];
-  }
+const PAGE_PROBE = `async () => {
+  const webgpu = { hasNavigatorGpu: Boolean(navigator.gpu) };
 
-  let worker = { ok: false };
+  let webrtc = { rtcPeerConnection: typeof RTCPeerConnection === 'function' };
   try {
-    worker = await new Promise((resolve) => {
-      const src = \`
-        self.onmessage = async () => {
-          try {
-            const c = new OffscreenCanvas(200, 50);
-            const ctx = c.getContext('2d');
-            ctx.fillStyle = '#069';
-            ctx.fillRect(0, 0, 200, 50);
-            ctx.font = '16px Arial';
-            ctx.fillStyle = '#fff';
-            ctx.fillText('worker glyph quiz', 8, 30);
-            const blob = await c.convertToBlob();
-            const ab = await blob.arrayBuffer();
-            const bytes = new Uint8Array(ab);
-            let h = 2166136261;
-            for (let i = 0; i < bytes.length; i++) {
-              h ^= bytes[i];
-              h = Math.imul(h, 16777619);
-            }
-            const sha = (h >>> 0).toString(16).padStart(8, '0') + ':' + bytes.length;
-            self.postMessage({
-              ok: true,
-              sha,
-              len: ab.byteLength,
-              hardwareConcurrency: self.navigator.hardwareConcurrency,
-            });
-          } catch (e) {
-            self.postMessage({ ok: false, error: String(e) });
+    if (typeof RTCPeerConnection === 'function') {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      const candidates = [];
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 800);
+        pc.onicecandidate = (ev) => {
+          if (ev.candidate && ev.candidate.candidate) candidates.push(ev.candidate.candidate);
+          if (!ev.candidate) {
+            clearTimeout(timer);
+            resolve();
           }
         };
-      \`;
-      const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
-      const t = setTimeout(() => {
-        w.terminate();
-        resolve({ ok: false, error: 'timeout' });
-      }, 4000);
-      w.onmessage = (e) => {
-        clearTimeout(t);
-        w.terminate();
-        resolve(e.data);
+        pc.createDataChannel('nya');
+        pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => resolve());
+      });
+      const sdp = (pc.localDescription && pc.localDescription.sdp) || '';
+      const sdpCandidates = sdp.match(/^a=candidate:.+$/gm) || [];
+      const leakRe = /(192\\.168\\.|\\b10\\.\\d|\\b172\\.(1[6-9]|2\\d|3[01])\\.|\\b(fc|fd)[0-9a-f]{2}:[0-9a-f]{2}:)/i;
+      pc.close();
+      webrtc = {
+        rtcPeerConnection: true,
+        candidateCount: candidates.length,
+        candidates: candidates.slice(0, 6),
+        sdpCandidateCount: sdpCandidates.length,
+        hasPrivateIp: leakRe.test(sdp) || candidates.some((c) => leakRe.test(c)),
       };
-      w.postMessage(1);
-    });
+    }
   } catch (err) {
-    worker = { ok: false, error: String(err) };
+    webrtc = { rtcPeerConnection: typeof RTCPeerConnection === 'function', error: String(err) };
   }
 
-  const span = document.createElement('span');
-  span.style.cssText = 'position:absolute;left:-9999px;font:16px Arial;';
-  span.textContent = 'mmmmmmmmmmlli.WWWWWW';
-  document.body.appendChild(span);
-  const rect = span.getBoundingClientRect();
-  const fonts = {};
-  for (const font of ['Arial', 'Times New Roman', 'Courier New', 'Comic Sans MS', 'Noto Sans CJK SC', 'WenQuanYi Zen Hei', 'DejaVu Sans']) {
-    span.style.fontFamily = \`'\${font}', monospace\`;
-    fonts[font] = span.offsetWidth;
+  let media = { present: Boolean(navigator.mediaDevices) };
+  try {
+    if (!navigator.mediaDevices) {
+      media.error = 'mediaDevices missing';
+    } else {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      media.devices = devices.map((d) => ({ kind: d.kind, label: d.label, deviceId: String(d.deviceId || '').slice(0, 12) }));
+    }
+  } catch (err) {
+    media.error = String(err);
   }
-  document.body.removeChild(span);
+
+  const geo = { permission: null, position: null };
+  try {
+    if (navigator.permissions) {
+      const p = await navigator.permissions.query({ name: 'geolocation' });
+      geo.permission = p.state;
+    }
+  } catch (err) {
+    geo.permissionError = String(err);
+  }
+  try {
+    if (geo.permission === 'granted' && navigator.geolocation) {
+      geo.position = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve({ error: 'timeout' }), 4000);
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            clearTimeout(timer);
+            resolve({
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
+            });
+          },
+          (err) => {
+            clearTimeout(timer);
+            resolve({ error: err.message || String(err) });
+          },
+          { timeout: 3500 },
+        );
+      });
+    }
+  } catch (err) {
+    geo.position = { error: String(err) };
+  }
+
+  const fonts = {
+    arial: false,
+    calibri: false,
+    noto: false,
+    arialInstalled: false,
+    notoInstalled: false,
+    arialWidth: 0,
+    monoWidth: 0,
+  };
+  try {
+    fonts.arial = document.fonts.check('16px Arial');
+    fonts.calibri = document.fonts.check('16px Calibri');
+    fonts.noto = document.fonts.check('16px "Noto Sans CJK SC"');
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const sample = 'mmmmmmmmmmlli';
+      ctx.font = '72px monospace';
+      fonts.monoWidth = Math.round(ctx.measureText(sample).width);
+      ctx.font = '72px Arial, monospace';
+      fonts.arialWidth = Math.round(ctx.measureText(sample).width);
+      fonts.arialInstalled = fonts.arialWidth !== fonts.monoWidth;
+      ctx.font = '72px "Noto Sans CJK SC", monospace';
+      fonts.notoInstalled = Math.round(ctx.measureText(sample).width) !== fonts.monoWidth;
+    }
+  } catch {
+    /* ignore */
+  }
+
+  let unmaskedRenderer = null;
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl');
+    const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    if (gl && dbg) unmaskedRenderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+  } catch {
+    /* ignore */
+  }
 
   return {
     href: location.href,
     ua: navigator.userAgent,
-    platform: navigator.platform,
-    language: navigator.language,
-    languages: [...(navigator.languages || [])],
-    hardwareConcurrency: navigator.hardwareConcurrency,
-    deviceMemory: navigator.deviceMemory,
-    maxTouchPoints: navigator.maxTouchPoints,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    screen: { w: screen.width, h: screen.height, depth: screen.colorDepth, dpr: window.devicePixelRatio },
-    webgpu: Boolean(navigator.gpu),
-    canvas: {
-      dataUrlSha: await sha(dataUrl),
-      imageDataSha: await sha(img.data.buffer),
-      stable: dataUrl === dataUrl2,
-    },
-    webgl,
-    audio,
+    unmaskedRenderer,
+    webgpu,
     webrtc,
-    devices: devices.map((d) => ({ kind: d.kind, label: d.label, deviceId: d.deviceId })),
-    worker,
-    clientRect: { w: rect.width, h: rect.height },
+    media,
+    geo,
     fonts,
-    pluginCount: navigator.plugins.length,
-    workerCtorToString:
-      typeof Worker === 'function' ? Function.prototype.toString.call(Worker) : String(Worker),
   };
 }`;
-
-function ipv4s(text) {
-  return [...new Set(String(text).match(/\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g) || [])];
-}
-
-function summarizeSite(name, text) {
-  const t = String(text || '').replace(/\s+/g, ' ').trim();
-  return {
-    site: name,
-    ips: ipv4s(t).slice(0, 12),
-    hasRtc: /RTCPeerConnection|host candidate|srflx|local ip/i.test(t),
-    snippet: t.slice(0, 500),
-  };
-}
 
 async function login() {
   const res = await fetchJson(`${API}/api/login`, {
     method: 'POST',
-    body: { password: PASSWORD },
+    body: { username: USER, password: PASSWORD },
   });
   if (res.status !== 200) throw new Error(`login failed: ${res.status} ${JSON.stringify(res.data)}`);
   return cookieHeader(res.cookies);
@@ -401,195 +380,268 @@ async function api(cookie, path, method = 'GET', body) {
     headers: { Cookie: cookie },
     body,
   });
-  if (res.status >= 400) throw new Error(`${method} ${path} -> ${res.status} ${JSON.stringify(res.data)}`);
+  if (res.status >= 400) {
+    throw new Error(`${method} ${path} -> ${res.status} ${JSON.stringify(res.data)}`);
+  }
   return res.data;
 }
 
-function pick(obj, keys) {
-  const out = {};
-  for (const k of keys) out[k] = obj[k];
-  return out;
+async function cleanup(cookie) {
+  try {
+    const list = await api(cookie, '/api/sessions');
+    const sessions = list.sessions || list || [];
+    for (const session of sessions) {
+      if (!String(session.name || '').startsWith('fp-')) continue;
+      try {
+        await api(cookie, `/api/sessions/${session.id}/stop`, 'POST');
+      } catch {
+        /* already stopped */
+      }
+      try {
+        await api(cookie, `/api/sessions/${session.id}`, 'DELETE');
+      } catch {
+        /* already gone */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
-async function collectSession(cookie, label) {
-  const created = await api(cookie, '/api/sessions', 'POST', { name: `e2e-${label}`, proxy: { type: 'none' } });
+async function collect(cookie, name, payload) {
+  const created = await api(cookie, '/api/sessions', 'POST', {
+    name: `fp-${name}-${Date.now().toString(36)}`,
+    homeUrl: 'https://example.com/',
+    gpuProfile: 'rtx-2080',
+    ...payload,
+  });
   const session = created.session;
   const started = await api(cookie, `/api/sessions/${session.id}/start`, 'POST');
   const runtime = started.runtime;
-  if (!runtime?.cdpPort) {
-    throw new Error(`session ${session.id} has no cdpPort; is NYA_CDP_BASE set?`);
-  }
-  const cdp = await cdpConnect(runtime.cdpPort);
-  await navigate(cdp, 'data:text/html,<!doctype html><title>nya</title><body></body>', 800);
-  const probe1 = await evaluate(cdp, `(${PROBE_SRC})()`);
-  const probe2 = await evaluate(cdp, `(${PROBE_SRC})()`);
-
-  const sites = {};
-  const extraSites = process.env.NYA_E2E_SITES === '1';
-  for (const [name, url, wait] of extraSites ? [
-    ['browserleaks-webrtc', 'https://browserleaks.com/webrtc', 5000],
-    ['browserleaks-canvas', 'https://browserleaks.com/canvas', 4000],
-    ['browserleaks-webgl', 'https://browserleaks.com/webgl', 4000],
-    ['ipleak', 'https://ipleak.net/', 6000],
-    ['fingerprintjs', 'https://fingerprintjs.github.io/fingerprintjs/', 8000],
-  ] : []) {
+  if (!runtime?.cdpPort) throw new Error(`session ${session.id} has no cdpPort`);
+  await sleep(1500);
+  let cdp = await cdpConnect(runtime.cdpPort);
+  if (payload.mediaDevices) {
     try {
-      await navigate(cdp, url, wait);
-      const text = await evaluate(cdp, 'document.body ? document.body.innerText : ""', false);
-      const extra = {};
-      if (name === 'fingerprintjs') {
-        extra.visitorHints = String(text)
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => /visitor|fingerprint|id/i.test(l))
-          .slice(0, 12);
-      }
-      if (name === 'browserleaks-canvas') {
-        extra.canvasLines = String(text)
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => /signature|hash|md5|sha|canvas/i.test(l))
-          .slice(0, 20);
-      }
-      if (name === 'browserleaks-webgl') {
-        extra.webglLines = String(text)
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => /unmasked|renderer|vendor|hash|signature/i.test(l))
-          .slice(0, 20);
-      }
-      sites[name] = { ...summarizeSite(name, text), ...extra, url };
-    } catch (err) {
-      sites[name] = { site: name, error: String(err.message || err), url };
+      await cdp.browserSend('Browser.grantPermissions', {
+        origin: 'https://example.com',
+        permissions: ['audioCapture', 'videoCapture'],
+      });
+    } catch {
+      /* labels stay empty if grant is unavailable */
     }
   }
-
+  if (payload.geo?.permission === 'allow' && payload.geo.latitude != null) {
+    try {
+      await cdp.browserSend('Browser.grantPermissions', {
+        origin: 'https://example.com',
+        permissions: ['geolocation'],
+      });
+    } catch {
+      /* lifecycle may already have granted */
+    }
+    try {
+      await cdp.send('Emulation.setGeolocationOverride', {
+        latitude: payload.geo.latitude,
+        longitude: payload.geo.longitude,
+        accuracy: payload.geo.accuracy || 80,
+      });
+    } catch {
+      /* keep going */
+    }
+  }
+  const probe = async () => evaluate(cdp, `(${PAGE_PROBE})()`);
+  let page;
+  try {
+    page = await probe();
+  } catch (err) {
+    cdp.close();
+    await sleep(800);
+    cdp = await cdpConnect(runtime.cdpPort);
+    page = await probe();
+  }
+  if (!/example\.com/i.test(page?.href || '')) {
+    cdp.close();
+    await sleep(1200);
+    cdp = await cdpConnect(runtime.cdpPort);
+    page = await probe();
+  }
+  if (process.env.NYA_SKIP_WEBGPU_ADAPTER !== '1') {
+  try {
+    page.webgpu = await evaluate(
+      cdp,
+      `(() => {
+        const webgpu = { hasNavigatorGpu: Boolean(navigator.gpu) };
+        if (!navigator.gpu) return Promise.resolve(webgpu);
+        const timeout = new Promise((resolve) =>
+          setTimeout(() => resolve({ ...webgpu, available: false, reason: 'adapter-timeout' }), 3000),
+        );
+        return Promise.race([
+          navigator.gpu.requestAdapter().then((adapter) => {
+            if (!adapter) return { ...webgpu, available: false, reason: 'no-adapter' };
+            const info = adapter.info || {};
+            return {
+              ...webgpu,
+              available: true,
+              vendor: info.vendor || null,
+              architecture: info.architecture || null,
+              device: info.device || null,
+              description: info.description || null,
+            };
+          }),
+          timeout,
+        ]).catch((err) => ({ ...webgpu, available: false, error: String(err) }));
+      })()`,
+    );
+  } catch (err) {
+    page.webgpu = { ...(page.webgpu || {}), error: String(err.message || err) };
+  }
+  }
   cdp.close();
+  try {
+    await api(cookie, `/api/sessions/${session.id}/stop`, 'POST');
+  } catch {
+    /* keep going */
+  }
+  try {
+    await api(cookie, `/api/sessions/${session.id}`, 'DELETE');
+  } catch {
+    /* keep going */
+  }
   return {
-    id: session.id,
-    fingerprint: session.fingerprint,
-    runtime,
-    probe1,
-    probe2,
-    sites,
+    name,
+    stored: session.fingerprint,
+    page,
   };
 }
 
-function diff(a, b, path = '') {
-  const out = [];
-  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
-  for (const k of keys) {
-    const pa = path ? `${path}.${k}` : k;
-    const va = a?.[k];
-    const vb = b?.[k];
-    if (va && vb && typeof va === 'object' && typeof vb === 'object' && !Array.isArray(va) && !Array.isArray(vb)) {
-      out.push(...diff(va, vb, pa));
-    } else {
-      const sa = JSON.stringify(va);
-      const sb = JSON.stringify(vb);
-      if (sa !== sb) out.push({ path: pa, a: va, b: vb });
-    }
-  }
-  return out;
+function check(name, ok, detail) {
+  return { name, ok, detail };
 }
 
 async function main() {
   const cookie = await login();
-  console.log('logged in');
-  const a = await collectSession(cookie, 'a');
-  console.log('session A', a.id, 'cdp', a.runtime.cdpPort, 'seed', a.fingerprint?.seed?.slice(0, 12));
-  const b = await collectSession(cookie, 'b');
-  console.log('session B', b.id, 'cdp', b.runtime.cdpPort, 'seed', b.fingerprint?.seed?.slice(0, 12));
+  await cleanup(cookie);
+  const samples = [];
+  const errors = [];
+  const allCases = [
+    ['offline', { webrtcMode: 'offline', deviceName: 'DESKTOP-OFFLINE', fontProfile: 'win10' }],
+    ['disabled', { webrtcMode: 'disabled', deviceName: 'DESKTOP-DISABLED' }],
+    ['disable-udp', { webrtcMode: 'disable-udp', deviceName: 'DESKTOP-NOUDP' }],
+    [
+      'replace-no-ip',
+      { webrtcMode: 'replace', deviceName: 'DESKTOP-REPLACE' },
+    ],
+    [
+      'media-geo',
+      {
+        webrtcMode: 'offline',
+        deviceName: 'DESKTOP-MEDIA01',
+        mediaDevices: {
+          audioInput: 'USB Audio Device',
+          audioOutput: 'NVIDIA High Definition Audio',
+          videoInput: 'HD Pro Webcam C920',
+        },
+        geo: { permission: 'allow', latitude: 31.23, longitude: 121.47, accuracy: 80 },
+      },
+    ],
+  ];
+  const wanted = new Set(
+    String(process.env.NYA_FP_CASES || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  const cases = wanted.size ? allCases.filter(([name]) => wanted.has(name)) : allCases;
+  for (const [name, payload] of cases) {
+    process.stderr.write(`collect ${name}\n`);
+    try {
+      samples.push(await collect(cookie, name, payload));
+    } catch (err) {
+      errors.push({ name, error: String(err.message || err) });
+      process.stderr.write(`  failed ${name}: ${err.message || err}\n`);
+      await cleanup(cookie);
+    }
+    await sleep(600);
+  }
 
-  const intra = diff(a.probe1, a.probe2).filter((d) => !d.path.startsWith('webrtc.candidates'));
-  const inter = diff(a.probe1, b.probe1);
+  const byName = Object.fromEntries(samples.map((s) => [s.name, s]));
+  const checks = [];
+  const offline = byName.offline;
+  if (offline) {
+    checks.push(check('offline-secure-origin', /example\.com/i.test(offline.page.href || ''), offline.page.href));
+    checks.push(check('offline-api', offline.page.webrtc?.rtcPeerConnection === true, offline.page.webrtc));
+    checks.push(check('offline-no-ice', (offline.page.webrtc?.candidateCount || 0) === 0, offline.page.webrtc));
+    checks.push(check('offline-no-sdp-ice', (offline.page.webrtc?.sdpCandidateCount || 0) === 0, offline.page.webrtc));
+    checks.push(check('offline-device-name', offline.stored.deviceName === 'DESKTOP-OFFLINE', offline.stored.deviceName));
+    const swiftshader = /SwiftShader/i.test(offline.page.unmaskedRenderer || '');
+    checks.push(
+      check(
+        'gpu-spoof',
+        swiftshader
+          ? !/RTX 2080/i.test(offline.page.unmaskedRenderer || '')
+          : /RTX 2080/i.test(offline.page.unmaskedRenderer || ''),
+        { renderer: offline.page.unmaskedRenderer, swiftshader },
+      ),
+    );
+    checks.push(
+      check(
+        'webgpu-js',
+        offline.page.webgpu?.hasNavigatorGpu === true,
+        offline.page.webgpu,
+      ),
+    );
+    checks.push(check('font-arial', offline.page.fonts?.arial === true, offline.page.fonts));
+    checks.push(check('font-calibri', offline.page.fonts?.calibri === true, offline.page.fonts));
+    checks.push(check('font-hide-noto-check', offline.page.fonts?.noto === false, offline.page.fonts));
+    checks.push(check('font-arial-metrics', offline.page.fonts?.arialInstalled === true, offline.page.fonts));
+    checks.push(check('font-hide-noto-metrics', offline.page.fonts?.notoInstalled === false, offline.page.fonts));
+  }
+  const disabled = byName.disabled;
+  if (disabled) {
+    checks.push(check('disabled-no-api', disabled.page.webrtc?.rtcPeerConnection === false, disabled.page.webrtc));
+  }
+  const noUdp = byName['disable-udp'];
+  if (noUdp) {
+    checks.push(check('disable-udp-api', noUdp.page.webrtc?.rtcPeerConnection === true, noUdp.page.webrtc));
+    checks.push(check('disable-udp-no-host', noUdp.page.webrtc?.hasPrivateIp !== true, noUdp.page.webrtc));
+  }
+  const replace = byName['replace-no-ip'];
+  if (replace) {
+    checks.push(check('replace-no-ip-no-leak', replace.page.webrtc?.hasPrivateIp !== true, replace.page.webrtc));
+  }
+  const mediaGeo = byName['media-geo'];
+  if (mediaGeo) {
+    const labels = (mediaGeo.page.media?.devices || []).map((d) => d.label);
+    checks.push(check('media-present', mediaGeo.page.media?.present === true, mediaGeo.page.media));
+    checks.push(check('media-mic', labels.includes('USB Audio Device'), labels));
+    checks.push(check('media-cam', labels.includes('HD Pro Webcam C920'), labels));
+    checks.push(check('geo-granted', mediaGeo.page.geo?.permission === 'granted', mediaGeo.page.geo));
+    const pos = mediaGeo.page.geo?.position || {};
+    checks.push(check('geo-lat', Math.abs((pos.latitude || 0) - 31.23) < 0.01, pos));
+    checks.push(check('geo-lng', Math.abs((pos.longitude || 0) - 121.47) < 0.01, pos));
+  }
 
   const report = {
-    sessionA: {
-      id: a.id,
-      fingerprint: a.fingerprint,
-      probe: pick(a.probe1, [
-        'hardwareConcurrency',
-        'deviceMemory',
-        'ua',
-        'platform',
-        'timezone',
-        'canvas',
-        'webgl',
-        'audio',
-        'webrtc',
-        'devices',
-        'worker',
-        'workerCtorToString',
-        'webgpu',
-        'fonts',
-        'clientRect',
-        'screen',
-      ]),
-      sites: a.sites,
-    },
-    sessionB: {
-      id: b.id,
-      fingerprint: b.fingerprint,
-      probe: pick(b.probe1, [
-        'hardwareConcurrency',
-        'deviceMemory',
-        'ua',
-        'platform',
-        'timezone',
-        'canvas',
-        'webgl',
-        'audio',
-        'webrtc',
-        'devices',
-        'worker',
-        'workerCtorToString',
-        'webgpu',
-        'fonts',
-        'clientRect',
-        'screen',
-      ]),
-      sites: b.sites,
-    },
-    sameSessionStable: intra,
-    crossSessionDiffs: inter.map((d) => d.path),
-    verdict: {
-      canvasChanged: a.probe1.canvas.dataUrlSha !== b.probe1.canvas.dataUrlSha,
-      audioChanged: a.probe1.audio.sha !== b.probe1.audio.sha,
-      webglPixelsChanged: a.probe1.webgl.readPixelsSha !== b.probe1.webgl.readPixelsSha,
-      canvasStableInSession: a.probe1.canvas.stable && intra.every((d) => !d.path.startsWith('canvas')),
-      webrtcBlocked:
-        a.probe1.webrtc.RTCPeerConnection === 'undefined' &&
-        b.probe1.webrtc.RTCPeerConnection === 'undefined',
-      workerSame: a.probe1.worker.sha && a.probe1.worker.sha === b.probe1.worker.sha,
-      workerHwMatchesWindow:
-        a.probe1.worker.hardwareConcurrency === a.probe1.hardwareConcurrency &&
-        b.probe1.worker.hardwareConcurrency === b.probe1.hardwareConcurrency,
-      workerHwNotHost64:
-        a.probe1.hardwareConcurrency !== 64 && b.probe1.hardwareConcurrency !== 64,
-      workerCtorNative: /\[native code\]/.test(String(a.probe1.workerCtorToString || '')),
-      webglRendererSame: a.probe1.webgl.unmaskedRenderer === b.probe1.webgl.unmaskedRenderer,
-      fontsSame: JSON.stringify(a.probe1.fonts) === JSON.stringify(b.probe1.fonts),
-      timezoneSame: a.probe1.timezone === b.probe1.timezone,
-      uaSame: a.probe1.ua === b.probe1.ua,
-    },
+    at: new Date().toISOString(),
+    ok: checks.every((c) => c.ok) && errors.length === 0,
+    checks,
+    errors,
+    samples: samples.map((s) => ({
+      name: s.name,
+      stored: {
+        webrtcMode: s.stored.webrtcMode,
+        deviceName: s.stored.deviceName,
+        gpuProfile: s.stored.gpuProfile,
+        mediaDevices: s.stored.mediaDevices,
+        geo: s.stored.geo,
+        fontProfile: s.stored.fontProfile,
+      },
+      page: s.page,
+    })),
   };
-
-  const v = report.verdict;
-  report.pass =
-    v.canvasChanged &&
-    v.audioChanged &&
-    v.webglPixelsChanged &&
-    v.canvasStableInSession &&
-    v.workerHwMatchesWindow &&
-    v.workerHwNotHost64 &&
-    v.workerCtorNative &&
-    !v.workerSame;
-
   console.log(JSON.stringify(report, null, 2));
-  if (!report.pass) {
-    throw new Error('native farbling e2e failed');
-  }
+  if (!report.ok) process.exit(1);
 }
 
 main().catch((err) => {

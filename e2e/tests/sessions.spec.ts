@@ -17,6 +17,12 @@ test('session crud description proxy homeUrl assignments', async () => {
       notepad: 'session notes',
       proxyId,
       timezone: 'UTC',
+      gpuProfile: 'rtx-2080',
+      webrtcMode: 'replace',
+      deviceName: 'DESKTOP-E2E01',
+      mediaDevices: { videoInput: 'USB Camera' },
+      geo: { permission: 'allow', latitude: 31.23, longitude: 121.47, accuracy: 80 },
+      fontProfile: 'win11',
       homeUrl: 'https://example.com/',
       idleTimeoutMinutes: 5,
     },
@@ -29,6 +35,15 @@ test('session crud description proxy homeUrl assignments', async () => {
   expect(session.proxyId).toBe(proxyId);
   expect(session.homeUrl).toContain('example.com');
   expect(session.timezone).toBe('UTC');
+  expect(session.fingerprint.gpuProfile).toBe('rtx-2080');
+  expect(session.fingerprint.webrtcMode).toBe('replace');
+  expect(session.fingerprint.deviceName).toBe('DESKTOP-E2E01');
+  expect(session.fingerprint.mediaDevices.videoInput).toBe('USB Camera');
+  expect(session.fingerprint.mediaDevices.audioInput).toBe('');
+  expect(session.fingerprint.mediaDevices.audioOutput).toBe('');
+  expect(session.fingerprint.geo.permission).toBe('allow');
+  expect(session.fingerprint.geo.latitude).toBe(31.23);
+  expect(session.fingerprint.fontProfile).toBe('win11');
   expect(session.idleTimeoutMinutes).toBe(5);
 
   const user = (
@@ -46,6 +61,15 @@ test('session crud description proxy homeUrl assignments', async () => {
   const list = (await assigned.json()).grants;
   expect(list[0].userId).toBe(user.id);
   expect(list[0].kind).toBe('session');
+
+  const nested = await admin.patch(`/api/sessions/${session.id}`, {
+    data: { fingerprint: { webrtcMode: 'offline', fontProfile: 'win10' } },
+  });
+  const nestedSession = (await nested.json()).session;
+  expect(nestedSession.fingerprint.webrtcMode).toBe('offline');
+  expect(nestedSession.fingerprint.fontProfile).toBe('win10');
+  expect(nestedSession.fingerprint.gpuProfile).toBe('rtx-2080');
+  expect(nestedSession.fingerprint.seed).toBe(session.fingerprint.seed);
 
   const patched = await admin.patch(`/api/sessions/${session.id}`, {
     data: { description: 'updated', notepad: 'updated notes', proxyId: null, idleTimeoutMinutes: 0 },

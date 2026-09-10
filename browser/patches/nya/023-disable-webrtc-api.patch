@@ -1,0 +1,42 @@
+--- a/third_party/blink/renderer/platform/runtime_enabled_features.json5
++++ b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+@@ -4315,6 +4315,10 @@
+       name: "NotifySelectionControllerOnUnchangedSelection",
+       status: "stable",
+     },
++    {
++      name: "NyaWebRTC",
++      status: "stable",
++    },
+     {
+       name: "NumberInputFullWidthChars",
+       status: "stable",
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.idl
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.idl
+@@ -64,7 +64,8 @@
+     ActiveScriptWrappable,
+     Exposed=Window,
+     LegacyWindowAlias=webkitRTCPeerConnection,
+-    LegacyWindowAlias_Measure
++    LegacyWindowAlias_Measure,
++    RuntimeEnabled=NyaWebRTC
+ ] interface RTCPeerConnection : EventTarget {
+     [CallWith=ExecutionContext, RaisesException] constructor(optional RTCConfiguration configuration = {});
+     [CallWith=ScriptState, RaisesException] Promise<RTCSessionDescriptionInit> createOffer(optional RTCOfferOptions options = {});
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+@@ -626,6 +626,11 @@
+     ExecutionContext* context,
+     const RTCConfiguration* rtc_configuration,
+     ExceptionState& exception_state) {
++  if (nya::GetWebrtcMode() == nya::WebrtcMode::kDisabled) {
++    exception_state.ThrowDOMException(
++        DOMExceptionCode::kNotSupportedError, "RTCPeerConnection is disabled.");
++    return nullptr;
++  }
+   if (context->IsContextDestroyed()) {
+     exception_state.ThrowDOMException(
+         DOMExceptionCode::kNotSupportedError,
+         "PeerConnections may not be created in detached documents.");
+     return nullptr;
+   }

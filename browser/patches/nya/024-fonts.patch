@@ -1,0 +1,102 @@
+--- a/third_party/blink/renderer/platform/fonts/font_cache.cc
++++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
+@@ -28,6 +28,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <unicode/uscript.h>
+ 
+@@ -164,6 +165,13 @@
+     return SystemFontPlatformData(font_description);
+   }
+ #endif
++
++  if (nya::HasFontSpoof() &&
++      creation_params.CreationType() == kCreateFontByFamily &&
++      !nya::AllowsFontFamily(creation_params.Family().Utf8())) {
++    return nullptr;
++  }
+ 
+   return font_platform_data_cache_.GetOrCreateFontPlatformData(
+       this, font_description, creation_params, alternate_font_name);
+@@ -198,6 +206,9 @@
+ bool FontCache::IsPlatformFamilyMatchAvailable(
+     const FontDescription& font_description,
+     const AtomicString& family) {
++  if (nya::HasFontSpoof() && !nya::AllowsFontFamily(family.Utf8())) {
++    return false;
++  }
+   return GetFontPlatformData(
+       font_description,
+       FontFaceCreationParams(AdjustFamilyNameToAvoidUnsupportedFonts(family)),
+@@ -218,6 +226,10 @@
+   if (unique_font_name.empty()) {
+     return false;
+   }
++  if (nya::HasFontSpoof() &&
++      !nya::AllowsFontFamily(unique_font_name.Utf8())) {
++    return false;
++  }
+ 
+   return GetFontPlatformData(font_description,
+--- a/third_party/blink/renderer/modules/font_access/font_access.cc
++++ b/third_party/blink/renderer/modules/font_access/font_access.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/modules/font_access/font_access.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <algorithm>
+ 
+@@ -70,6 +71,27 @@
+     const QueryOptions* options,
+     ExceptionState& exception_state) {
++  if (nya::HasFontSpoof() && script_state->ContextIsValid()) {
++    auto* resolver =
++        MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<FontMetadata>>>(
++            script_state, exception_state.GetContext());
++    HeapVector<Member<FontMetadata>> entries;
++    for (const auto& family : nya::SpoofedFontFamilies()) {
++      String name = String::FromUtf8(family);
++      String postscript = String::FromUtf8(nya::FontPostscriptName(family));
++      entries.push_back(FontMetadata::Create(FontEnumerationEntry{
++          .postscript_name = postscript,
++          .full_name = name,
++          .family = name,
++          .style = "Regular",
++      }));
++    }
++    resolver->Resolve(std::move(entries));
++    return resolver->Promise();
++  }
+   if (!base::FeatureList::IsEnabled(blink::features::kFontAccess)) {
+     exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                       "Font Access feature is not supported.");
+--- a/third_party/blink/renderer/core/css/font_face_set.cc
++++ b/third_party/blink/renderer/core/css/font_face_set.cc
+@@ -12,6 +12,7 @@
+ #include "third_party/blink/renderer/platform/font_family_names.h"
+ #include "third_party/blink/renderer/platform/fonts/font.h"
+ #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/wtf/functional.h"
+ #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+ 
+@@ -245,6 +246,16 @@
+     return false;
+   }
+ 
++  if (nya::HasFontSpoof()) {
++    for (const FontFamily* f = &font->GetFontDescription().Family(); f;
++         f = f->Next()) {
++      if (!f->FamilyIsGeneric() &&
++          !nya::AllowsFontFamily(f->FamilyName().Utf8())) {
++        return false;
++      }
++    }
++  }
++
+   FontSelector* font_selector = GetFontSelector();
+   FontFaceCache* font_face_cache = font_selector->GetFontFaceCache();

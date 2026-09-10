@@ -2,7 +2,7 @@ diff --git a/third_party/blink/renderer/platform/nya/nya_farbling.h b/third_part
 new file mode 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/platform/nya/nya_farbling.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,80 @@
 +// Copyright 2026 Nya Browser
 +// Use of this source code is governed by a BSD-style license.
 +
@@ -12,11 +12,35 @@ new file mode 100644
 +#include <cstddef>
 +#include <cstdint>
 +#include <optional>
++#include <string>
++#include <vector>
 +
 +#include "base/containers/span.h"
 +#include "third_party/blink/renderer/platform/platform_export.h"
 +
 +namespace nya {
++
++enum class WebrtcMode {
++  kOffline,
++  kDisabled,
++  kDisableUdp,
++  kReplace,
++  kForward,
++};
++
++struct WebGpuInfo {
++  std::string vendor;
++  std::string architecture;
++  std::string device;
++  std::string description;
++};
++
++struct MediaDeviceSpoof {
++  std::string device_id;
++  std::string label;
++  std::string group_id;
++  std::string kind;  // audioinput | audiooutput | videoinput
++};
 +
 +// True when --nya-fp-seed is set on this process.
 +PLATFORM_EXPORT bool HasSeed();
@@ -31,6 +55,31 @@ new file mode 100644
 +PLATFORM_EXPORT std::optional<unsigned> HardwareConcurrency();
 +PLATFORM_EXPORT std::optional<float> DeviceMemory();
 +
++// Rewrite an NVIDIA ANGLE renderer string in place. Leaves non-NVIDIA
++// renderers (SwiftShader, etc.) unchanged and keeps the host GL / driver
++// suffix so the claimed card stays on the real driver.
++PLATFORM_EXPORT std::string MaybeSpoofUnmaskedRenderer(const std::string& real);
++
++PLATFORM_EXPORT std::optional<WebGpuInfo> MaybeSpoofWebGpu(
++    const std::string& real_vendor,
++    const std::string& real_description);
++
++PLATFORM_EXPORT WebrtcMode GetWebrtcMode();
++PLATFORM_EXPORT bool WebrtcForcesGoogleStun();
++// nullopt = leave candidate; empty string = drop.
++PLATFORM_EXPORT std::optional<std::string> MaybeRewriteIceCandidate(
++    const std::string& sdp);
++// Rewrites every a=candidate line. Identity if nothing changes.
++PLATFORM_EXPORT std::string MaybeRewriteSdp(const std::string& sdp);
++
++PLATFORM_EXPORT const std::string& DeviceName();
++PLATFORM_EXPORT std::vector<MediaDeviceSpoof> SpoofedMediaDevices();
++
++PLATFORM_EXPORT bool HasFontSpoof();
++PLATFORM_EXPORT bool AllowsFontFamily(const std::string& family);
++PLATFORM_EXPORT const std::vector<std::string>& SpoofedFontFamilies();
++PLATFORM_EXPORT std::string FontPostscriptName(const std::string& family);
++
 +}  // namespace nya
 +
 +#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_NYA_NYA_FARBLING_H_
@@ -38,7 +87,7 @@ diff --git a/third_party/blink/renderer/platform/nya/nya_farbling.cc b/third_par
 new file mode 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/platform/nya/nya_farbling.cc
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,730 @@
 +// Copyright 2026 Nya Browser
 +// Use of this source code is governed by a BSD-style license.
 +//
@@ -49,9 +98,13 @@ new file mode 100644
 +#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
 +
 +#include <algorithm>
++#include <cctype>
 +#include <cstdint>
++#include <cstdio>
 +#include <limits>
 +#include <string>
++#include <unordered_set>
++#include <vector>
 +
 +#include "base/command_line.h"
 +#include "base/strings/string_number_conversions.h"
@@ -65,7 +118,46 @@ new file mode 100644
 +  uint64_t seed = 1;
 +  std::optional<unsigned> hardware_concurrency;
 +  std::optional<float> device_memory;
++  std::optional<std::string> gpu_model;
++  std::optional<std::string> gpu_device_id;
++  std::optional<std::string> gpu_arch;
++  WebrtcMode webrtc_mode = WebrtcMode::kDisabled;
++  std::string webrtc_public_ip;
++  std::string device_name;
++  std::string media_audio_in;
++  std::string media_audio_out;
++  std::string media_video;
++  bool has_fonts = false;
++  std::vector<std::string> fonts;
++  std::unordered_set<std::string> font_set;
 +};
++
++bool ValidGpuModel(const std::string& model) {
++  if (model.size() < 8 || model.size() > 48) {
++    return false;
++  }
++  if (model.compare(0, 8, "GeForce ") != 0) {
++    return false;
++  }
++  for (char c : model) {
++    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == ' ')) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool ValidGpuDeviceId(const std::string& id) {
++  if (id.size() < 4 || id.size() > 8) {
++    return false;
++  }
++  for (char c : id) {
++    if (!std::isxdigit(static_cast<unsigned char>(c))) {
++      return false;
++    }
++  }
++  return true;
++}
 +
 +uint64_t ParseSeed(const std::string& hex) {
 +  uint64_t value = 0;
@@ -102,7 +194,7 @@ new file mode 100644
 +      unsigned value = 0;
 +      if (base::StringToUint(
 +              cmd->GetSwitchValueASCII(switches::kNyaHwConcurrency), &value) &&
-+          value > 0) {
++          value > 0 && value <= 256) {
 +        out.hardware_concurrency = value;
 +      }
 +    }
@@ -110,13 +202,154 @@ new file mode 100644
 +      double value = 0;
 +      if (base::StringToDouble(
 +              cmd->GetSwitchValueASCII(switches::kNyaDeviceMemory), &value) &&
-+          value > 0) {
++          value > 0 && value <= 32) {
 +        out.device_memory = static_cast<float>(value);
++      }
++    }
++    if (cmd->HasSwitch(switches::kNyaGpuModel)) {
++      const std::string model = cmd->GetSwitchValueASCII(switches::kNyaGpuModel);
++      if (ValidGpuModel(model)) {
++        out.gpu_model = model;
++      }
++    }
++    if (cmd->HasSwitch(switches::kNyaGpuDeviceId)) {
++      std::string id = cmd->GetSwitchValueASCII(switches::kNyaGpuDeviceId);
++      if (id.size() > 2 && (id[0] == '0') && (id[1] == 'x' || id[1] == 'X')) {
++        id = id.substr(2);
++      }
++      if (ValidGpuDeviceId(id)) {
++        for (char& c : id) {
++          c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
++        }
++        out.gpu_device_id = id;
++      }
++    }
++    if (cmd->HasSwitch(switches::kNyaGpuArch)) {
++      std::string arch = cmd->GetSwitchValueASCII(switches::kNyaGpuArch);
++      for (char& c : arch) {
++        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++      }
++      if (arch == "pascal" || arch == "turing" || arch == "ampere" ||
++          arch == "ada") {
++        out.gpu_arch = arch;
++      }
++    }
++    if (cmd->HasSwitch(switches::kNyaWebrtcMode)) {
++      const std::string mode = cmd->GetSwitchValueASCII(switches::kNyaWebrtcMode);
++      if (mode == "disabled") {
++        out.webrtc_mode = WebrtcMode::kDisabled;
++      } else if (mode == "disable-udp") {
++        out.webrtc_mode = WebrtcMode::kDisableUdp;
++      } else if (mode == "replace") {
++        out.webrtc_mode = WebrtcMode::kReplace;
++      } else if (mode == "forward") {
++        out.webrtc_mode = WebrtcMode::kForward;
++      } else {
++        out.webrtc_mode = WebrtcMode::kOffline;
++      }
++    }
++    if (cmd->HasSwitch(switches::kNyaWebrtcPublicIp)) {
++      const std::string ip = cmd->GetSwitchValueASCII(switches::kNyaWebrtcPublicIp);
++      int a = 0, b = 0, c = 0, d = 0, n = 0;
++      if (std::sscanf(ip.c_str(), "%d.%d.%d.%d%n", &a, &b, &c, &d, &n) == 4 &&
++          n > 0 && static_cast<size_t>(n) == ip.size() && a >= 0 && a <= 255 &&
++          b >= 0 && b <= 255 && c >= 0 && c <= 255 && d >= 0 && d <= 255) {
++        out.webrtc_public_ip = ip;
++      }
++    }
++    if (cmd->HasSwitch(switches::kNyaDeviceName)) {
++      std::string name = cmd->GetSwitchValueASCII(switches::kNyaDeviceName);
++      bool ok = !name.empty() && name.size() <= 32;
++      for (char ch : name) {
++        if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' ||
++              ch == '.' || ch == '_')) {
++          ok = false;
++          break;
++        }
++      }
++      if (ok) {
++        out.device_name = name;
++      }
++    }
++    if (cmd->HasSwitch(switches::kNyaMediaAudioIn)) {
++      out.media_audio_in = cmd->GetSwitchValueASCII(switches::kNyaMediaAudioIn);
++    }
++    if (cmd->HasSwitch(switches::kNyaMediaAudioOut)) {
++      out.media_audio_out = cmd->GetSwitchValueASCII(switches::kNyaMediaAudioOut);
++    }
++    if (cmd->HasSwitch(switches::kNyaMediaVideo)) {
++      out.media_video = cmd->GetSwitchValueASCII(switches::kNyaMediaVideo);
++    }
++    if (cmd->HasSwitch(switches::kNyaFonts)) {
++      out.has_fonts = true;
++      const std::string raw = cmd->GetSwitchValueASCII(switches::kNyaFonts);
++      std::string cur;
++      auto flush = [&]() {
++        while (!cur.empty() && cur.front() == ' ') {
++          cur.erase(cur.begin());
++        }
++        while (!cur.empty() && cur.back() == ' ') {
++          cur.pop_back();
++        }
++        if (cur.empty() || cur.size() > 80) {
++          cur.clear();
++          return;
++        }
++        out.fonts.push_back(cur);
++        std::string key = cur;
++        for (char& c : key) {
++          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++        }
++        out.font_set.insert(key);
++        cur.clear();
++      };
++      for (char c : raw) {
++        if (c == '|') {
++          flush();
++        } else {
++          cur += c;
++        }
++      }
++      flush();
++      if (out.fonts.empty()) {
++        out.has_fonts = false;
 +      }
 +    }
 +    return out;
 +  }();
 +  return config;
++}
++
++std::string ReplaceIpv4(const std::string& input, const std::string& ip) {
++  std::string out;
++  out.reserve(input.size());
++  size_t i = 0;
++  while (i < input.size()) {
++    if (std::isdigit(static_cast<unsigned char>(input[i]))) {
++      int a = 0, b = 0, c = 0, d = 0, n = 0;
++      if (std::sscanf(input.c_str() + i, "%d.%d.%d.%d%n", &a, &b, &c, &d, &n) ==
++              4 &&
++          n > 0 && a >= 0 && a <= 255 && b >= 0 && b <= 255 && c >= 0 &&
++          c <= 255 && d >= 0 && d <= 255) {
++        out += ip;
++        i += static_cast<size_t>(n);
++        continue;
++      }
++    }
++    out += input[i];
++    i += 1;
++  }
++  return out;
++}
++
++std::string HexId(uint64_t seed, uint64_t salt) {
++  char buf[33];
++  uint64_t a = seed ^ (salt * 0x9E3779B97F4A7C15ULL);
++  uint64_t b = seed * 6364136223846793005ULL + salt;
++  std::snprintf(buf, sizeof(buf), "%016llx%016llx",
++                static_cast<unsigned long long>(a),
++                static_cast<unsigned long long>(b));
++  return std::string(buf, 32);
 +}
 +
 +uint32_t Lcg(uint32_t& state) {
@@ -167,6 +400,421 @@ new file mode 100644
 +
 +std::optional<float> DeviceMemory() {
 +  return GetConfig().device_memory;
++}
++
++std::string MaybeSpoofUnmaskedRenderer(const std::string& real) {
++  const auto& model = GetConfig().gpu_model;
++  if (!model || real.find("NVIDIA") == std::string::npos) {
++    return real;
++  }
++
++  size_t prod = real.find("NVIDIA GeForce ");
++  if (prod == std::string::npos) {
++    prod = real.find("NVIDIA TITAN ");
++  }
++  if (prod == std::string::npos) {
++    return real;
++  }
++
++  size_t name_end = real.find_first_of("/,(", prod + 8);
++  if (name_end == std::string::npos) {
++    name_end = real.size();
++  }
++  while (name_end > prod && real[name_end - 1] == ' ') {
++    --name_end;
++  }
++
++  std::string out = real;
++  const std::string replacement = std::string("NVIDIA ") + *model;
++  out.replace(prod, name_end - prod, replacement);
++
++  const size_t after = prod + replacement.size();
++  if (after < out.size()) {
++    const size_t open = out.find("(0x", after);
++    const bool pci_follows =
++        open != std::string::npos && open <= after + 2 &&
++        (open == after || (open == after + 1 && out[after] == ' '));
++    if (pci_follows) {
++      const size_t close = out.find(')', open);
++      if (close != std::string::npos) {
++        if (GetConfig().gpu_device_id) {
++          out.replace(open, close - open + 1,
++                      std::string("(0x") + *GetConfig().gpu_device_id + ")");
++        } else {
++          const size_t del_from =
++              (open > 0 && out[open - 1] == ' ') ? open - 1 : open;
++          out.erase(del_from, close - del_from + 1);
++        }
++      }
++    }
++  }
++  return out;
++}
++
++std::optional<WebGpuInfo> MaybeSpoofWebGpu(const std::string& real_vendor,
++                                           const std::string& real_description) {
++  const auto& model = GetConfig().gpu_model;
++  if (!model) {
++    return std::nullopt;
++  }
++  std::string blob = real_vendor + " " + real_description;
++  for (char& c : blob) {
++    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++  }
++  if (blob.find("swiftshader") != std::string::npos ||
++      blob.find("llvmpipe") != std::string::npos) {
++    return std::nullopt;
++  }
++  if (blob.find("nvidia") == std::string::npos) {
++    return std::nullopt;
++  }
++  WebGpuInfo info;
++  info.vendor = "nvidia";
++  info.architecture = GetConfig().gpu_arch.value_or("");
++  if (GetConfig().gpu_device_id) {
++    std::string id = *GetConfig().gpu_device_id;
++    for (char& c : id) {
++      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++    }
++    info.device = std::string("0x") + id;
++  }
++  info.description = std::string("NVIDIA ") + *model;
++  return info;
++}
++
++WebrtcMode GetWebrtcMode() {
++  return GetConfig().webrtc_mode;
++}
++
++bool WebrtcForcesGoogleStun() {
++  return GetConfig().webrtc_mode == WebrtcMode::kForward;
++}
++
++std::string ReplaceMdnsName(const std::string& input, const std::string& name) {
++  if (name.empty()) {
++    return input;
++  }
++  const std::string suffix = ".local";
++  std::string out;
++  out.reserve(input.size());
++  size_t i = 0;
++  while (i < input.size()) {
++    const size_t pos = input.find(suffix, i);
++    if (pos == std::string::npos) {
++      out.append(input, i, std::string::npos);
++      break;
++    }
++    size_t start = pos;
++    while (start > i) {
++      const unsigned char prev = static_cast<unsigned char>(input[start - 1]);
++      if (!(std::isalnum(prev) || prev == '-' || prev == '.')) {
++        break;
++      }
++      --start;
++    }
++    out.append(input, i, start - i);
++    out += name;
++    out += suffix;
++    i = pos + suffix.size();
++  }
++  return out;
++}
++
++std::string ReplaceMdnsWithAddress(const std::string& input,
++                                   const std::string& address) {
++  if (address.empty()) {
++    return input;
++  }
++  const std::string suffix = ".local";
++  std::string out;
++  out.reserve(input.size());
++  size_t i = 0;
++  while (i < input.size()) {
++    const size_t pos = input.find(suffix, i);
++    if (pos == std::string::npos) {
++      out.append(input, i, std::string::npos);
++      break;
++    }
++    size_t start = pos;
++    while (start > i) {
++      const unsigned char prev = static_cast<unsigned char>(input[start - 1]);
++      if (!(std::isalnum(prev) || prev == '-' || prev == '.')) {
++        break;
++      }
++      --start;
++    }
++    out.append(input, i, start - i);
++    out += address;
++    i = pos + suffix.size();
++  }
++  return out;
++}
++
++bool LooksLikeIpv6Candidate(const std::string& sdp) {
++  return sdp.find(':') != std::string::npos &&
++         sdp.find('.') == std::string::npos &&
++         sdp.find(".local") == std::string::npos;
++}
++
++bool CandidateHasToken(const std::string& sdp, const char* token) {
++  std::string lower = sdp;
++  for (char& c : lower) {
++    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++  }
++  return lower.find(token) != std::string::npos;
++}
++
++bool HasPrivateIpv4(const std::string& sdp) {
++  size_t i = 0;
++  while (i < sdp.size()) {
++    if (!std::isdigit(static_cast<unsigned char>(sdp[i]))) {
++      i += 1;
++      continue;
++    }
++    int a = 0, b = 0, c = 0, d = 0, n = 0;
++    if (std::sscanf(sdp.c_str() + i, "%d.%d.%d.%d%n", &a, &b, &c, &d, &n) == 4 &&
++        n > 0 && a >= 0 && a <= 255 && b >= 0 && b <= 255 && c >= 0 &&
++        c <= 255 && d >= 0 && d <= 255) {
++      if (a == 10 || a == 127 || (a == 192 && b == 168) ||
++          (a == 172 && b >= 16 && b <= 31)) {
++        return true;
++      }
++      i += static_cast<size_t>(n);
++      continue;
++    }
++    i += 1;
++  }
++  return false;
++}
++
++bool LooksLocalCandidate(const std::string& sdp) {
++  return sdp.find(".local") != std::string::npos ||
++         CandidateHasToken(sdp, " typ host") || HasPrivateIpv4(sdp);
++}
++
++std::optional<std::string> DropLeakyOrNull(const std::string& sdp) {
++  if (CandidateHasToken(sdp, " typ host") ||
++      CandidateHasToken(sdp, " typ srflx") || LooksLocalCandidate(sdp)) {
++    return std::string();
++  }
++  return std::nullopt;
++}
++
++std::optional<std::string> MaybeRewriteIceCandidate(const std::string& sdp) {
++  const WebrtcMode mode = GetConfig().webrtc_mode;
++  if (mode == WebrtcMode::kOffline || mode == WebrtcMode::kDisabled) {
++    return std::string();
++  }
++  if (mode == WebrtcMode::kDisableUdp) {
++    if (CandidateHasToken(sdp, " udp ") || CandidateHasToken(sdp, " typ host") ||
++        CandidateHasToken(sdp, " typ srflx") || LooksLocalCandidate(sdp)) {
++      return std::string();
++    }
++    if (!DeviceName().empty() && sdp.find(".local") != std::string::npos) {
++      return ReplaceMdnsName(sdp, DeviceName());
++    }
++    return std::nullopt;
++  }
++  if (mode != WebrtcMode::kReplace && mode != WebrtcMode::kForward) {
++    return std::nullopt;
++  }
++  if (GetConfig().webrtc_public_ip.empty()) {
++    if (!DeviceName().empty() && sdp.find(".local") != std::string::npos) {
++      return ReplaceMdnsName(sdp, DeviceName());
++    }
++    return DropLeakyOrNull(sdp);
++  }
++  if (LooksLikeIpv6Candidate(sdp)) {
++    return std::string();
++  }
++  std::string out = ReplaceIpv4(sdp, GetConfig().webrtc_public_ip);
++  if (out.find(".local") != std::string::npos) {
++    out = ReplaceMdnsWithAddress(out, GetConfig().webrtc_public_ip);
++  }
++  if (out == sdp) {
++    return std::nullopt;
++  }
++  return out;
++}
++
++std::string RewriteOriginLine(const std::string& line) {
++  const std::string& ip = GetConfig().webrtc_public_ip;
++  const std::string& host = DeviceName();
++  if (ip.empty() && host.empty()) {
++    return line;
++  }
++  if (line.rfind("c=IN IP4 ", 0) == 0 || line.rfind("o=", 0) == 0) {
++    if (line.find("0.0.0.0") != std::string::npos) {
++      return line;
++    }
++    if (HasPrivateIpv4(line) && !ip.empty()) {
++      return ReplaceIpv4(line, ip);
++    }
++    if (line.find(".local") != std::string::npos && !ip.empty()) {
++      return ReplaceMdnsWithAddress(line, ip);
++    }
++    if (line.find(".local") != std::string::npos && !host.empty()) {
++      return ReplaceMdnsName(line, host);
++    }
++  }
++  return line;
++}
++
++std::string MaybeRewriteSdp(const std::string& sdp) {
++  std::string out;
++  out.reserve(sdp.size());
++  size_t i = 0;
++  bool changed = false;
++  const WebrtcMode mode = GetConfig().webrtc_mode;
++  while (i < sdp.size()) {
++    size_t end = sdp.find('\n', i);
++    if (end == std::string::npos) {
++      end = sdp.size();
++    }
++    std::string line = sdp.substr(i, end - i);
++    const bool cr = !line.empty() && line.back() == '\r';
++    if (cr) {
++      line.pop_back();
++    }
++    const bool candidate =
++        line.rfind("a=candidate:", 0) == 0 || line.rfind("candidate:", 0) == 0;
++    if (candidate) {
++      // Never rewrite remote public/relay lines. Offline/disabled still drop
++      // every candidate (those modes are not meant to connect).
++      const bool rewrite_remote_safe =
++          mode == WebrtcMode::kOffline || mode == WebrtcMode::kDisabled ||
++          LooksLocalCandidate(line);
++      if (rewrite_remote_safe) {
++        if (auto rewritten = MaybeRewriteIceCandidate(line)) {
++          changed = true;
++          if (!rewritten->empty()) {
++            out += *rewritten;
++            if (cr) {
++              out += '\r';
++            }
++            if (end < sdp.size()) {
++              out += '\n';
++            }
++          }
++          i = end < sdp.size() ? end + 1 : end;
++          continue;
++        }
++      }
++    } else {
++      const std::string origin = RewriteOriginLine(line);
++      if (origin != line) {
++        changed = true;
++        out += origin;
++        if (cr) {
++          out += '\r';
++        }
++        if (end < sdp.size()) {
++          out += '\n';
++        }
++        i = end < sdp.size() ? end + 1 : end;
++        continue;
++      }
++    }
++    out.append(sdp, i, end - i);
++    if (end < sdp.size()) {
++      out += '\n';
++    }
++    i = end < sdp.size() ? end + 1 : end;
++  }
++  return changed ? out : sdp;
++}
++
++const std::string& DeviceName() {
++  return GetConfig().device_name;
++}
++
++std::vector<MediaDeviceSpoof> SpoofedMediaDevices() {
++  const Config& cfg = GetConfig();
++  if (cfg.media_audio_in.empty() && cfg.media_audio_out.empty() &&
++      cfg.media_video.empty()) {
++    return {};
++  }
++  std::vector<MediaDeviceSpoof> out;
++  const std::string group = HexId(cfg.seed, 7);
++  auto add = [&](const std::string& label, const std::string& kind, uint64_t salt) {
++    if (label.empty()) {
++      return;
++    }
++    MediaDeviceSpoof row;
++    row.device_id = HexId(cfg.seed, salt);
++    row.label = label;
++    row.group_id = group;
++    row.kind = kind;
++    out.push_back(row);
++  };
++  add(cfg.media_audio_in, "audioinput", 11);
++  add(cfg.media_video, "videoinput", 13);
++  add(cfg.media_audio_out, "audiooutput", 17);
++  return out;
++}
++
++namespace {
++
++bool GenericFamilyName(const std::string& lower) {
++  return lower == "serif" || lower == "sans-serif" || lower == "monospace" ||
++         lower == "cursive" || lower == "fantasy" || lower == "system-ui" ||
++         lower == "emoji" || lower == "math" || lower == "fangsong" ||
++         lower == "ui-serif" || lower == "ui-sans-serif" ||
++         lower == "ui-monospace" || lower == "ui-rounded" ||
++         lower == "-webkit-body" || lower == "-webkit-standard" ||
++         lower == "-webkit-pictograph";
++}
++
++std::string LowerCopy(const std::string& in) {
++  std::string out = in;
++  for (char& c : out) {
++    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++  }
++  return out;
++}
++
++}  // namespace
++
++bool HasFontSpoof() {
++  return GetConfig().has_fonts;
++}
++
++bool AllowsFontFamily(const std::string& family) {
++  if (!GetConfig().has_fonts) {
++    return true;
++  }
++  const std::string key = LowerCopy(family);
++  if (key.empty() || GenericFamilyName(key)) {
++    return true;
++  }
++  return GetConfig().font_set.contains(key);
++}
++
++const std::vector<std::string>& SpoofedFontFamilies() {
++  return GetConfig().fonts;
++}
++
++std::string FontPostscriptName(const std::string& family) {
++  if (family == "Arial") {
++    return "ArialMT";
++  }
++  if (family == "Times New Roman") {
++    return "TimesNewRomanPSMT";
++  }
++  if (family == "Courier New") {
++    return "CourierNewPSMT";
++  }
++  if (family == "Calibri") {
++    return "Calibri";
++  }
++  std::string out;
++  out.reserve(family.size());
++  for (char c : family) {
++    if (c != ' ') {
++      out += c;
++    }
++  }
++  return out.empty() ? family : out;
 +}
 +
 +}  // namespace nya

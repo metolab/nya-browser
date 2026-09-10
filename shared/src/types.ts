@@ -1,4 +1,8 @@
+import type { GeoConfig } from './geo.js';
+import type { MediaDevicePreset } from './mediaDevices.js';
 import { emptyProxyExtra, type ProxyExtra, type ProxyType, type ProxyTypeOrNone } from './proxy.js';
+import type { FontProfile } from './fontProfiles.js';
+import type { WebrtcMode } from './webrtc.js';
 
 export type Role = 'admin' | 'user';
 
@@ -6,6 +10,12 @@ export interface FingerprintConfig {
   seed: string;
   hardwareConcurrency: number;
   deviceMemory: number;
+  gpuProfile: string;
+  webrtcMode: WebrtcMode;
+  deviceName: string;
+  mediaDevices: MediaDevicePreset;
+  geo: GeoConfig;
+  fontProfile: FontProfile;
 }
 
 export interface ProxyConfig {

@@ -3,6 +3,8 @@
 // renderers from IdleDetector / page lifecycle.
 import http from 'http';
 import WebSocket from 'ws';
+import { geoHasCoordinates } from '@nya/shared';
+import { getSession } from '../store.js';
 import { TAMPERMONKEY_ID, isTampermonkeyIntroUrl, resolveTampermonkeyDir } from './tampermonkey.js';
 
 type TargetInfo = {
@@ -121,17 +123,83 @@ function rejectAll(state: LifecycleState, err: Error) {
   state.pending.clear();
 }
 
-function activateSession(state: LifecycleState, sessionId: string) {
+function originFromUrl(url?: string) {
+  try {
+    const parsed = new URL(String(url || ''));
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.origin;
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
+function applyGeolocation(
+  state: LifecycleState,
+  cdpSessionId: string,
+  nyaSessionId: string,
+  pageUrl?: string,
+) {
+  let geo;
+  try {
+    geo = getSession(nyaSessionId)?.fingerprint?.geo;
+  } catch {
+    return;
+  }
+  if (!geo) return;
+  const origin = originFromUrl(pageUrl);
+  if (geo.permission === 'block') {
+    send(state, { sessionId: cdpSessionId, method: 'Emulation.clearGeolocationOverride' });
+    if (origin) {
+      send(state, {
+        method: 'Browser.setPermission',
+        params: {
+          permission: { name: 'geolocation' },
+          setting: 'denied',
+          origin,
+        },
+      });
+    }
+    return;
+  }
+  if (geoHasCoordinates(geo)) {
+    send(state, {
+      sessionId: cdpSessionId,
+      method: 'Emulation.setGeolocationOverride',
+      params: {
+        latitude: geo.latitude,
+        longitude: geo.longitude,
+        accuracy: geo.accuracy || 100,
+      },
+    });
+  }
+  if (geo.permission === 'allow' && geoHasCoordinates(geo) && origin) {
+    send(state, {
+      method: 'Browser.grantPermissions',
+      params: {
+        permissions: ['geolocation'],
+        origin,
+      },
+    });
+  }
+}
+
+function activateSession(
+  state: LifecycleState,
+  cdpSessionId: string,
+  nyaSessionId: string,
+  pageUrl?: string,
+) {
   send(state, {
-    sessionId,
+    sessionId: cdpSessionId,
     method: 'Page.setWebLifecycleState',
     params: { state: 'active' },
   });
   send(state, {
-    sessionId,
+    sessionId: cdpSessionId,
     method: 'Emulation.setIdleOverride',
     params: { isUserActive: true, isScreenUnlocked: true },
   });
+  applyGeolocation(state, cdpSessionId, nyaSessionId, pageUrl);
 }
 
 function isPageTarget(info?: TargetInfo) {
@@ -263,7 +331,7 @@ function connectBrowser(sessionId: string, url: string) {
         if (maybeCloseIntro(state, info)) return;
         if (!session || !isPageTarget(info)) return;
         state.sessions.add(session);
-        activateSession(state, session);
+        activateSession(state, session, sessionId, info?.url);
         return;
       }
       if (msg.method === 'Target.detachedFromTarget') {
@@ -275,6 +343,11 @@ function connectBrowser(sessionId: string, url: string) {
         if (maybeCloseIntro(state, info)) return;
         if (msg.method === 'Target.targetCreated' && isPageTarget(info)) {
           attachPage(state, info?.targetId);
+        }
+        if (msg.method === 'Target.targetInfoChanged' && isPageTarget(info)) {
+          for (const cdpSession of state.sessions) {
+            applyGeolocation(state, cdpSession, sessionId, info?.url);
+          }
         }
         return;
       }

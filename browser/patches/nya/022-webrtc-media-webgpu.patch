@@ -1,0 +1,160 @@
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+@@ -15,6 +15,7 @@
+ #include "third_party/blink/renderer/modules/webgpu/gpu.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter_info.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_device.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_device_lost_info.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_memory_heap_info.h"
+@@ -114,6 +115,21 @@
+   subgroup_min_size_ = info.subgroupMinSize;
+   subgroup_max_size_ = info.subgroupMaxSize;
+   power_preference_ = powerProperties.powerPreference;
++  if (auto spoof = nya::MaybeSpoofWebGpu(vendor_.Utf8(), description_.Utf8())) {
++    if (!spoof->vendor.empty()) {
++      vendor_ = String::FromUtf8(spoof->vendor);
++    }
++    if (!spoof->architecture.empty()) {
++      architecture_ = String::FromUtf8(spoof->architecture);
++    }
++    if (!spoof->device.empty()) {
++      device_ = String::FromUtf8(spoof->device);
++    }
++    if (!spoof->description.empty()) {
++      description_ = String::FromUtf8(spoof->description);
++    }
++  }
+ 
+   features_ = MakeFeatureNameSet(GetHandle());
+ 
+@@ -144,6 +160,11 @@
+     for (const auto& m : memory_heaps_span) {
+       info->AppendMemoryHeapInfo(MakeGarbageCollected<GPUMemoryHeapInfo>(m));
+     }
+-  } else {
++  } else if (nya::MaybeSpoofWebGpu(vendor_.Utf8(), description_.Utf8())) {
++    info = MakeGarbageCollected<GPUAdapterInfo>(
++        vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
++        is_fallback_adapter, device_, description_);
++  } else {
+     info = MakeGarbageCollected<GPUAdapterInfo>(
+         vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
+--- a/third_party/blink/renderer/modules/mediastream/media_devices.cc
++++ b/third_party/blink/renderer/modules/mediastream/media_devices.cc
+@@ -53,6 +53,7 @@
+ #include "third_party/blink/renderer/core/html/html_element.h"
+ #include "third_party/blink/renderer/modules/mediastream/crop_target.h"
+ #include "third_party/blink/renderer/modules/mediastream/input_device_info.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/modules/mediastream/media_stream.h"
+ #include "third_party/blink/renderer/modules/mediastream/navigator_media_stream.h"
+ #include "third_party/blink/renderer/modules/mediastream/restriction_target.h"
+@@ -1484,6 +1485,38 @@
+       }
+     }
+   }
++  const std::vector<nya::MediaDeviceSpoof> spoofed = nya::SpoofedMediaDevices();
++  if (!spoofed.empty()) {
++    HeapVector<Member<MediaDeviceInfo>> overlaid;
++    for (auto& device : media_devices) {
++      mojom::blink::MediaDeviceType device_type = device->DeviceType();
++      std::string kind = "audiooutput";
++      if (device_type == mojom::blink::MediaDeviceType::kMediaAudioInput) {
++        kind = "audioinput";
++      } else if (device_type == mojom::blink::MediaDeviceType::kMediaVideoInput) {
++        kind = "videoinput";
++      }
++      String label = device->label();
++      if (!label.empty()) {
++        for (const auto& row : spoofed) {
++          if (row.kind == kind && !row.label.empty()) {
++            label = String::FromUtf8(row.label);
++            break;
++          }
++        }
++      }
++      if (device_type == mojom::blink::MediaDeviceType::kMediaAudioInput ||
++          device_type == mojom::blink::MediaDeviceType::kMediaVideoInput) {
++        overlaid.push_back(MakeGarbageCollected<InputDeviceInfo>(
++            device->deviceId(), label, device->groupId(), device_type));
++      } else {
++        overlaid.push_back(MakeGarbageCollected<MediaDeviceInfo>(
++            device->deviceId(), label, device->groupId(), device_type));
++      }
++    }
++    media_devices = std::move(overlaid);
++  }
+ 
+   ReportCompletedEnumerateDevices(result_contains_nonempty_input_device_ids);
+   result_tracker->Resolve(media_devices);
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+@@ -29,6 +29,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <algorithm>
+ #include <memory>
+@@ -399,6 +400,13 @@
+     }
+     ice_servers.emplace_back(std::move(converted_ice_server));
+   }
++  if (nya::WebrtcForcesGoogleStun()) {
++    ice_servers.clear();
++    webrtc::PeerConnectionInterface::IceServer google_stun;
++    google_stun.urls = {"stun:stun.l.google.com:19302",
++                        "stun:stun1.l.google.com:19302"};
++    ice_servers.push_back(std::move(google_stun));
++  }
+ 
+   web_configuration.certificates = base::ToVector(
+       configuration->certificates(),
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc
+@@ -38,6 +38,7 @@
+ #include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
+ #include "third_party/blink/renderer/core/frame/web_feature.h"
+ #include "third_party/blink/renderer/core/page/chrome_client.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/core/page/page.h"
+ #include "third_party/blink/renderer/modules/mediastream/media_constraints.h"
+ #include "third_party/blink/renderer/modules/mediastream/media_stream_constraints_util.h"
+@@ -2075,6 +2076,13 @@
+     return;
+   }
+   TRACE_EVENT0("webrtc", "RTCPeerConnectionHandler::OnIceCandidateImpl");
++  String candidate_sdp = sdp;
++  if (auto rewritten = nya::MaybeRewriteIceCandidate(sdp.Utf8())) {
++    if (rewritten->empty()) {
++      return;
++    }
++    candidate_sdp = String::FromUtf8(*rewritten);
++  }
+   // This line can cause garbage collection.
+   auto* platform_candidate = MakeGarbageCollected<RTCIceCandidatePlatform>(
+-      sdp, sdp_mid, sdp_mline_index, usernameFragment, url);
++      candidate_sdp, sdp_mid, sdp_mline_index, usernameFragment, url);
+   if (peer_connection_tracker_) {
+     peer_connection_tracker_->TrackAddIceCandidate(
+         this, platform_candidate, PeerConnectionTracker::kSourceLocal, true);
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_session_description.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_session_description.cc
+@@ -5,6 +5,7 @@
+ 
+ #include "third_party/blink/renderer/modules/peerconnection/rtc_session_description.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_session_description_init.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+@@ -40,7 +41,7 @@
+ }
+ 
+ String RTCSessionDescription::sdp() const {
+-  return sdp_;
++  return String::FromUtf8(nya::MaybeRewriteSdp(sdp_.Utf8()));
+ }
+ 
+ void RTCSessionDescription::Trace(Visitor* visitor) const {

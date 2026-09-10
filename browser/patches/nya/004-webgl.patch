@@ -8,7 +8,21 @@
  
  #include <inttypes.h>
  
-@@ -5346,8 +5347,11 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
+@@ -4192,8 +4193,13 @@ ScriptValue WebGLRenderingContextBase::getParameter(
+     case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+-        return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_RENDERER)));
++        const char* renderer = reinterpret_cast<const char*>(
++            ContextGL()->GetString(GL_RENDERER));
++        return WebGLAny(
++            script_state,
++            String(nya::MaybeSpoofUnmaskedRenderer(renderer ? renderer : "")
++                       .c_str()));
+       }
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
+@@ -5346,8 +5352,11 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
      if (!binder.Succeeded()) {
        return;
      }

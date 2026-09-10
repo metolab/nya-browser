@@ -73,6 +73,30 @@ export const api = {
     proxyId?: string | null;
     timezone?: string;
     chromeLanguage?: string;
+    gpuProfile?: string;
+    webrtcMode?: string;
+    fontProfile?: string;
+    deviceName?: string;
+    mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
+    geo?: {
+      permission?: string;
+      latitude?: number | null;
+      longitude?: number | null;
+      accuracy?: number;
+    };
+    fingerprint?: {
+      gpuProfile?: string;
+      webrtcMode?: string;
+      fontProfile?: string;
+      deviceName?: string;
+      mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
+      geo?: {
+        permission?: string;
+        latitude?: number | null;
+        longitude?: number | null;
+        accuracy?: number;
+      };
+    };
     homeUrl?: string;
     idleTimeoutMinutes?: number;
   }) =>
@@ -90,6 +114,30 @@ export const api = {
       proxyId: string | null;
       timezone: string;
       chromeLanguage: string;
+      gpuProfile: string;
+      webrtcMode: string;
+      fontProfile: string;
+      deviceName: string;
+      mediaDevices: { audioInput?: string; audioOutput?: string; videoInput?: string };
+      geo: {
+        permission?: string;
+        latitude?: number | null;
+        longitude?: number | null;
+        accuracy?: number;
+      };
+      fingerprint: {
+        gpuProfile?: string;
+        webrtcMode?: string;
+        fontProfile?: string;
+        deviceName?: string;
+        mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
+        geo?: {
+          permission?: string;
+          latitude?: number | null;
+          longitude?: number | null;
+          accuracy?: number;
+        };
+      };
       homeUrl: string;
       idleTimeoutMinutes: number;
     }>,

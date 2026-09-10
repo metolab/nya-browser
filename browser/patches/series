@@ -17,3 +17,6 @@ nya/018-x11-readback-onscreen-surface.patch
 nya/019-x11-widget-child-added.patch
 nya/020-linux-child-frame-shadow.patch
 nya/021-x11-extra-normal-windows.patch
+nya/022-webrtc-media-webgpu.patch
+nya/023-disable-webrtc-api.patch
+nya/024-fonts.patch

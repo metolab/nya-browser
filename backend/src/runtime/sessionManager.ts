@@ -11,7 +11,9 @@ import {
   ensureSessionDirs,
   ensureSessionFingerprint,
   ensureSessionTimezone,
+  getProxy,
   getSession,
+  listSessions,
   normalizeHomeUrl,
   sessionDir,
 } from '../store.js';
@@ -24,6 +26,13 @@ import {
   acceptLanguageHeader,
   AUDIT_ACTIONS,
   normalizeClipboardText,
+  gpuProfileById,
+  coerceWebrtcMode,
+  coerceFontProfile,
+  fontSwitchValue,
+  mediaDevicesSpoofed,
+  webrtcLocksUdp,
+  webrtcNeedsPublicIp,
 } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
 import {
@@ -601,9 +610,8 @@ function writeChromePolicies() {
     AllowFileSelectionDialogs: false,
     DefaultFileSystemReadGuardSetting: 2,
     DefaultFileSystemWriteGuardSetting: 2,
-    WebRtcIPHandling: 'disable_non_proxied_udp',
-    AudioCaptureAllowed: false,
-    VideoCaptureAllowed: false,
+    AudioCaptureAllowed: true,
+    VideoCaptureAllowed: true,
     DefaultWebBluetoothGuardSetting: 2,
     DefaultWebUsbGuardSetting: 2,
     DefaultSerialGuardSetting: 2,
@@ -673,6 +681,14 @@ function writeChromePreferences(sessionId, startUrl) {
     default_content_setting_values: {
       ...((prefs.profile && prefs.profile.default_content_setting_values) || {}),
       notifications: 2,
+      geolocation: sessionGeoContentSetting(sessionId),
+    },
+    content_settings: {
+      ...((prefs.profile && prefs.profile.content_settings) || {}),
+      exceptions: {
+        ...((prefs.profile && prefs.profile.content_settings && prefs.profile.content_settings.exceptions) || {}),
+        geolocation: {},
+      },
     },
     exit_type: 'Normal',
     exited_cleanly: true,
@@ -700,11 +716,11 @@ function writeChromePreferences(sessionId, startUrl) {
   };
   prefs.homepage = homeUrl;
   prefs.homepage_is_newtabpage = false;
+  const webrtcMode = sessionWebrtcMode(sessionId, getSession(sessionId)?.fingerprint);
+  const webrtcNet = webrtcNetworkPolicy(webrtcMode);
   prefs.webrtc = {
     ...(prefs.webrtc || {}),
-    ip_handling_policy: 'disable_non_proxied_udp',
-    multiple_routes_enabled: false,
-    nonproxied_udp_enabled: false,
+    ...webrtcNet,
   };
   const tmSettings = (prefs.extensions && prefs.extensions.settings && prefs.extensions.settings[TAMPERMONKEY_ID]) || {};
   prefs.extensions = {
@@ -944,6 +960,49 @@ function gpuBackend() {
   return 'swiftshader';
 }
 
+function sessionWebrtcMode(sessionId, fingerprint) {
+  return coerceWebrtcMode(fingerprint?.webrtcMode || getSession(sessionId)?.fingerprint?.webrtcMode);
+}
+
+function sessionGeoContentSetting(sessionId) {
+  // Never write profile-level allow (1): that authorizes real geolocation
+  // before CDP can attach a spoofed override. Allow-mode uses per-origin grant.
+  const geo = getSession(sessionId)?.fingerprint?.geo;
+  if (geo?.permission === 'block') return 2;
+  return 0;
+}
+
+/** Ads-aligned WebRTC UDP policy. replace/forward need ICE; the rest lock UDP. */
+function webrtcNetworkPolicy(mode) {
+  const lockUdp = webrtcLocksUdp(mode);
+  return {
+    ip_handling_policy: lockUdp ? 'disable_non_proxied_udp' : 'default_public_interface_only',
+    multiple_routes_enabled: !lockUdp,
+    nonproxied_udp_enabled: !lockUdp,
+  };
+}
+
+function firstIpv4(raw) {
+  const m = String(raw || '').match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/);
+  if (!m) return '';
+  const parts = m[1].split('.').map((n) => Number(n));
+  if (parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return '';
+  return m[1];
+}
+
+function sessionPublicIp(sessionId) {
+  const session = getSession(sessionId);
+  const proxy = session?.proxyId ? getProxy(session.proxyId) : null;
+  if (!proxy?.lastTest?.ok) return '';
+  const ip = firstIpv4(proxy.lastTest.exitIp);
+  if (!ip) return '';
+  const [a, b] = ip.split('.').map((n) => Number(n));
+  if (a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) {
+    return '';
+  }
+  return ip;
+}
+
 function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpPort = null, fingerprint = null, inProcessGpu = false, startUrl = null) {
   const profile = chromeProfileDir(sessionId);
   const homeUrl = sessionHomeUrl(sessionId, startUrl);
@@ -961,16 +1020,17 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     'FileSystemAccessAPI',
     'FileSystemAccessAPIExperimental',
     'NativeFileSystemAPI',
-    'WebRTC',
-    'WebGpu',
-    'WebGPU',
     'DirectSockets',
     'CalculateNativeWinOcclusion',
     'IntensiveWakeUpThrottling',
     'TabFreeze',
     'IdleDetection',
   ];
+  const webrtcMode = sessionWebrtcMode(sessionId, fingerprint);
   const enabledFeatures = [];
+  if (backend !== 'swiftshader') {
+    enabledFeatures.push('WebGPU', 'WebGPUService');
+  }
   if (backend === 'vulkan') {
     enabledFeatures.push('Vulkan', 'VulkanFromANGLE', 'DefaultANGLEVulkan');
   }
@@ -992,7 +1052,11 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     '--check-for-update-interval=31536000',
     '--ozone-platform=x11',
     `--disable-features=${disabledFeatures.join(',')}`,
-    '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+    `--force-webrtc-ip-handling-policy=${webrtcNetworkPolicy(webrtcMode).ip_handling_policy}`,
+    ...(webrtcMode === 'disabled' ? ['--disable-blink-features=NyaWebRTC'] : []),
+    '--use-fake-device-for-media-stream',
+    '--use-fake-ui-for-media-stream',
+    ...(backend !== 'swiftshader' ? ['--enable-unsafe-webgpu'] : []),
     '--disable-webrtc-hw-encoding',
     '--disable-webrtc-hw-decoding',
     '--disable-quic',
@@ -1071,6 +1135,29 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     args.push(`--nya-fp-seed=${fingerprint.seed}`);
     args.push(`--nya-hw-concurrency=${String(fingerprint.hardwareConcurrency)}`);
     args.push(`--nya-device-memory=${String(fingerprint.deviceMemory)}`);
+    const gpu = gpuProfileById(fingerprint.gpuProfile || '');
+    if (gpu?.angleName) {
+      args.push(`--nya-gpu-model=${gpu.angleName}`);
+      if (gpu.deviceId) args.push(`--nya-gpu-device-id=${gpu.deviceId}`);
+      if (gpu.architecture) args.push(`--nya-gpu-arch=${gpu.architecture}`);
+    }
+    args.push(`--nya-webrtc-mode=${webrtcMode}`);
+    const publicIp = sessionPublicIp(sessionId);
+    if (publicIp && webrtcNeedsPublicIp(webrtcMode)) {
+      args.push(`--nya-webrtc-public-ip=${publicIp}`);
+    }
+    if (fingerprint.deviceName && fingerprint.deviceName.toLowerCase() !== 'native') {
+      args.push(`--nya-device-name=${fingerprint.deviceName}`);
+    }
+    const media = fingerprint.mediaDevices;
+    if (mediaDevicesSpoofed(media)) {
+      if (media.audioInput) args.push(`--nya-media-audio-in=${media.audioInput}`);
+      if (media.audioOutput) args.push(`--nya-media-audio-out=${media.audioOutput}`);
+      if (media.videoInput) args.push(`--nya-media-video=${media.videoInput}`);
+    }
+    const fontProfile = coerceFontProfile(fingerprint.fontProfile);
+    const fonts = fontSwitchValue(fontProfile, fingerprint.seed);
+    if (fonts) args.push(`--nya-fonts=${fonts}`);
   }
   if (cdpPort) {
     args.push(`--remote-debugging-port=${cdpPort}`);
@@ -1642,6 +1729,16 @@ export async function restartBrowser(sessionId, { url } = {}) {
     return getRuntimePublic(sessionId);
   } finally {
     runtime.recovering = false;
+  }
+}
+
+export async function restartSessionsForProxyExitIp(proxyId: string) {
+  if (!proxyId) return;
+  for (const session of listSessions()) {
+    if (session.proxyId !== proxyId) continue;
+    if (!webrtcNeedsPublicIp(coerceWebrtcMode(session.fingerprint?.webrtcMode))) continue;
+    if (!runtimes.has(session.id)) continue;
+    await restartBrowser(session.id).catch(() => undefined);
   }
 }
 

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { ProxyRecord, Session, SessionGroup, UserPublic } from '@nya/shared';
-import { DEFAULT_CHROME_LANGUAGE, DEFAULT_TIMEZONE } from '@nya/shared';
+import { DEFAULT_CHROME_LANGUAGE, DEFAULT_GPU_PROFILE, DEFAULT_TIMEZONE, NATIVE_MEDIA_LABEL, normalizeGeo } from '@nya/shared';
+import type { SessionFormValues } from '../../components/SessionFormDialog';
 import { api } from '../../api/client';
 import { SessionTree } from '../../components/SessionTree';
 import SessionFormDialog from '../../components/SessionFormDialog';
@@ -35,6 +36,44 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+
+function mediaLabel(value: string) {
+  const raw = value.trim();
+  if (!raw || raw === NATIVE_MEDIA_LABEL) return '';
+  return raw;
+}
+
+function sessionFingerprintPayload(data: SessionFormValues) {
+  const lat = data.geoLatitude.trim() === '' ? null : Number(data.geoLatitude);
+  const lng = data.geoLongitude.trim() === '' ? null : Number(data.geoLongitude);
+  const acc = Number.parseInt(data.geoAccuracy, 10);
+  return {
+    name: data.name,
+    description: data.description,
+    notepad: data.notepad,
+    groupId: data.groupId,
+    proxyId: data.proxyId,
+    timezone: data.timezone,
+    chromeLanguage: data.chromeLanguage,
+    gpuProfile: data.gpuProfile,
+    webrtcMode: data.webrtcMode,
+    fontProfile: data.fontProfile,
+    deviceName: data.deviceName.trim(),
+    mediaDevices: {
+      audioInput: mediaLabel(data.mediaAudioInput),
+      audioOutput: mediaLabel(data.mediaAudioOutput),
+      videoInput: mediaLabel(data.mediaVideoInput),
+    },
+    geo: normalizeGeo({
+      permission: data.geoPermission,
+      latitude: Number.isFinite(lat as number) ? lat : null,
+      longitude: Number.isFinite(lng as number) ? lng : null,
+      accuracy: Number.isFinite(acc) && acc >= 10 ? acc : 100,
+    }),
+    homeUrl: data.homeUrl,
+    idleTimeoutMinutes: data.idleTimeoutMinutes,
+  };
+}
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -174,7 +213,7 @@ export default function SessionsPage() {
         onCancel={() => setOpenCreate(false)}
         onSubmit={async (data) => {
           await api.createSession({
-            ...data,
+            ...sessionFingerprintPayload(data),
             groupId: data.groupId ?? createGroupId,
           });
           await load();
@@ -194,12 +233,23 @@ export default function SessionsPage() {
         initialProxyId={edit?.proxyId}
         initialTimezone={edit?.timezone || DEFAULT_TIMEZONE}
         initialChromeLanguage={edit?.chromeLanguage || DEFAULT_CHROME_LANGUAGE}
+        initialGpuProfile={edit?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
+        initialWebrtcMode={edit?.fingerprint?.webrtcMode}
+        initialFontProfile={edit?.fingerprint?.fontProfile}
+        initialDeviceName={edit?.fingerprint?.deviceName}
+        initialMediaAudioInput={edit?.fingerprint?.mediaDevices?.audioInput || NATIVE_MEDIA_LABEL}
+        initialMediaAudioOutput={edit?.fingerprint?.mediaDevices?.audioOutput || NATIVE_MEDIA_LABEL}
+        initialMediaVideoInput={edit?.fingerprint?.mediaDevices?.videoInput || NATIVE_MEDIA_LABEL}
+        initialGeoPermission={edit?.fingerprint?.geo?.permission}
+        initialGeoLatitude={edit?.fingerprint?.geo?.latitude}
+        initialGeoLongitude={edit?.fingerprint?.geo?.longitude}
+        initialGeoAccuracy={edit?.fingerprint?.geo?.accuracy}
         initialHomeUrl={edit?.homeUrl}
         initialIdleTimeoutMinutes={edit?.idleTimeoutMinutes ?? 0}
         onCancel={() => setEdit(null)}
         onSubmit={async (data) => {
           if (!edit) return;
-          await api.updateSession(edit.id, data);
+          await api.updateSession(edit.id, sessionFingerprintPayload(data));
           await load();
           toast.success('已保存');
         }}

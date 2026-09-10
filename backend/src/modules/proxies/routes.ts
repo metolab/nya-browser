@@ -10,7 +10,8 @@ import {
   updateProxyRecord,
 } from '../../store.js';
 import { testProxy } from './tester.js';
-import { applyProxy } from '../../runtime/sessionManager.js';
+import { applyProxy, restartSessionsForProxyExitIp } from '../../runtime/sessionManager.js';
+import { proxyTestPublicIpChanged } from '../../runtime/proxyLastTest.js';
 import { listSessions } from '../../store.js';
 
 export const proxiesRouter = Router();
@@ -95,10 +96,14 @@ proxiesRouter.post(
     const proxy = getProxy(req.params.id);
     if (!proxy) return res.status(404).json({ error: 'Not found' });
     const result = await testProxy(proxy);
+    const previousTest = proxy.lastTest;
     updateProxyRecord(proxy.id, {
       lastTestAt: new Date().toISOString(),
       lastTest: result,
     });
+    if (proxyTestPublicIpChanged(previousTest, result)) {
+      await restartSessionsForProxyExitIp(proxy.id);
+    }
     auditFromReq(req, {
       action: AUDIT_ACTIONS.proxyTest,
       resourceType: 'proxy',

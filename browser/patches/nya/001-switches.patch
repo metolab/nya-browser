@@ -1,18 +1,28 @@
 --- a/components/ungoogled/ungoogled_switches.h
 +++ b/components/ungoogled/ungoogled_switches.h
-@@ -14,6 +14,9 @@ namespace switches {
+@@ -14,6 +14,18 @@ namespace switches {
  COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingClientRectsNoise[];
  COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingCanvasMeasureTextNoise[];
  COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingCanvasImageDataNoise[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaFpSeed[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaHwConcurrency[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaDeviceMemory[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaGpuModel[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaGpuDeviceId[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaGpuArch[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaWebrtcMode[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaWebrtcPublicIp[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaDeviceName[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaMediaAudioIn[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaMediaAudioOut[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaMediaVideo[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaFonts[];
  
  }
  
 --- a/components/ungoogled/ungoogled_switches.cc
 +++ b/components/ungoogled/ungoogled_switches.cc
-@@ -15,4 +15,9 @@ const char kFingerprintingCanvasMeasureTextNoise[] = "fingerprinting-canvas-measuretext-noise";
+@@ -15,4 +15,18 @@ const char kFingerprintingCanvasMeasureTextNoise[] = "fingerprinting-canvas-measuretext-noise";
  // Enable fingerprinting deception for Canvas image data
  const char kFingerprintingCanvasImageDataNoise[] = "fingerprinting-canvas-image-data-noise";
  
@@ -20,17 +30,37 @@
 +const char kNyaFpSeed[] = "nya-fp-seed";
 +const char kNyaHwConcurrency[] = "nya-hw-concurrency";
 +const char kNyaDeviceMemory[] = "nya-device-memory";
++const char kNyaGpuModel[] = "nya-gpu-model";
++const char kNyaGpuDeviceId[] = "nya-gpu-device-id";
++const char kNyaGpuArch[] = "nya-gpu-arch";
++const char kNyaWebrtcMode[] = "nya-webrtc-mode";
++const char kNyaWebrtcPublicIp[] = "nya-webrtc-public-ip";
++const char kNyaDeviceName[] = "nya-device-name";
++const char kNyaMediaAudioIn[] = "nya-media-audio-in";
++const char kNyaMediaAudioOut[] = "nya-media-audio-out";
++const char kNyaMediaVideo[] = "nya-media-video";
++const char kNyaFonts[] = "nya-fonts";
 +
  } // namespace switches
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
-@@ -3893,6 +3893,9 @@ void RenderProcessHostImpl::PropagateBro
+@@ -3893,6 +3893,20 @@ void RenderProcessHostImpl::PropagateBro
        switches::kFingerprintingClientRectsNoise,
        switches::kFingerprintingCanvasMeasureTextNoise,
        switches::kFingerprintingCanvasImageDataNoise,
 +      switches::kNyaFpSeed,
 +      switches::kNyaHwConcurrency,
 +      switches::kNyaDeviceMemory,
++      switches::kNyaGpuModel,
++      switches::kNyaGpuDeviceId,
++      switches::kNyaGpuArch,
++      switches::kNyaWebrtcMode,
++      switches::kNyaWebrtcPublicIp,
++      switches::kNyaDeviceName,
++      switches::kNyaMediaAudioIn,
++      switches::kNyaMediaAudioOut,
++      switches::kNyaMediaVideo,
++      switches::kNyaFonts,
        switches::kForceDeviceScaleFactor,
        switches::kForceDisplayColorProfile,
        switches::kForceHighContrast,

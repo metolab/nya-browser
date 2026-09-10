@@ -21,7 +21,12 @@ type LegacySession = {
   name?: string;
   description?: string;
   proxy?: LegacyProxy;
-  fingerprint?: { seed?: string; hardwareConcurrency?: number; deviceMemory?: number };
+  fingerprint?: {
+    seed?: string;
+    hardwareConcurrency?: number;
+    deviceMemory?: number;
+    gpuProfile?: string;
+  };
   timezone?: string;
   homeUrl?: string;
   createdAt?: string;

@@ -3,11 +3,13 @@ import {
   AUDIT_ACTIONS,
   createSessionSchema,
   createWindowSchema,
+  pickSessionFingerprint,
   putNotepadSchema,
   putTargetGrantsSchema,
   startSessionSchema,
   updateSessionSchema,
 } from '@nya/shared';
+import { fingerprintLaunchChanged } from '../../runtime/fingerprint.js';
 import { asyncHandler, requireAdmin } from '../../http/util.js';
 import { HttpError, assertNotepadAccess, assertSessionAccess, handleHttpError } from '../../http/access.js';
 import { auditFromReq } from '../audit/service.js';
@@ -67,6 +69,7 @@ sessionsRouter.post(
         proxyId: parsed.data.proxyId ?? null,
         timezone: parsed.data.timezone,
         chromeLanguage: parsed.data.chromeLanguage,
+        ...pickSessionFingerprint(parsed.data),
         homeUrl: parsed.data.homeUrl,
         idleTimeoutMinutes: parsed.data.idleTimeoutMinutes,
       });
@@ -94,7 +97,11 @@ sessionsRouter.patch(
     if (!before) return res.status(404).json({ error: 'Not found' });
     let session;
     try {
-      session = updateSession(req.params.id, parsed.data);
+      const { fingerprint: _nested, ...rest } = parsed.data;
+      session = updateSession(req.params.id, {
+        ...rest,
+        ...pickSessionFingerprint(parsed.data),
+      });
     } catch (err) {
       return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -104,7 +111,8 @@ sessionsRouter.patch(
     } else if (
       getRuntimePublic(session.id) &&
       ((parsed.data.timezone && parsed.data.timezone !== before.timezone) ||
-        (parsed.data.chromeLanguage && parsed.data.chromeLanguage !== before.chromeLanguage))
+        (parsed.data.chromeLanguage && parsed.data.chromeLanguage !== before.chromeLanguage) ||
+        fingerprintLaunchChanged(before.fingerprint, session.fingerprint))
     ) {
       await restartBrowser(session.id);
     }
