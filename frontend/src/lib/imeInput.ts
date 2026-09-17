@@ -67,6 +67,12 @@ export function shouldSuppressCommitKey(now: number, lastCommitAt: number, e: Ke
   return isCommitKey(e);
 }
 
+export function isCommittedCharKey(e: KeyLike): boolean {
+  const key = e.key || '';
+  if (!key || key === 'Unidentified' || key === 'Process' || key === 'Dead') return false;
+  return [...key].some((ch) => (ch.codePointAt(0) || 0) > 0x7e);
+}
+
 export function shouldForwardKey(
   e: KeyLike,
   composing: boolean,
@@ -76,6 +82,7 @@ export function shouldForwardKey(
   if (composing) return false;
   if (isComposingKey(e)) return false;
   if (isPasteKey(e)) return false;
+  if (isCommittedCharKey(e)) return false;
   if (shouldSuppressCommitKey(now, lastCommitAt, e)) return false;
   return true;
 }

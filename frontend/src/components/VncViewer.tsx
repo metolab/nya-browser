@@ -532,10 +532,8 @@ export default function VncViewer({
       if (viewOnlyRef.current) return;
       const ime = imeRef.current;
       const now = performance.now();
-      if (shouldPreventDefaultKey(e, ime.composing)) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
+      e.stopPropagation();
+      if (shouldPreventDefaultKey(e, ime.composing)) e.preventDefault();
       if (!shouldForwardKey(e, ime.composing, now, ime.lastCommitAt)) return;
       const target = canvas();
       if (!target) return;

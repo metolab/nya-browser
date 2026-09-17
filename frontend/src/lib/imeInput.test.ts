@@ -5,6 +5,7 @@ import {
   clampTrapPos,
   commitTextFromEvents,
   isCommitKey,
+  isCommittedCharKey,
   isComposingKey,
   isFallbackInsert,
   isPasteKey,
@@ -63,6 +64,15 @@ describe('shouldForwardKey', () => {
     expect(shouldForwardKey({ key: 'Enter', code: 'Enter' }, false, 150, 100)).toBe(false);
     expect(shouldForwardKey({ key: 'a', code: 'KeyA' }, false, 150, 100)).toBe(true);
     expect(shouldForwardKey({ key: 'Tab', code: 'Tab' }, false, 1000, 0)).toBe(true);
+  });
+
+  it('does not also send IME-committed CJK or emoji through VNC keys', () => {
+    expect(isCommittedCharKey({ key: '你' })).toBe(true);
+    expect(isCommittedCharKey({ key: '⬆' })).toBe(true);
+    expect(isCommittedCharKey({ key: 'a', code: 'KeyA' })).toBe(false);
+    expect(isCommittedCharKey({ key: 'Enter', code: 'Enter' })).toBe(false);
+    expect(shouldForwardKey({ key: '你' }, false, 200, 0)).toBe(false);
+    expect(shouldForwardKey({ key: '⬆️' }, false, 200, 0)).toBe(false);
   });
 });
 

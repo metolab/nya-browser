@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Inject UTF-8 text into the focused X11 window via a reused scratch keycode.
+"""Inject UTF-8 text into the focused X11 window via unused X keycodes.
 
 Does not touch CLIPBOARD/PRIMARY. ASCII already in the keymap is typed on its
-real keycode; everything else reuses one unused (or stolen) keycode, waits for
-MappingNotify, then XTest down/up.
+real keycode. Other characters each get their own unused keycode for the
+commit, the map is flushed once, then XTest down/up. Reusing one scratch
+keycode per glyph races Chrome's XKB cache: 你好 becomes 的的, ⬆️ becomes 据据.
 """
 
 from __future__ import annotations
@@ -63,6 +64,24 @@ MOD_KEYSYMS = (
 # After tap: do not remap again until they have translated the previous keycode.
 GAP_S = max(0.0, float(os.environ.get('NYA_XTYPE_GAP_MS', '10')) / 1000.0)
 MAP_WAIT_S = max(0.01, float(os.environ.get('NYA_XTYPE_MAP_WAIT_MS', '50')) / 1000.0)
+SETTLE_S = max(0.0, float(os.environ.get('NYA_XTYPE_SETTLE_MS', '40')) / 1000.0)
+
+# Variation selectors / ZWJ / BOM must not become their own key taps.
+_SKIP_CPS = frozenset({0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF})
+
+
+def inject_chars(text: str) -> list[str]:
+    out: list[str] = []
+    for ch in text:
+        cp = ord(ch)
+        if cp < 0x20:
+            continue
+        if 0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF:
+            continue
+        if cp in _SKIP_CPS:
+            continue
+        out.append(ch)
+    return out
 
 
 def _load(name: str):
@@ -108,6 +127,13 @@ x11.XKeysymToKeycode.restype = ctypes.c_uint
 x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 x11.XKeycodeToKeysym.restype = ctypes.c_ulong
 x11.XKeycodeToKeysym.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int]
+x11.XkbKeycodeToKeysym.restype = ctypes.c_ulong
+x11.XkbKeycodeToKeysym.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_uint,
+    ctypes.c_uint,
+    ctypes.c_uint,
+]
 x11.XFree.argtypes = [ctypes.c_void_p]
 x11.XInitThreads.restype = ctypes.c_int
 xtst.XTestFakeKeyEvent.argtypes = [
@@ -254,6 +280,25 @@ def _wait_mapping(dpy, timeout: float = MAP_WAIT_S) -> bool:
     return False
 
 
+def _xkb_keysym(dpy, kc: int) -> int:
+    try:
+        return int(x11.XkbKeycodeToKeysym(dpy, kc, 0, 0))
+    except Exception:
+        return 0
+
+
+def _wait_xkb(dpy, remap: dict[int, int], timeout: float = SETTLE_S) -> bool:
+    if not remap:
+        return True
+    deadline = time.monotonic() + max(timeout, 0.01)
+    while time.monotonic() < deadline:
+        x11.XSync(dpy, 0)
+        if all(_xkb_keysym(dpy, kc) == ks for kc, ks in remap.items()):
+            return True
+        time.sleep(0.005)
+    return all(_xkb_keysym(dpy, kc) == ks for kc, ks in remap.items())
+
+
 def _keycode_down(dpy, kc: int) -> bool:
     keys = ctypes.create_string_buffer(32)
     x11.XQueryKeymap(dpy, keys)
@@ -303,6 +348,7 @@ class Injector:
     def __init__(self, dpy):
         self.dpy = dpy
         self.lo, self.hi, self.spk, empty = _empty_keycodes(dpy)
+        self.empty = list(empty)
         if empty:
             self.scratch = empty[-1]
             self.stolen = False
@@ -313,6 +359,7 @@ class Injector:
             spk, vals = _mapping(dpy, self.scratch, 1)
             self.spk = spk
             self.saved = vals[:]
+            self.empty = [self.scratch]
         xtst.XTestGrabControl(dpy, 1)
 
     def close(self) -> None:
@@ -335,36 +382,43 @@ class Injector:
             _restore_modifiers(self.dpy, raised)
         return sent
 
+    def _tap_one(self, kc: int, need_shift: bool, shift: int) -> None:
+        if need_shift and shift:
+            xtst.XTestFakeKeyEvent(self.dpy, shift, 1, CurrentTime)
+        _tap(self.dpy, kc)
+        if need_shift and shift:
+            xtst.XTestFakeKeyEvent(self.dpy, shift, 0, CurrentTime)
+        x11.XSync(self.dpy, 0)
+
+    def _bind_and_tap(self, kc: int, ks: int, shift: int) -> None:
+        _set_keycode(self.dpy, kc, self.spk, ks)
+        x11.XSync(self.dpy, 0)
+        _wait_mapping(self.dpy)
+        _wait_xkb(self.dpy, {kc: ks})
+        pause = max(GAP_S, SETTLE_S)
+        if pause:
+            time.sleep(pause)
+        self._tap_one(kc, False, shift)
+        if GAP_S:
+            time.sleep(GAP_S)
+
     def _type_scratch(self, text: str) -> int:
-        sent = 0
+        chars = inject_chars(text)
+        if not chars:
+            return 0
         shift = x11.XKeysymToKeycode(self.dpy, XK_Shift_L)
-        for ch in text:
-            cp = ord(ch)
-            if cp < 0x20:
-                continue
-            ks = unicode_keysym(cp)
+        empty = list(self.empty)
+        sent = 0
+        for ch in chars:
+            ks = unicode_keysym(ord(ch))
             existing = _existing_keycode(self.dpy, ks)
             if existing:
-                kc, need_shift = existing
-                if need_shift and shift:
-                    xtst.XTestFakeKeyEvent(self.dpy, shift, 1, CurrentTime)
-                _tap(self.dpy, kc)
-                if need_shift and shift:
-                    xtst.XTestFakeKeyEvent(self.dpy, shift, 0, CurrentTime)
-                    x11.XFlush(self.dpy)
+                self._tap_one(existing[0], existing[1], shift)
                 sent += 1
                 continue
-            _set_keycode(self.dpy, self.scratch, self.spk, ks)
-            x11.XSync(self.dpy, 0)
-            _wait_mapping(self.dpy)
-            if GAP_S:
-                time.sleep(GAP_S)
-            _tap(self.dpy, self.scratch)
-            x11.XSync(self.dpy, 0)
-            if GAP_S:
-                time.sleep(GAP_S)
+            kc = empty.pop() if empty else self.scratch
+            self._bind_and_tap(kc, ks, shift)
             sent += 1
-        x11.XSync(self.dpy, 0)
         return sent
 
     def _type_noreuse(self, text: str) -> int:
@@ -516,6 +570,8 @@ def selftest() -> int:
             failures += 1
 
     phrases = ['这个太平淡了', '要有一些剧情', '我比较喜欢']
+    check('inject_chars drops emoji variation selectors', inject_chars('⬆️') == ['⬆'], repr(inject_chars('⬆️')))
+    check('inject_chars keeps CJK', inject_chars('你好') == ['你', '好'])
     x11.XStoreBytes(recv, b'CLIP-SENTINEL', 13)
 
     lo, hi, spk, empty = _empty_keycodes(inj_dpy)
