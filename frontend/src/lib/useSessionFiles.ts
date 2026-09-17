@@ -2,7 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { SessionTransfer } from '@nya/shared';
 import { api } from '../api/client';
-import { hasUserActivation, randomId, TRANSFER_PAUSE_BYTES } from './files';
+import { randomId, TRANSFER_PAUSE_BYTES } from './files';
+import { encodePasteImage } from './pasteImage';
+import {
+  classifyTransfer,
+  contentFingerprint,
+  filesFromClipboard,
+  splitBySize,
+  type ClassifiedTransfer,
+} from './transferIngest';
 
 const emptyTransfer = (): SessionTransfer => ({
   chooser: null,
@@ -15,21 +23,26 @@ type Opts = {
   sessionId?: string;
   subId?: string | null;
   enabled: boolean;
+  onText?: (text: string) => Promise<void> | void;
 };
 
-export function useSessionFiles({ sessionId, subId, enabled }: Opts) {
+export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
   const [transfer, setTransfer] = useState<SessionTransfer>(emptyTransfer);
   const [uploading, setUploading] = useState(false);
   const [uploadRatio, setUploadRatio] = useState(0);
   const [paused, setPaused] = useState(false);
-  const [fallback, setFallback] = useState(false);
   const [preview, setPreview] = useState<{ path: string; name: string } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const gestureAt = useRef(0);
-  const pickerFor = useRef('');
+  const [note, setNote] = useState('');
+  const sessionKey = `${sessionId || ''}:${subId || ''}`;
+  const [readyFor, setReadyFor] = useState('');
+  const ready = Boolean(sessionId) && readyFor === sessionKey;
   const pauseCount = useRef(0);
   const transferRef = useRef(transfer);
+  const queue = useRef(Promise.resolve());
+  const onTextRef = useRef(onText);
+  const seenRef = useRef(new Map<string, { path: string; kind: 'file' | 'image' }>());
   transferRef.current = transfer;
+  onTextRef.current = onText;
 
   const beginPause = useCallback((bytes: number) => {
     if (bytes < TRANSFER_PAUSE_BYTES) return () => {};
@@ -45,12 +58,18 @@ export function useSessionFiles({ sessionId, subId, enabled }: Opts) {
     if (!sessionId) return emptyTransfer();
     const next = await api.transfer(sessionId, subId);
     setTransfer(next);
+    setReadyFor(`${sessionId}:${subId || ''}`);
     return next;
   }, [sessionId, subId]);
 
   useEffect(() => {
+    seenRef.current.clear();
+  }, [sessionKey]);
+
+  useEffect(() => {
     if (!enabled || !sessionId) {
       setTransfer(emptyTransfer());
+      setReadyFor('');
       return undefined;
     }
     let timer = 0;
@@ -66,61 +85,137 @@ export function useSessionFiles({ sessionId, subId, enabled }: Opts) {
     return () => window.clearTimeout(timer);
   }, [enabled, refresh, sessionId]);
 
-  const openLocalPicker = useCallback(() => {
-    inputRef.current?.click();
-  }, []);
-
-  const tryOpenPicker = useCallback(() => {
-    if (!hasUserActivation()) return false;
-    openLocalPicker();
-    return true;
-  }, [openLocalPicker]);
-
-  const armGesture = useCallback(() => {
-    gestureAt.current = Date.now();
-    const chooser = transferRef.current.chooser;
-    if (!chooser?.open) return;
-    const token = chooser.title || 'open';
-    if (pickerFor.current === token) return;
-    pickerFor.current = token;
-    openLocalPicker();
-  }, [openLocalPicker]);
-
-  useEffect(() => {
-    if (!transfer.chooser?.open) {
-      pickerFor.current = '';
-      setFallback(false);
-      return undefined;
-    }
-    const token = transfer.chooser.title || 'open';
-    if (pickerFor.current !== token && Date.now() - gestureAt.current <= 5000 && tryOpenPicker()) {
-      pickerFor.current = token;
-    }
-    // http://IP is not a secure context: delayed input.click() is often ignored with no error.
-    const timer = window.setTimeout(() => setFallback(true), 300);
-    return () => window.clearTimeout(timer);
-  }, [transfer.chooser?.open, transfer.chooser?.title, tryOpenPicker]);
-
   const uploadFiles = useCallback(
     async (files: File[]) => {
-      if (!sessionId || !files.length) return;
-      const total = files.reduce((sum, file) => sum + file.size, 0);
-      const endPause = beginPause(total);
+      if (!sessionId || !files.length) return [];
       setUploading(true);
       setUploadRatio(0);
+      setNote('正在上传…');
       try {
-        await api.upload(sessionId, '.', files, setUploadRatio);
+        const data = await api.upload(sessionId, '.', files, setUploadRatio);
         await refresh();
+        return data.files || [];
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err));
+        return [];
       } finally {
         setUploading(false);
         setUploadRatio(0);
-        endPause();
-        if (inputRef.current) inputRef.current.value = '';
+        setNote('');
       }
     },
-    [beginPause, refresh, sessionId],
+    [refresh, sessionId],
+  );
+
+  const ingestClassified = useCallback(
+    async (classified: ClassifiedTransfer, forRemotePaste: boolean) => {
+      if (!sessionId) return { inject: false, ok: false };
+      if (classified.mode === 'empty') return { inject: false, ok: false };
+      if (classified.mode === 'text') {
+        await onTextRef.current?.(classified.text);
+        return { inject: forRemotePaste, ok: true };
+      }
+      if (classified.mode === 'image') {
+        const images = classified.images;
+        const prints = await Promise.all(images.map((image) => contentFingerprint(image)));
+        const unseen = images.filter((_, index) => !seenRef.current.has(prints[index]));
+        setUploading(true);
+        setUploadRatio(0);
+        setNote(forRemotePaste ? '正在贴到远程…' : '正在上传图片…');
+        try {
+          if (!unseen.length) {
+            const path = [...prints].reverse().map((fp) => seenRef.current.get(fp)?.path).find(Boolean);
+            if (path) await api.setClipboardImagePath(sessionId, path, subId);
+            return { inject: forRemotePaste, ok: true };
+          }
+          let lastPath = '';
+          for (const [index, image] of unseen.entries()) {
+            const encoded = await encodePasteImage(image);
+            if (!encoded.compressed) toast.message('图片未压缩，已按原图上传');
+            const saved = await api.setClipboardImage(sessionId, encoded.blob, subId);
+            const fp = prints[images.indexOf(image)];
+            if (saved.file?.path && fp) seenRef.current.set(fp, { path: saved.file.path, kind: 'image' });
+            lastPath = saved.file?.path || lastPath;
+            setUploadRatio((index + 1) / unseen.length);
+          }
+          await refresh();
+          return { inject: forRemotePaste, ok: Boolean(lastPath) };
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : String(err));
+          return { inject: false, ok: false };
+        } finally {
+          setUploading(false);
+          setUploadRatio(0);
+          setNote('');
+        }
+      }
+      const { kept, skipped } = splitBySize(classified.files);
+      for (const file of skipped) {
+        toast.error(`${file.name} 超过 50MB`);
+      }
+      if (!kept.length) return { inject: false, ok: false };
+      const prints = await Promise.all(kept.map((file) => contentFingerprint(file)));
+      const fresh: File[] = [];
+      const freshFp: string[] = [];
+      const paths: string[] = [];
+      kept.forEach((file, index) => {
+        const seen = seenRef.current.get(prints[index]);
+        if (seen) paths.push(seen.path);
+        else {
+          fresh.push(file);
+          freshFp.push(prints[index]);
+        }
+      });
+      if (fresh.length) {
+        const uploaded = await uploadFiles(fresh);
+        if (uploaded.length !== fresh.length) return { inject: false, ok: false };
+        uploaded.forEach((row, index) => {
+          seenRef.current.set(freshFp[index], { path: row.path, kind: 'file' });
+          paths.push(row.path);
+        });
+      }
+      if (!paths.length) return { inject: false, ok: false };
+      try {
+        await api.setClipboardFiles(sessionId, paths, subId);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : String(err));
+        return { inject: false, ok: false };
+      }
+      return { inject: forRemotePaste, ok: true };
+    },
+    [refresh, sessionId, subId, uploadFiles],
+  );
+
+  const enqueue = useCallback((fn: () => Promise<{ inject: boolean; ok: boolean }>) => {
+    const run = queue.current.then(fn, fn);
+    queue.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }, []);
+
+  const ingestFiles = useCallback(
+    (files: File[], source: 'clipboard' | 'picker' = 'picker', forRemotePaste = false) =>
+      enqueue(() =>
+        ingestClassified(classifyTransfer({ source, files }), forRemotePaste),
+      ),
+    [enqueue, ingestClassified],
+  );
+
+  const ingestPaste = useCallback(
+    (data: DataTransfer | null | undefined, forRemotePaste: boolean) =>
+      enqueue(() =>
+        ingestClassified(
+          classifyTransfer({
+            source: 'clipboard',
+            files: filesFromClipboard(data),
+            text: data?.getData('text/plain') || '',
+          }),
+          forRemotePaste,
+        ),
+      ),
+    [enqueue, ingestClassified],
   );
 
   const downloadToLocal = useCallback(
@@ -168,15 +263,15 @@ export function useSessionFiles({ sessionId, subId, enabled }: Opts) {
 
   return {
     transfer,
+    ready,
     uploading,
     uploadRatio,
     paused,
-    fallback,
     preview,
     setPreview,
-    inputRef,
-    armGesture,
-    openLocalPicker,
+    note,
+    ingestFiles,
+    ingestPaste,
     uploadFiles,
     downloadToLocal,
     remove,

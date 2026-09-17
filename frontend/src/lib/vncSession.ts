@@ -255,6 +255,10 @@ function dirtySize(display: DisplayHandle) {
   };
 }
 
+export function requestPointerRelease() {
+  window.dispatchEvent(new Event('nya-pointer-release'));
+}
+
 export function holdCanvas(host: HTMLElement, source: HTMLCanvasElement) {
   if (source.width < 2 || source.height < 2) {
     vncLog('hold', { result: 'skip', width: source.width, height: source.height });
@@ -307,6 +311,7 @@ export class VncSession {
   private clickAnchor: { x: number; y: number } | null = null;
   private origHandleMouseButton: RfbHandle['_handleMouseButton'] | null = null;
   private origHandleMouseMove: RfbHandle['_handleMouseMove'] | null = null;
+  private releaseTimers: number[] = [];
   private readonly onPointerUp = (ev: PointerEvent) => {
     if (ev.buttons === 0) this.releasePointer();
   };
@@ -356,9 +361,11 @@ export class VncSession {
     }
 
     window.addEventListener('blur', this.onBlur);
+    window.addEventListener('focus', this.onBlur);
     document.addEventListener('visibilitychange', this.onHidden);
     window.addEventListener('pointerup', this.onPointerUp, true);
     window.addEventListener('pointercancel', this.onPointerUp, true);
+    window.addEventListener('nya-pointer-release', this.onRelease as EventListener);
     this.installClickSlop();
     wrapFramebufferRequests();
   }
@@ -409,12 +416,15 @@ export class VncSession {
 
   dispose() {
     if (this.disposed) return;
+    this.clearReleaseTimers();
     this.releasePointer();
     this.disposed = true;
     window.removeEventListener('blur', this.onBlur);
+    window.removeEventListener('focus', this.onBlur);
     document.removeEventListener('visibilitychange', this.onHidden);
     window.removeEventListener('pointerup', this.onPointerUp, true);
     window.removeEventListener('pointercancel', this.onPointerUp, true);
+    window.removeEventListener('nya-pointer-release', this.onRelease as EventListener);
     if (this.qualityTimer !== null) window.clearInterval(this.qualityTimer);
     if (this.origHandleResize && this.rfb._eventHandlers) {
       this.rfb._eventHandlers.handleResize = this.origHandleResize;
@@ -434,6 +444,7 @@ export class VncSession {
     if (this.disposed) return;
     this.connectedAt = performance.now();
     this.stuckArmed = false;
+    this.schedulePointerRelease();
     this.applyTier(true);
     if (this.qualityTimer === null) {
       this.qualityTimer = window.setInterval(() => {
@@ -515,6 +526,21 @@ export class VncSession {
     this.origHandleResize?.();
   }
 
+  private readonly onRelease = () => this.schedulePointerRelease();
+
+  private clearReleaseTimers() {
+    for (const id of this.releaseTimers) window.clearTimeout(id);
+    this.releaseTimers = [];
+  }
+
+  schedulePointerRelease() {
+    this.releasePointer();
+    this.clearReleaseTimers();
+    for (const ms of [50, 250, 800]) {
+      this.releaseTimers.push(window.setTimeout(() => this.releasePointer(), ms));
+    }
+  }
+
   releasePointer() {
     if (this.disposed) return;
     const rfb = this.rfb;
@@ -528,6 +554,11 @@ export class VncSession {
     rfb._mouseButtonMask = 0;
     rfb._accumulatedWheelDeltaX = 0;
     rfb._accumulatedWheelDeltaY = 0;
+    if (this.origHandleMouseButton) {
+      this.origHandleMouseButton(dest.x, dest.y, 0);
+      if (hadPointer) vncLog('pointer-up', dest);
+      return;
+    }
     const messages = rfbMessages();
     const sock = rfb._sock;
     if (!messages?.pointerEvent || !sock) return;

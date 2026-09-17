@@ -63,8 +63,17 @@ export function useClipboardSync(opts: {
     setStatus('已同步到远程');
   }, []);
 
-  const ingestRemote = useCallback(async (remote: string) => {
-    const next = normalizeClipboardText(clipText(remote), lastRef.current);
+  const ingestRemote = useCallback(async (remote: { kind?: string; text?: string }) => {
+    const kind = remote.kind || 'text';
+    if (kind === 'image') {
+      setStatus('远程剪贴板：图片');
+      return;
+    }
+    if (kind === 'files') {
+      setStatus('远程剪贴板：文件');
+      return;
+    }
+    const next = normalizeClipboardText(clipText(remote.text), lastRef.current);
     if (next == null || next === lastRef.current) return;
     lastRef.current = next;
     if (!typingRef.current) {
@@ -98,7 +107,7 @@ export function useClipboardSync(opts: {
     const sid = sessionRef.current;
     if (!sid) return;
     const data = await api.getClipboard(sid, subRef.current);
-    await ingestRemote(data.text);
+    await ingestRemote(data);
   }, [ingestRemote]);
 
   const pull = useCallback(async () => {
@@ -166,7 +175,7 @@ export function useClipboardSync(opts: {
       if (cancelled || document.visibilityState !== 'visible' || typingRef.current) return;
       try {
         const data = await api.getClipboard(sessionId, subId);
-        if (!cancelled) await ingestRemote(data.text);
+        if (!cancelled) await ingestRemote(data);
       } catch {
         /* session may have stopped */
       }
@@ -212,6 +221,16 @@ export function useClipboardSync(opts: {
 
   useEffect(() => () => window.clearTimeout(pushTimer.current), []);
 
+  const pushFromPaste = useCallback(
+    async (value: string) => {
+      const next = normalizeClipboardText(clipText(value), lastRef.current);
+      if (next == null) return;
+      applyText(next, false);
+      await pushRemote(next);
+    },
+    [applyText, pushRemote],
+  );
+
   return {
     text,
     auto,
@@ -224,6 +243,7 @@ export function useClipboardSync(opts: {
     flushRemote,
     pull,
     push,
+    pushFromPaste,
     onTextChange,
     requestPermission,
   };

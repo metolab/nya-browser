@@ -242,6 +242,10 @@ export const clipboardSchema = z.object({
   text: z.string().max(1024 * 1024),
 });
 
+export const clipboardFilesSchema = z.object({
+  paths: z.array(z.string().min(1).max(512)).min(1).max(50),
+});
+
 export const TYPE_TEXT_MAX = 8192;
 
 export const typeTextSchema = z.object({

@@ -7,6 +7,7 @@ import {
   isCommitKey,
   isComposingKey,
   isFallbackInsert,
+  isPasteKey,
   keysymsFromText,
   shouldForwardKey,
   shouldPreventDefaultKey,
@@ -15,6 +16,16 @@ import {
   unicodeKeysym,
   sendUnicodeKeysyms,
 } from './imeInput';
+
+describe('paste keys', () => {
+  it('holds Ctrl/Cmd+V for the local paste interceptor', () => {
+    const paste = { key: 'v', code: 'KeyV', ctrlKey: true };
+    expect(isPasteKey(paste)).toBe(true);
+    expect(shouldForwardKey(paste, false, 0, 0)).toBe(false);
+    expect(shouldPreventDefaultKey(paste, false)).toBe(false);
+    expect(isPasteKey({ key: 'v', code: 'KeyV' })).toBe(false);
+  });
+});
 
 describe('isComposingKey', () => {
   it('detects isComposing, Process, and keyCode 229', () => {

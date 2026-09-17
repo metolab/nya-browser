@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { formatBytes, hostOf } from '../lib/files';
 
 type Props = {
+  sessionId?: string;
+  ready: boolean;
   downloads: SessionDownload[];
   onOpen: (path: string, name: string) => void;
   onSave: (path: string, name: string, size: number) => void;
@@ -12,12 +14,19 @@ type Props = {
 
 const HOLD_MS = 8000;
 
-export default function DownloadToast({ downloads, onOpen, onSave }: Props) {
+export default function DownloadToast({ sessionId, ready, downloads, onOpen, onSave }: Props) {
   const [held, setHeld] = useState<Record<string, number>>({});
   const seen = useRef(new Set<string>());
   const primed = useRef(false);
 
   useEffect(() => {
+    primed.current = false;
+    seen.current.clear();
+    setHeld({});
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!ready) return undefined;
     const now = Date.now();
     if (!primed.current) {
       for (const row of downloads) {
@@ -28,7 +37,7 @@ export default function DownloadToast({ downloads, onOpen, onSave }: Props) {
     setHeld((prev) => {
       const next = { ...prev };
       for (const row of downloads) {
-        if (row.state === 'completed' && !seen.current.has(row.id)) {
+        if ((row.state === 'completed' || row.state === 'failed') && !seen.current.has(row.id)) {
           seen.current.add(row.id);
           next[row.id] = now + HOLD_MS;
         }
@@ -54,10 +63,12 @@ export default function DownloadToast({ downloads, onOpen, onSave }: Props) {
       });
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [downloads]);
+  }, [downloads, ready]);
 
   const visible = downloads.filter(
-    (row) => row.state === 'in_progress' || (row.state === 'completed' && held[row.id]) || row.state === 'failed',
+    (row) =>
+      row.state === 'in_progress' ||
+      ((row.state === 'completed' || row.state === 'failed') && held[row.id]),
   );
   if (!visible.length) return null;
 

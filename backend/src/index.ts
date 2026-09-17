@@ -16,6 +16,7 @@ import {
   getRuntime,
   getSubRuntime,
   getWindowOccupancy,
+  markActiveDisplay,
   registerVncClient,
   stopAllSessions,
 } from './runtime/sessionManager.js';
@@ -118,7 +119,22 @@ function vncDebugEnabled() {
   return raw === '1' || raw === 'true' || raw === 'on';
 }
 
-function bridgeVnc(ws: import('ws').WebSocket, runtime: { vncSock?: string; vncPort?: number }, sessionId: string) {
+function noteVncInput(
+  runtime: { id?: string; display?: number },
+  buf: Buffer,
+) {
+  if (!runtime.id || runtime.display == null || buf.length < 2) return;
+  const type = buf[0];
+  const down = buf[1];
+  if ((type !== 4 && type !== 5) || down === 0) return;
+  markActiveDisplay(runtime.id, runtime.display);
+}
+
+function bridgeVnc(
+  ws: import('ws').WebSocket,
+  runtime: { id?: string; display?: number; vncSock?: string; vncPort?: number },
+  sessionId: string,
+) {
   const tcp = runtime.vncSock
     ? net.connect({ path: runtime.vncSock })
     : net.connect({ host: '127.0.0.1', port: runtime.vncPort });
@@ -219,6 +235,7 @@ function bridgeVnc(ws: import('ws').WebSocket, runtime: { vncSock?: string; vncP
       : Buffer.isBuffer(data)
         ? data
         : Buffer.from(data as ArrayBuffer);
+    noteVncInput(runtime, buf);
     tcp.write(buf);
     maybeResume();
   });

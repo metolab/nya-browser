@@ -36,6 +36,7 @@ import {
 } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
 import { isFileDialogTitle } from '../modules/files/names.js';
+import { uriList } from '../modules/files/fileUri.js';
 import {
   hasChromeLifecycle,
   startChromeLifecycle,
@@ -483,6 +484,33 @@ function ensureX11UnixDir() {
   }
 }
 
+const GTK_DISPLAY_SO = process.env.NYA_GTK_DISPLAY_SO || '/usr/local/lib/nya-gtk-display.so';
+
+function activeDisplayFile(runtime) {
+  return path.join(sessionDir(runtime.id), 'tmp', 'nya-active-display');
+}
+
+function writeActiveDisplay(runtime, display) {
+  if (runtime.activeDisplay === display) return;
+  runtime.activeDisplay = display;
+  const file = activeDisplayFile(runtime);
+  const tmp = `${file}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, `:${display}\n`);
+  fs.renameSync(tmp, file);
+  try {
+    fs.chownSync(file, runtime.uid, runtime.gid);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function markActiveDisplay(sessionId, display) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime || display == null) return;
+  writeActiveDisplay(runtime, display);
+}
+
 function sessionEnv(runtime, extra = {}) {
   const home = sessionDir(runtime.id);
   const tmp = path.join(home, 'tmp');
@@ -506,7 +534,9 @@ function sessionEnv(runtime, extra = {}) {
     LANGUAGE: posix.split('.')[0],
     TZ: normalizeTimezone(session?.timezone),
     GTK_CSD: '1',
+    GTK_USE_PORTAL: '0',
     NO_AT_BRIDGE: '1',
+    NYA_ACTIVE_DISPLAY_FILE: activeDisplayFile(runtime),
     DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/dbus/system_bus_socket',
     // Remote IME would swallow Unicode keysyms. Local IME commits are injected
     // as finished text; the session must not compose again.
@@ -608,6 +638,9 @@ function writeChromePolicies() {
     DevToolsGenAiSettings: 2,
     URLBlocklist: ['file://*'],
     CommandLineFlagSecurityWarningsEnabled: false,
+    // Dialogs are real GTK windows. One Chrome process owns every desk
+    // display; nya-gtk-display.so moves the chooser onto the desk that last
+    // sent a VNC click so it does not open on the main X server.
     AllowFileSelectionDialogs: true,
     DefaultFileSystemReadGuardSetting: 2,
     DefaultFileSystemWriteGuardSetting: 2,
@@ -1322,8 +1355,12 @@ async function startChrome(runtime) {
   runtime.chromeStartedAt = Date.now();
   runtime.chromeHasInProcessGpu = Boolean(runtime.inProcessGpu);
   console.log(`[chrome ${runtime.id}] gpu backend=${gpuBackend()}`);
+  const preload = [fs.existsSync(GTK_DISPLAY_SO) ? GTK_DISPLAY_SO : '', process.env.LD_PRELOAD || '']
+    .filter(Boolean)
+    .join(':');
   runtime.chrome = runAsSession(runtime, CHROME_BIN, args, {
     logFile,
+    env: preload ? { LD_PRELOAD: preload } : {},
     onExit: (code, signal) => {
       console.log(`[chrome ${runtime.id}] exited code=${code} signal=${signal}`);
       if (runtime.allowRecover) {
@@ -1518,6 +1555,10 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
       tint2: null,
       taskbarOn: false,
       taskbarFitted: false,
+      clipboardText: undefined,
+      clipboardKind: 'text',
+      clipboardFiles: [],
+      clipboardHolder: null,
       cdpPort: NYA_CDP_BASE > 0 ? NYA_CDP_BASE + slot : null,
       startedAt: new Date().toISOString(),
       launchUrl,
@@ -1590,6 +1631,7 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
     // Distinct root color helps confirm desktops are truly separate.
     runAsSession(runtime, 'xsetroot', ['-solid', DESKTOP_COLORS[slot % DESKTOP_COLORS.length]]);
 
+    writeActiveDisplay(runtime, display);
     await startChrome(runtime);
     await sleep(1000);
 
@@ -2371,6 +2413,13 @@ function getSubOrThrow(runtime, subId) {
   return sub;
 }
 
+export function assertSessionRuntime(sessionId, subId = null) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) throw new Error('Session is not running');
+  if (subId) getSubOrThrow(runtime, subId);
+  return runtime;
+}
+
 function sendChromeControl(sessionId, payload, timeoutMs = 25000) {
   const sockPath = chromeControlSock(sessionId);
   return new Promise((resolve, reject) => {
@@ -2440,6 +2489,7 @@ async function stopSubInternal(runtime, sub) {
   }
   displayCreds.delete(sub.display);
   usedSubDisplays.delete(sub.display);
+  if (runtime.activeDisplay === sub.display) writeActiveDisplay(runtime, runtime.display);
   runtime.subs = (runtime.subs || []).filter((s) => s.id !== sub.id);
 }
 
@@ -2584,6 +2634,8 @@ export async function createSub(sessionId, url, { ownerUserId } = {}) {
     x11vnc: null,
     lastGeom: parseWh(SCREEN_INIT),
     clipboardText: undefined,
+    clipboardKind: 'text',
+    clipboardFiles: [],
     clipboardHolder: null,
     tint2: null,
     taskbarOn: false,
@@ -2986,22 +3038,48 @@ export function execOnDisplay(sessionId, file, args) {
   });
 }
 
+function clipboardState(holder, kind, text = '', files = []) {
+  return {
+    kind,
+    text: kind === 'text' ? text : '',
+    files: kind === 'files' ? files : [],
+  };
+}
+
+function rememberedClipboard(holder) {
+  const kind = holder.clipboardKind || 'text';
+  const text = typeof holder.clipboardText === 'string' ? holder.clipboardText : '';
+  const files = (Array.isArray(holder.clipboardFiles) ? holder.clipboardFiles : []).map((item) =>
+    path.basename(item),
+  );
+  return clipboardState(holder, kind, text, files);
+}
+
 export async function getClipboard(sessionId, subId = null) {
   const runtime = runtimes.get(sessionId);
   if (!runtime) throw new Error('Session is not running');
   const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
-  const previous = typeof holder.clipboardText === 'string' ? holder.clipboardText : '';
   try {
+    const targets = await readXclipTargets(runtime, holder);
+    if (/image\/png/i.test(targets)) {
+      holder.clipboardKind = 'image';
+      return clipboardState(holder, 'image');
+    }
+    if (/text\/uri-list|x-special\/gnome-copied-files/i.test(targets)) {
+      holder.clipboardKind = 'files';
+      const names = (holder.clipboardFiles || []).map((item) => path.basename(item));
+      return clipboardState(holder, 'files', '', names);
+    }
+    const previous = typeof holder.clipboardText === 'string' ? holder.clipboardText : '';
     const text = await readXclip(runtime, holder);
     const next = normalizeClipboardText(text, previous);
-    if (next == null) return previous;
+    if (next == null) return rememberedClipboard(holder);
+    holder.clipboardKind = 'text';
     holder.clipboardText = next;
-    return next;
+    holder.clipboardFiles = [];
+    return clipboardState(holder, 'text', next);
   } catch {
-    if (typeof holder.clipboardText === 'string') {
-      return holder.clipboardText;
-    }
-    return '';
+    return rememberedClipboard(holder);
   }
 }
 
@@ -3020,6 +3098,47 @@ function readXclip(runtime, holder) {
   return tryTarget('UTF8_STRING').catch(() =>
     tryTarget('text/plain;charset=utf-8').catch(() => tryTarget('STRING')),
   );
+}
+
+function readXclipTargets(runtime, holder) {
+  return execFileOnHolder(runtime, holder, 'timeout', [
+    '2',
+    'xclip',
+    '-selection',
+    'clipboard',
+    '-o',
+    '-t',
+    'TARGETS',
+  ]).then(({ stdout }) => String(stdout ?? ''));
+}
+
+function holdClipboard(runtime, holder, { kind, text = '', files = [], type, payload }) {
+  holder.clipboardKind = kind;
+  holder.clipboardText = kind === 'text' ? text : '';
+  holder.clipboardFiles = kind === 'files' ? files : [];
+  if (holder.clipboardHolder?.pid) {
+    killTree(holder.clipboardHolder, 'SIGKILL');
+    holder.clipboardHolder = null;
+  }
+  return new Promise((resolve, reject) => {
+    const spawnOpts = {
+      env: sessionEnv(runtime, { DISPLAY: `:${holder.display}` }),
+      detached: true,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    };
+    if (Number.isInteger(runtime.uid)) {
+      spawnOpts.uid = runtime.uid;
+      spawnOpts.gid = runtime.gid;
+    }
+    const child = spawn('xclip', ['-selection', 'clipboard', '-t', type, '-i'], spawnOpts);
+    child.on('error', reject);
+    if (Buffer.isBuffer(payload)) child.stdin.end(payload);
+    else child.stdin.end(String(payload ?? ''), 'utf8');
+    setTimeout(() => {
+      holder.clipboardHolder = child;
+      resolve();
+    }, 150);
+  });
 }
 
 function execFileOnHolder(runtime, holder, file, args) {
@@ -3050,31 +3169,44 @@ export async function setClipboard(sessionId, text, subId = null) {
   if (!runtime) throw new Error('Session is not running');
   const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
   const value = String(text ?? '');
-  holder.clipboardText = value;
-
-  if (holder.clipboardHolder?.pid) {
-    killTree(holder.clipboardHolder, 'SIGKILL');
-    holder.clipboardHolder = null;
-  }
-
-  await new Promise((resolve, reject) => {
-    /** @type {import('child_process').SpawnOptions} */
-    const spawnOpts = {
-      env: sessionEnv(runtime, { DISPLAY: `:${holder.display}` }),
-      detached: true,
-      stdio: ['pipe', 'ignore', 'ignore'],
-    };
-    if (Number.isInteger(runtime.uid)) {
-      spawnOpts.uid = runtime.uid;
-      spawnOpts.gid = runtime.gid;
-    }
-    const child = spawn('xclip', ['-selection', 'clipboard', '-t', 'UTF8_STRING', '-i'], spawnOpts);
-    child.on('error', reject);
-    child.stdin.write(value, 'utf8');
-    child.stdin.end();
-    setTimeout(() => {
-      holder.clipboardHolder = child;
-      resolve();
-    }, 150);
+  await holdClipboard(runtime, holder, {
+    kind: 'text',
+    text: value,
+    type: 'UTF8_STRING',
+    payload: value,
   });
+}
+
+async function releaseX11Buttons(runtime, holder) {
+  try {
+    await execFileOnHolder(runtime, holder, 'xdotool', ['mouseup', '1', 'mouseup', '2', 'mouseup', '3']);
+  } catch {
+    /* lost mouseup after a file picker is common; ignore if xdotool is busy */
+  }
+}
+
+export async function setClipboardImage(sessionId, png, subId = null) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) throw new Error('Session is not running');
+  const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
+  await holdClipboard(runtime, holder, {
+    kind: 'image',
+    type: 'image/png',
+    payload: png,
+  });
+  await releaseX11Buttons(runtime, holder);
+}
+
+export async function setClipboardFiles(sessionId, absPaths, subId = null) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) throw new Error('Session is not running');
+  const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
+  const files = (absPaths || []).map((item) => path.resolve(String(item)));
+  await holdClipboard(runtime, holder, {
+    kind: 'files',
+    files,
+    type: 'text/uri-list',
+    payload: uriList(files),
+  });
+  await releaseX11Buttons(runtime, holder);
 }

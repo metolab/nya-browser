@@ -12,6 +12,7 @@ import {
   type SessionGroup,
   type SessionWindow,
   type SessionPassword,
+  type SessionClipboard,
   type SessionTransfer,
   type SessionUpload,
   type SessionDownload,
@@ -20,7 +21,7 @@ import {
 import { withBase } from '../basePath';
 
 export { emptyProxy };
-export type { FileEntry, ProxyConfig, Session, SessionDownload, SessionTransfer, SessionUpload, UserPublic };
+export type { FileEntry, ProxyConfig, Session, SessionClipboard, SessionDownload, SessionTransfer, SessionUpload, UserPublic };
 
 export class ApiError extends Error {
   status: number;
@@ -248,17 +249,41 @@ export const api = {
         : `/api/sessions/${id}/title`,
     ),
   getClipboard: (id: string, subId?: string | null) =>
-    request<{ text: string }>(
+    request<SessionClipboard>(
       subId
         ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard`
         : `/api/sessions/${id}/clipboard`,
     ),
-    setClipboard: (id: string, text: string, subId?: string | null) =>
+  setClipboard: (id: string, text: string, subId?: string | null) =>
     request<{ ok: boolean }>(
       subId
         ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard`
         : `/api/sessions/${id}/clipboard`,
       { method: 'PUT', body: JSON.stringify({ text }) },
+    ),
+  setClipboardImage: (id: string, image: Blob, subId?: string | null) => {
+    const form = new FormData();
+    form.append('image', image, 'image.webp');
+    return request<{ ok: boolean; file: { name: string; path: string; size: number } }>(
+      subId
+        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard/image`
+        : `/api/sessions/${id}/clipboard/image`,
+      { method: 'POST', body: form },
+    );
+  },
+  setClipboardFiles: (id: string, paths: string[], subId?: string | null) =>
+    request<{ ok: boolean }>(
+      subId
+        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard/files`
+        : `/api/sessions/${id}/clipboard/files`,
+      { method: 'POST', body: JSON.stringify({ paths }) },
+    ),
+  setClipboardImagePath: (id: string, path: string, subId?: string | null) =>
+    request<{ ok: boolean }>(
+      subId
+        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard/image-path`
+        : `/api/sessions/${id}/clipboard/image-path`,
+      { method: 'POST', body: JSON.stringify({ path }) },
     ),
   typeText: (id: string, text: string, subId?: string | null) =>
     request<{ ok: boolean }>(

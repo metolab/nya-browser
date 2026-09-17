@@ -6,6 +6,7 @@ import { asyncHandler } from '../../http/util.js';
 import { assertSessionAccess, handleHttpError } from '../../http/access.js';
 import { chownSessionFiles } from '../../runtime/sessionManager.js';
 import { finishLocalJob, startLocalJob } from './jobs.js';
+import { FILE_UPLOAD_MAX_BYTES } from '@nya/shared';
 import { decodeOriginalName, uniqueName } from './names.js';
 import {
   applyUploadMtime,
@@ -99,7 +100,7 @@ const upload = multer({
       }
     },
   }),
-  limits: { fileSize: 512 * 1024 * 1024 },
+  limits: { fileSize: FILE_UPLOAD_MAX_BYTES },
 });
 
 filesRouter.post(

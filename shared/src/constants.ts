@@ -1,5 +1,9 @@
 export const AUTH_COOKIE = 'nya_token';
 
+export const FILE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+export const PASTE_IMAGE_MAX_EDGE = 2000;
+export const PASTE_IMAGE_PIXEL_MAX = 4000;
+
 export const BACKUP_EXCLUDE = [
   'Cache',
   'Code Cache',

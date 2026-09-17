@@ -96,6 +96,10 @@ test('files upload unique name and transfer lists', async () => {
   expect(Array.isArray(body.uploads)).toBeTruthy();
   expect(Array.isArray(body.downloads)).toBeTruthy();
   expect(body.chooser === null || typeof body.chooser.open === 'boolean').toBeTruthy();
+  const clipFiles = await admin.post(`/api/sessions/${id}/clipboard/files`, {
+    data: { paths: [uploaded.files[0].path] },
+  });
+  expect(clipFiles.status()).toBeGreaterThanOrEqual(400);
   await admin.delete(`/api/sessions/${id}`);
   await admin.dispose();
 });

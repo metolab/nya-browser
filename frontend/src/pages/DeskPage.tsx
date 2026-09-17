@@ -10,6 +10,7 @@ import { useClipboardSync } from '../lib/useClipboardSync';
 import DownloadToast from '../components/DownloadToast';
 import FilePanel from '../components/FilePanel';
 import FilePreview from '../components/FilePreview';
+import UploadDialog from '../components/UploadDialog';
 import NotepadPanel from '../components/NotepadPanel';
 import { SessionTree } from '../components/SessionTree';
 import DeskFloat from '../desk/DeskFloat';
@@ -21,6 +22,7 @@ import { formatDeskTitle, useDocumentTitle } from '../lib/title';
 import { openSessionDeskWindow, sessionDeskPath } from '../lib/sessionWindow';
 import { useSessionFiles } from '../lib/useSessionFiles';
 import { vncWindowExtra } from '../lib/vnc';
+import { requestPointerRelease } from '../lib/vncSession';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,6 +58,8 @@ export default function DeskPage() {
   const [clipOpen, setClipOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesTab, setFilesTab] = useState<'uploads' | 'downloads'>('uploads');
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const chooserToken = useRef('');
   const [notepadOpen, setNotepadOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [display, setDisplay] = useState<DisplayPolicy>(defaultDisplayPolicy);
@@ -73,7 +77,21 @@ export default function DeskPage() {
     sessionId: active?.session.id,
     subId: active ? vncWindowExtra(active.windowId) : null,
     enabled: Boolean(active?.windowId),
+    onText: (text) => clip.pushFromPaste(text),
   });
+
+  useEffect(() => {
+    const chooser = files.transfer.chooser;
+    if (!chooser?.open) {
+      chooserToken.current = '';
+      return;
+    }
+    const token = chooser.title || 'open';
+    if (chooserToken.current === token) return;
+    chooserToken.current = token;
+    requestPointerRelease();
+    setUploadOpen(true);
+  }, [files.transfer.chooser]);
   useDocumentTitle(formatDeskTitle(active?.session.name, tabTitle));
 
   const onPaneChange = useCallback((next: Size) => {
@@ -223,6 +241,7 @@ export default function DeskPage() {
     setFilesOpen(false);
     setNotepadOpen(false);
     setDisplayOpen(false);
+    setUploadOpen(false);
     setTabTitle('');
     if (cur?.session.id && cur.windowId) {
       await api.closeWindow(cur.session.id, cur.windowId).catch(() => undefined);
@@ -236,6 +255,7 @@ export default function DeskPage() {
     setFilesOpen(false);
     setNotepadOpen(false);
     setDisplayOpen(false);
+    setUploadOpen(false);
     setTabTitle('');
     exitSessionWindow();
   };
@@ -252,9 +272,13 @@ export default function DeskPage() {
           sizeTick={sizeTick}
           onPaneChange={onPaneChange}
           transferPaused={files.paused}
-          onUserGesture={files.armGesture}
           onRemoteClipboard={() => {
             void clip.flushRemote().catch(() => undefined);
+          }}
+          onLocalPaste={async (data) => {
+            if (uploadOpen) return 'done';
+            const result = await files.ingestPaste(data, !files.transfer.chooser?.open);
+            return result.inject ? 'inject' : 'done';
           }}
           onVncFocus={() => {
             void clip.flushLocal();
@@ -414,7 +438,7 @@ export default function DeskPage() {
             onTab={setFilesTab}
             uploads={files.transfer.uploads}
             downloads={files.transfer.downloads}
-            onUpload={files.openLocalPicker}
+            onUpload={() => setUploadOpen(true)}
             onRefresh={() => void files.refresh()}
             onDownload={files.downloadToLocal}
             onRemove={files.remove}
@@ -425,6 +449,8 @@ export default function DeskPage() {
 
       {active ? (
         <DownloadToast
+          sessionId={active.session.id}
+          ready={files.ready}
           downloads={files.transfer.downloads}
           onOpen={(path, name) => files.setPreview({ path, name })}
           onSave={files.downloadToLocal}
@@ -440,34 +466,35 @@ export default function DeskPage() {
         />
       ) : null}
 
-      {active && files.fallback ? (
-        <div className="fixed bottom-3 left-1/2 z-[60] -translate-x-1/2">
-          <button
-            type="button"
-            className="rounded-full border bg-card px-3 py-1.5 text-xs shadow"
-            onClick={files.openLocalPicker}
-          >
-            选择本机文件
-          </button>
-        </div>
+      {active ? (
+        <UploadDialog
+          open={uploadOpen}
+          chooserOpen={Boolean(files.transfer.chooser?.open)}
+          uploading={files.uploading}
+          ratio={files.uploadRatio}
+          note={files.note}
+          onOpenChange={(open) => {
+            setUploadOpen(open);
+            if (!open) requestPointerRelease();
+          }}
+          onFiles={async (picked) => {
+            requestPointerRelease();
+            const result = await files.ingestFiles(picked, 'picker', false);
+            if (result.ok) setUploadOpen(false);
+          }}
+          onPaste={async (data) => {
+            requestPointerRelease();
+            const result = await files.ingestPaste(data, false);
+            if (result.ok) setUploadOpen(false);
+          }}
+        />
       ) : null}
 
-      {files.uploading ? (
+      {files.uploading && !uploadOpen ? (
         <div className="fixed top-3 left-1/2 z-[60] -translate-x-1/2 rounded-full border bg-card px-3 py-1 text-xs shadow">
-          正在上传… {Math.round(files.uploadRatio * 100)}%
+          {files.note || '正在上传…'} {Math.round(files.uploadRatio * 100)}%
         </div>
       ) : null}
-
-      <input
-        ref={files.inputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(event) => {
-          const picked = Array.from(event.target.files || []);
-          if (picked.length) void files.uploadFiles(picked);
-        }}
-      />
 
       <AlertDialog
         open={Boolean(takeover)}

@@ -1,15 +1,28 @@
+import fs from 'fs';
 import { Router } from 'express';
-import { displaySchema, clipboardSchema, typeTextSchema } from '@nya/shared';
+import multer from 'multer';
+import { clipboardFilesSchema, clipboardSchema, displaySchema, typeTextSchema } from '@nya/shared';
 import { asyncHandler } from '../../http/util.js';
 import { assertSessionAccess, handleHttpError, HttpError } from '../../http/access.js';
 import {
+  assertSessionRuntime,
   canAccessWindow,
+  chownSessionFiles,
   getChromeTitle,
   getClipboard,
   resizeDisplay,
   setClipboard,
+  setClipboardFiles,
+  setClipboardImage,
   typeText,
 } from '../../runtime/sessionManager.js';
+import { toClipboardPng } from '../files/image.js';
+import { resolveClipboardFiles, savePastedImage } from '../files/service.js';
+
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+});
 
 export const sessionIoRouter = Router({ mergeParams: true });
 
@@ -84,13 +97,60 @@ sessionIoRouter.get(
   }),
 );
 
+async function putClipboardImage(req: import('express').Request, res: import('express').Response, subId: string | null) {
+  gateWindow(req, subId || 'main');
+  assertSessionRuntime(req.params.id, subId);
+  const file = req.file;
+  if (!file?.buffer?.length) {
+    res.status(400).json({ error: 'Image required' });
+    return;
+  }
+  let png: Buffer;
+  try {
+    png = await toClipboardPng(file.buffer);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid image' });
+    return;
+  }
+  const saved = savePastedImage(req.params.id, png);
+  chownSessionFiles(req.params.id);
+  await setClipboardImage(req.params.id, png, subId);
+  res.json({ ok: true, kind: 'image', file: { name: saved.name, path: saved.path, size: saved.size } });
+}
+
+async function putClipboardFiles(req: import('express').Request, res: import('express').Response, subId: string | null) {
+  gateWindow(req, subId || 'main');
+  assertSessionRuntime(req.params.id, subId);
+  const parsed = clipboardFilesSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid paths' });
+    return;
+  }
+  const abs = resolveClipboardFiles(req.params.id, parsed.data.paths);
+  await setClipboardFiles(req.params.id, abs, subId);
+  res.json({ ok: true, kind: 'files', files: parsed.data.paths });
+}
+
+async function putClipboardImagePath(req: import('express').Request, res: import('express').Response, subId: string | null) {
+  gateWindow(req, subId || 'main');
+  assertSessionRuntime(req.params.id, subId);
+  const rel = String(req.body?.path || '').trim();
+  if (!rel) {
+    res.status(400).json({ error: 'Path required' });
+    return;
+  }
+  const [abs] = resolveClipboardFiles(req.params.id, [rel]);
+  const png = await toClipboardPng(fs.readFileSync(abs));
+  await setClipboardImage(req.params.id, png, subId);
+  res.json({ ok: true, kind: 'image', file: { path: rel } });
+}
+
 sessionIoRouter.get(
   '/clipboard',
   asyncHandler(async (req, res) => {
     try {
       gateWindow(req, 'main');
-      const text = await getClipboard(req.params.id);
-      res.json({ text });
+      res.json(await getClipboard(req.params.id));
     } catch (err) {
       handleHttpError(err, res);
     }
@@ -104,7 +164,41 @@ sessionIoRouter.put(
       gateWindow(req, 'main');
       const parsed = clipboardSchema.safeParse(req.body || {});
       await setClipboard(req.params.id, parsed.success ? parsed.data.text : '');
-      res.json({ ok: true });
+      res.json({ ok: true, kind: 'text' });
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.post(
+  '/clipboard/image',
+  imageUpload.single('image'),
+  asyncHandler(async (req, res) => {
+    try {
+      await putClipboardImage(req, res, null);
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.post(
+  '/clipboard/files',
+  asyncHandler(async (req, res) => {
+    try {
+      await putClipboardFiles(req, res, null);
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.post(
+  '/clipboard/image-path',
+  asyncHandler(async (req, res) => {
+    try {
+      await putClipboardImagePath(req, res, null);
     } catch (err) {
       handleHttpError(err, res);
     }
@@ -116,8 +210,7 @@ sessionIoRouter.get(
   asyncHandler(async (req, res) => {
     try {
       gateWindow(req, req.params.subId);
-      const text = await getClipboard(req.params.id, req.params.subId);
-      res.json({ text });
+      res.json(await getClipboard(req.params.id, req.params.subId));
     } catch (err) {
       handleHttpError(err, res);
     }
@@ -131,7 +224,41 @@ sessionIoRouter.put(
       gateWindow(req, req.params.subId);
       const parsed = clipboardSchema.safeParse(req.body || {});
       await setClipboard(req.params.id, parsed.success ? parsed.data.text : '', req.params.subId);
-      res.json({ ok: true });
+      res.json({ ok: true, kind: 'text' });
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.post(
+  '/subs/:subId/clipboard/image',
+  imageUpload.single('image'),
+  asyncHandler(async (req, res) => {
+    try {
+      await putClipboardImage(req, res, req.params.subId);
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.post(
+  '/subs/:subId/clipboard/files',
+  asyncHandler(async (req, res) => {
+    try {
+      await putClipboardFiles(req, res, req.params.subId);
+    } catch (err) {
+      handleHttpError(err, res);
+    }
+  }),
+);
+
+sessionIoRouter.post(
+  '/subs/:subId/clipboard/image-path',
+  asyncHandler(async (req, res) => {
+    try {
+      await putClipboardImagePath(req, res, req.params.subId);
     } catch (err) {
       handleHttpError(err, res);
     }

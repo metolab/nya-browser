@@ -5,7 +5,7 @@ import { downloadsDir, ensureFilesDir, getSession } from '../../store.js';
 import { detectFileDialog } from '../../runtime/sessionManager.js';
 import { readChromeDownloads } from './history.js';
 import { listLocalJobs } from './jobs.js';
-import { HIDDEN_FILE_NAMES, isCrdownload, isHiddenFileName, stripCrdownload, UPLOAD_LOG_NAME } from './names.js';
+import { HIDDEN_FILE_NAMES, isCrdownload, isHiddenFileName, stripCrdownload, uniqueName, UPLOAD_LOG_NAME } from './names.js';
 
 function assertSafeRel(relPath: string) {
   const normalized = path.normalize(relPath || '.').replace(/^(\.\.(\/|\\|$))+/, '');
@@ -13,6 +13,16 @@ function assertSafeRel(relPath: string) {
     throw new Error('Invalid path');
   }
   return normalized === '.' ? '' : normalized;
+}
+
+export function resolveClipboardFiles(sessionId: string, rels: string[]) {
+  return rels.map((rel) => {
+    const { full } = resolveSessionPath(sessionId, rel);
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
+      throw new Error('File not found');
+    }
+    return full;
+  });
 }
 
 export function resolveSessionPath(sessionId: string, relPath = '.') {
@@ -49,6 +59,22 @@ export function recordUpload(sessionId: string, entry: SessionUpload) {
   const rows = readUploadLog(sessionId).filter((row) => row.path !== entry.path);
   rows.unshift(entry);
   writeUploadLog(sessionId, rows.slice(0, 200));
+}
+
+export function savePastedImage(sessionId: string, png: Buffer) {
+  const { full: dir } = resolveSessionPath(sessionId, '.');
+  fs.mkdirSync(dir, { recursive: true });
+  const name = uniqueName(dir, 'image.png');
+  const full = path.join(dir, name);
+  fs.writeFileSync(full, png);
+  const entry = {
+    name,
+    path: name,
+    size: png.length,
+    mtime: new Date().toISOString(),
+  };
+  recordUpload(sessionId, entry);
+  return { ...entry, full };
 }
 
 export function listUploads(sessionId: string): SessionUpload[] {

@@ -33,7 +33,16 @@ export type KeyLike = {
   key?: string;
   code?: string;
   keyCode?: number;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
 };
+
+export function isPasteKey(e: KeyLike): boolean {
+  if (e.altKey) return false;
+  if (!(e.ctrlKey || e.metaKey)) return false;
+  return e.key === 'v' || e.key === 'V' || e.code === 'KeyV';
+}
 
 export type DedupState = {
   text: string;
@@ -66,12 +75,14 @@ export function shouldForwardKey(
 ): boolean {
   if (composing) return false;
   if (isComposingKey(e)) return false;
+  if (isPasteKey(e)) return false;
   if (shouldSuppressCommitKey(now, lastCommitAt, e)) return false;
   return true;
 }
 
 export function shouldPreventDefaultKey(e: KeyLike, composing: boolean): boolean {
   if (composing || isComposingKey(e)) return false;
+  if (isPasteKey(e)) return false;
   return true;
 }
 

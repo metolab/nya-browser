@@ -17,6 +17,7 @@ type Props = {
   onVncFocus?: () => void;
   transferPaused?: boolean;
   onUserGesture?: () => void;
+  onLocalPaste?: (data: DataTransfer | null) => Promise<'inject' | 'done'>;
 };
 
 export default function DeskStage({
@@ -31,6 +32,7 @@ export default function DeskStage({
   onVncFocus,
   transferPaused = false,
   onUserGesture,
+  onLocalPaste,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [pane, setPane] = useState<Size>({ w: 1280, h: 720 });
@@ -91,6 +93,7 @@ export default function DeskStage({
           onFocus={() => onVncFocus?.()}
           onRemoteClipboard={onRemoteClipboard}
           onUserGesture={onUserGesture}
+          onLocalPaste={onLocalPaste}
         />
       )}
       {transferPaused ? (

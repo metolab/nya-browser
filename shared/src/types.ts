@@ -174,6 +174,14 @@ export interface LocalFileJob {
   state: 'active' | 'completed' | 'cancelled' | 'error';
 }
 
+export type ClipboardKind = 'text' | 'image' | 'files';
+
+export interface SessionClipboard {
+  kind: ClipboardKind;
+  text: string;
+  files?: string[];
+}
+
 export interface SessionFileChooser {
   open: boolean;
   title: string;

@@ -61,6 +61,7 @@ type Props = {
   onFocus: () => void;
   onRemoteClipboard?: (text: string) => void;
   onUserGesture?: () => void;
+  onLocalPaste?: (data: DataTransfer | null) => Promise<'inject' | 'done'>;
 };
 
 function vncUrl(sessionId: string, subId: string | null, occupancyId: string | null) {
@@ -100,6 +101,7 @@ export default function VncViewer({
   onFocus,
   onRemoteClipboard,
   onUserGesture,
+  onLocalPaste,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -128,9 +130,11 @@ export default function VncViewer({
   const transferPausedRef = useRef(transferPaused);
   const resizeRemoteRef = useRef(resizeRemote);
   const onUserGestureRef = useRef(onUserGesture);
+  const onLocalPasteRef = useRef(onLocalPaste);
   const [error, setError] = useState<string | null>(null);
   const onRemoteClipboardRef = useRef(onRemoteClipboard);
   onRemoteClipboardRef.current = onRemoteClipboard;
+  onLocalPasteRef.current = onLocalPaste;
 
   remoteRef.current = { w: remoteWidth, h: remoteHeight };
   sessionIdRef.current = sessionId;
@@ -584,11 +588,34 @@ export default function VncViewer({
       sendCommit(text);
     };
 
+    const sendCtrlV = () => {
+      const rfb = rfbRef.current;
+      if (!rfb) return;
+      rfb.sendKey(0xffe3, 'ControlLeft', true);
+      rfb.sendKey(0x0076, 'KeyV', true);
+      rfb.sendKey(0x0076, 'KeyV', false);
+      rfb.sendKey(0xffe3, 'ControlLeft', false);
+    };
+
     const onClipboard = (e: Event) => {
-      if (viewOnlyRef.current) return;
+      if (viewOnly) return;
       e.preventDefault();
     };
 
+    const onPaste = (e: ClipboardEvent) => {
+      if (viewOnly) return;
+      if (imeRef.current.composing) return;
+      const target = e.target;
+      if (target instanceof HTMLInputElement) return;
+      if (target instanceof HTMLTextAreaElement && target !== trap) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void Promise.resolve(onLocalPasteRef.current?.(e.clipboardData)).then((result) => {
+        if (result === 'inject') sendCtrlV();
+      });
+    };
+
+    const wrap = wrapRef.current;
     trap.addEventListener('keydown', onKey);
     trap.addEventListener('keyup', onKey);
     trap.addEventListener('compositionstart', onCompositionStart);
@@ -597,7 +624,8 @@ export default function VncViewer({
     trap.addEventListener('input', onInput);
     trap.addEventListener('copy', onClipboard);
     trap.addEventListener('cut', onClipboard);
-    trap.addEventListener('paste', onClipboard);
+    trap.addEventListener('paste', onPaste);
+    wrap?.addEventListener('paste', onPaste);
     return () => {
       trap.removeEventListener('keydown', onKey);
       trap.removeEventListener('keyup', onKey);
@@ -607,9 +635,10 @@ export default function VncViewer({
       trap.removeEventListener('input', onInput);
       trap.removeEventListener('copy', onClipboard);
       trap.removeEventListener('cut', onClipboard);
-      trap.removeEventListener('paste', onClipboard);
+      trap.removeEventListener('paste', onPaste);
+      wrap?.removeEventListener('paste', onPaste);
     };
-  }, [sendCommit]);
+  }, [sendCommit, viewOnly]);
 
   useEffect(() => {
     const session = sessionRef.current;

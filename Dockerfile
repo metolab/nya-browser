@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:22-bookworm AS build
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ libx11-dev libxi-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
@@ -16,6 +16,8 @@ COPY shared ./shared
 COPY backend ./backend
 COPY frontend ./frontend
 RUN npm run build
+COPY scripts/nya-gtk-display.c /tmp/nya-native/
+RUN gcc -shared -fPIC -O2 -o /tmp/nya-gtk-display.so /tmp/nya-native/nya-gtk-display.c -ldl
 
 FROM debian:bookworm-slim
 
@@ -66,11 +68,13 @@ RUN set -eux; \
       openbox \
       tint2 \
       xclip \
+      webp \
       x11-xserver-utils \
       x11-utils \
       xcvt \
       wmctrl \
       xdotool \
+      libxi6 \
       xdg-utils \
       dbus \
       dbus-x11 \
@@ -158,6 +162,7 @@ COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/shared /app/shared
 COPY --from=build /app/backend /app/backend
 COPY --from=build /app/frontend/dist /app/frontend/dist
+COPY --from=build /tmp/nya-gtk-display.so /usr/local/lib/nya-gtk-display.so
 COPY scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
