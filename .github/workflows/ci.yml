@@ -10,6 +10,7 @@ permissions:
 
 env:
   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+  DATA_DIR: ${{ runner.temp }}/nya-data
 
 jobs:
   build:
