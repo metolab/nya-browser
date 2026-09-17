@@ -1,207 +1,134 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { toast } from 'sonner';
-import {
-  DownloadIcon,
-  FileIcon,
-  FolderIcon,
-  FolderPlusIcon,
-  RefreshCwIcon,
-  Trash2Icon,
-  UploadIcon,
-} from 'lucide-react';
-import type { FileEntry } from '../api/client';
-import { api } from '../api/client';
+import { DownloadIcon, FileIcon, RefreshCwIcon, Trash2Icon, UploadIcon } from 'lucide-react';
+import type { SessionDownload, SessionUpload } from '@nya/shared';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { formatBytes, hostOf } from '../lib/files';
 
-type Props = { sessionId: string };
+type Tab = 'uploads' | 'downloads';
 
-function joinPath(base: string, name: string) {
-  if (!base || base === '.') return name;
-  return `${base.replace(/\/$/, '')}/${name}`;
+type Props = {
+  tab: Tab;
+  onTab: (tab: Tab) => void;
+  uploads: SessionUpload[];
+  downloads: SessionDownload[];
+  loading?: boolean;
+  onUpload: () => void;
+  onRefresh: () => void;
+  onDownload: (path: string, name: string, size: number) => void;
+  onRemove: (path: string) => void;
+  onPreview: (path: string, name: string) => void;
+};
+
+function stateLabel(state: SessionDownload['state']) {
+  if (state === 'in_progress') return '进行中';
+  if (state === 'failed') return '失败';
+  if (state === 'cancelled') return '已取消';
+  return '完成';
 }
 
-function parentPath(p: string) {
-  if (!p || p === '.') return '.';
-  const parts = p.split('/').filter(Boolean);
-  parts.pop();
-  return parts.length ? parts.join('/') : '.';
-}
-
-export default function FilePanel({ sessionId }: Props) {
-  const [path, setPath] = useState('.');
-  const [entries, setEntries] = useState<FileEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [mkdirOpen, setMkdirOpen] = useState(false);
-  const [folderName, setFolderName] = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await api.listFiles(sessionId, path);
-      setEntries(data.entries);
-      setPath(data.path);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [path, sessionId]);
-
-  useEffect(() => {
-    setPath('.');
-  }, [sessionId]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
+export default function FilePanel({
+  tab,
+  onTab,
+  uploads,
+  downloads,
+  loading,
+  onUpload,
+  onRefresh,
+  onDownload,
+  onRemove,
+  onPreview,
+}: Props) {
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="truncate text-xs text-muted-foreground">
-        Downloads / {path === '.' ? '' : path}
-      </div>
-      <div className="flex flex-wrap gap-1">
-        <Button size="sm" variant="outline" disabled={path === '.'} onClick={() => setPath(parentPath(path))}>
-          上级
+      <div className="flex gap-1">
+        <Button size="xs" variant={tab === 'uploads' ? 'default' : 'outline'} onClick={() => onTab('uploads')}>
+          上传
         </Button>
-        <Button size="icon-sm" variant="outline" onClick={() => void refresh()}>
-          <RefreshCwIcon />
+        <Button size="xs" variant={tab === 'downloads' ? 'default' : 'outline'} onClick={() => onTab('downloads')}>
+          下载
         </Button>
-        <Button
-          size="icon-sm"
-          variant="outline"
-          onClick={() => {
-            setFolderName('');
-            setMkdirOpen(true);
-          }}
-        >
-          <FolderPlusIcon />
-        </Button>
-        <Button size="icon-sm" variant="outline" onClick={() => fileRef.current?.click()}>
-          <UploadIcon />
-        </Button>
-        <input
-          ref={fileRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            const files = Array.from(e.target.files || []);
-            if (!files.length) return;
-            void (async () => {
-              try {
-                await api.upload(sessionId, path, files);
-                await refresh();
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : String(err));
-              } finally {
-                if (fileRef.current) fileRef.current.value = '';
-              }
-            })();
-          }}
-        />
+        <span className="ml-auto flex gap-1">
+          <Button size="icon-xs" variant="outline" onClick={onRefresh} title="刷新">
+            <RefreshCwIcon />
+          </Button>
+          <Button size="icon-xs" variant="outline" onClick={onUpload} title="上传到公共目录">
+            <UploadIcon />
+          </Button>
+        </span>
       </div>
       <div className={`min-h-0 flex-1 overflow-auto ${loading ? 'opacity-60' : ''}`}>
-        {entries.length === 0 ? (
-          <p className="py-6 text-center text-xs text-muted-foreground">空目录</p>
+        {tab === 'uploads' ? (
+          uploads.length === 0 ? (
+            <p className="py-6 text-center text-xs text-muted-foreground">还没有上传的文件</p>
+          ) : (
+            uploads.map((row) => (
+              <FileRow
+                key={row.path}
+                name={row.name}
+                hint={formatBytes(row.size)}
+                canDownload
+                onDownload={() => onDownload(row.path, row.name, row.size)}
+                onRemove={() => onRemove(row.path)}
+                onPreview={() => onPreview(row.path, row.name)}
+              />
+            ))
+          )
+        ) : downloads.length === 0 ? (
+          <p className="py-6 text-center text-xs text-muted-foreground">还没有下载记录</p>
         ) : (
-          entries.map((row) => (
-            <div key={row.name} className="flex items-center gap-2 py-1 text-sm">
-              {row.type === 'dir' ? (
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  onClick={() => setPath(joinPath(path, row.name))}
-                >
-                  <FolderIcon className="size-4 shrink-0" />
-                  <span className="truncate">{row.name}</span>
-                </button>
-              ) : (
-                <span className="flex min-w-0 flex-1 items-center gap-2">
-                  <FileIcon className="size-4 shrink-0" />
-                  <span className="truncate">{row.name}</span>
-                </span>
-              )}
-              <span className="flex shrink-0 items-center">
-                {row.type === 'file' && (
-                  <Button size="icon-xs" variant="ghost" asChild>
-                    <a href={api.downloadUrl(sessionId, joinPath(path, row.name))} title="下载">
-                      <DownloadIcon />
-                    </a>
-                  </Button>
-                )}
-                <Button
-                  size="icon-xs"
-                  variant="ghost"
-                  onClick={() => {
-                    void (async () => {
-                      try {
-                        await api.removeFile(sessionId, joinPath(path, row.name));
-                        await refresh();
-                      } catch (err) {
-                        toast.error(err instanceof Error ? err.message : String(err));
-                      }
-                    })();
-                  }}
-                >
-                  <Trash2Icon />
-                </Button>
-              </span>
-            </div>
+          downloads.map((row) => (
+            <FileRow
+              key={row.id}
+              name={row.name}
+              hint={`${stateLabel(row.state)} · ${formatBytes(row.receivedBytes || row.totalBytes)}${
+                row.url ? ` · ${hostOf(row.url)}` : ''
+              }${row.missing ? ' · 文件已删除' : ''}`}
+              url={row.url}
+              canDownload={row.state === 'completed' && !row.missing}
+              onDownload={() => onDownload(row.path, row.name, row.totalBytes || row.receivedBytes)}
+              onRemove={() => onRemove(row.path)}
+              onPreview={() => onPreview(row.path, row.name)}
+            />
           ))
         )}
       </div>
-      <Dialog open={mkdirOpen} onOpenChange={setMkdirOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>新建文件夹</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={folderName}
-            placeholder="文件夹名称"
-            onChange={(e) => setFolderName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && folderName.trim()) {
-                void api
-                  .mkdir(sessionId, joinPath(path, folderName.trim()))
-                  .then(() => {
-                    setMkdirOpen(false);
-                    return refresh();
-                  })
-                  .catch((err: Error) => toast.error(err.message));
-              }
-            }}
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setMkdirOpen(false)}>
-              取消
-            </Button>
-            <Button
-              onClick={() => {
-                if (!folderName.trim()) return;
-                void api
-                  .mkdir(sessionId, joinPath(path, folderName.trim()))
-                  .then(() => {
-                    setMkdirOpen(false);
-                    return refresh();
-                  })
-                  .catch((err: Error) => toast.error(err.message));
-              }}
-            >
-              创建
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+    </div>
+  );
+}
+
+function FileRow({
+  name,
+  hint,
+  url,
+  canDownload,
+  onDownload,
+  onRemove,
+  onPreview,
+}: {
+  name: string;
+  hint: string;
+  url?: string;
+  canDownload: boolean;
+  onDownload: () => void;
+  onRemove: () => void;
+  onPreview: () => void;
+}) {
+  return (
+    <div className="flex items-start gap-2 border-b border-border/60 py-1.5 last:border-0">
+      <FileIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      <button type="button" className="min-w-0 flex-1 text-left" onClick={onPreview} title={url || name}>
+        <div className="truncate text-sm">{name}</div>
+        <div className="truncate text-[11px] text-muted-foreground">{hint}</div>
+      </button>
+      <span className="flex shrink-0 items-center">
+        {canDownload ? (
+          <Button size="icon-xs" variant="ghost" title="下载到本机" onClick={onDownload}>
+            <DownloadIcon />
+          </Button>
+        ) : null}
+        <Button size="icon-xs" variant="ghost" title="删除" onClick={onRemove}>
+          <Trash2Icon />
+        </Button>
+      </span>
     </div>
   );
 }

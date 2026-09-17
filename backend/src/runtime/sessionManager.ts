@@ -35,6 +35,7 @@ import {
   webrtcNeedsPublicIp,
 } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
+import { isFileDialogTitle } from '../modules/files/names.js';
 import {
   hasChromeLifecycle,
   startChromeLifecycle,
@@ -607,7 +608,7 @@ function writeChromePolicies() {
     DevToolsGenAiSettings: 2,
     URLBlocklist: ['file://*'],
     CommandLineFlagSecurityWarningsEnabled: false,
-    AllowFileSelectionDialogs: false,
+    AllowFileSelectionDialogs: true,
     DefaultFileSystemReadGuardSetting: 2,
     DefaultFileSystemWriteGuardSetting: 2,
     AudioCaptureAllowed: true,
@@ -670,6 +671,10 @@ function writeChromePreferences(sessionId, startUrl) {
     default_directory: downloads,
     directory_upgrade: true,
     prompt_for_download: false,
+  };
+  prefs.selectfile = {
+    ...(prefs.selectfile || {}),
+    last_directory: downloads,
   };
   prefs.credentials_enable_service = true;
   prefs.credentials_enable_autosignin = true;
@@ -1827,6 +1832,35 @@ const BROWSER_TITLE_SUFFIX = /\s+[-–—]\s+(Google Chrome|Chromium|Chrome)\s*$
 
 export function stripBrowserTitleSuffix(title) {
   return String(title || '').replace(BROWSER_TITLE_SUFFIX, '').trim();
+}
+
+export async function detectFileDialog(sessionId, subId = null) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) return { open: false, title: '' };
+  let display = runtime.display;
+  if (subId) {
+    try {
+      display = getSubOrThrow(runtime, subId).display;
+    } catch {
+      return { open: false, title: '' };
+    }
+  }
+  let out = '';
+  try {
+    out = await runOnDisplay(display, 'wmctrl', ['-lx'], 800);
+  } catch {
+    return { open: false, title: '' };
+  }
+  for (const line of String(out).split('\n')) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 5) continue;
+    const cls = parts[2] || '';
+    const title = parts.slice(4).join(' ');
+    if (/portal|gtkfilechooser|xdg-desktop-portal/i.test(cls) || isFileDialogTitle(title)) {
+      return { open: true, title: title || 'Open' };
+    }
+  }
+  return { open: false, title: '' };
 }
 
 export async function getChromeTitle(sessionId, subId = null) {

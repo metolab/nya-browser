@@ -15,6 +15,8 @@ type Props = {
   onPaneChange: (pane: Size) => void;
   onRemoteClipboard?: (text: string) => void;
   onVncFocus?: () => void;
+  transferPaused?: boolean;
+  onUserGesture?: () => void;
 };
 
 export default function DeskStage({
@@ -27,6 +29,8 @@ export default function DeskStage({
   onPaneChange,
   onRemoteClipboard,
   onVncFocus,
+  transferPaused = false,
+  onUserGesture,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [pane, setPane] = useState<Size>({ w: 1280, h: 720 });
@@ -83,10 +87,19 @@ export default function DeskStage({
           remoteHeight={remote.h}
           sizeTick={sizeTick}
           occupancyId={occupancyId}
+          transferPaused={transferPaused}
           onFocus={() => onVncFocus?.()}
           onRemoteClipboard={onRemoteClipboard}
+          onUserGesture={onUserGesture}
         />
       )}
+      {transferPaused ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+          <div className="rounded-full border bg-card/90 px-3 py-1 text-xs text-muted-foreground shadow">
+            传输中，画面已暂停
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

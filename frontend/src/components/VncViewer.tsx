@@ -55,8 +55,10 @@ type Props = {
   viewOnly?: boolean;
   resizeRemote?: boolean;
   occupancyId?: string | null;
+  transferPaused?: boolean;
   onFocus: () => void;
   onRemoteClipboard?: (text: string) => void;
+  onUserGesture?: () => void;
 };
 
 function vncUrl(sessionId: string, subId: string | null, occupancyId: string | null) {
@@ -92,8 +94,10 @@ export default function VncViewer({
   viewOnly = false,
   resizeRemote = true,
   occupancyId = null,
+  transferPaused = false,
   onFocus,
   onRemoteClipboard,
+  onUserGesture,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -119,7 +123,9 @@ export default function VncViewer({
   const queuedRef = useRef(false);
   const pendingSizeRef = useRef(false);
   const viewOnlyRef = useRef(viewOnly);
+  const transferPausedRef = useRef(transferPaused);
   const resizeRemoteRef = useRef(resizeRemote);
+  const onUserGestureRef = useRef(onUserGesture);
   const [error, setError] = useState<string | null>(null);
   const onRemoteClipboardRef = useRef(onRemoteClipboard);
   onRemoteClipboardRef.current = onRemoteClipboard;
@@ -127,8 +133,10 @@ export default function VncViewer({
   remoteRef.current = { w: remoteWidth, h: remoteHeight };
   sessionIdRef.current = sessionId;
   subRef.current = subId;
-  viewOnlyRef.current = viewOnly;
+  viewOnlyRef.current = viewOnly || transferPaused;
+  transferPausedRef.current = transferPaused;
   resizeRemoteRef.current = resizeRemote;
+  onUserGestureRef.current = onUserGesture;
 
   const autoscale = useCallback(() => {
     sessionRef.current?.autoscale();
@@ -171,6 +179,10 @@ export default function VncViewer({
   }, [sessionId, subId]);
 
   const pushSize = useCallback((force = false) => {
+    if (transferPausedRef.current) {
+      pendingSizeRef.current = true;
+      return;
+    }
     if (!resizeRemoteRef.current) return;
     if (!isDocumentVisible()) {
       pendingSizeRef.current = true;
@@ -402,6 +414,7 @@ export default function VncViewer({
           retries = 0;
           reconnectOnFocus = false;
           session.onConnected();
+          session.setTransferPaused(transferPausedRef.current);
           if (!live) {
             rfbRef.current = rfb;
             sessionRef.current = session;
@@ -597,17 +610,23 @@ export default function VncViewer({
   }, [sendCommit]);
 
   useEffect(() => {
+    const session = sessionRef.current;
+    session?.setTransferPaused(transferPaused);
+    const host = hostRef.current;
+    const canvas = host ? mountCanvas(host) : null;
+    if (transferPaused && canvas && host) holdCanvas(host, canvas);
+    if (!transferPaused && host) clearHold(host);
     const rfb = rfbRef.current;
     if (!rfb) return;
-    rfb.viewOnly = viewOnly;
+    rfb.viewOnly = viewOnly || transferPaused;
     rfb.focusOnClick = false;
-    if (!viewOnly) focusTrap(false);
-  }, [viewOnly, focusTrap]);
+    if (!viewOnly && !transferPaused) focusTrap(false);
+  }, [viewOnly, transferPaused, focusTrap]);
 
   useEffect(() => {
-    if (!focused || viewOnly) return;
+    if (!focused || viewOnly || transferPaused) return;
     focusTrap(false);
-  }, [focused, viewOnly, focusTrap]);
+  }, [focused, viewOnly, transferPaused, focusTrap]);
 
   const placeTrap = (e: PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || viewOnlyRef.current) return;
@@ -636,7 +655,9 @@ export default function VncViewer({
       }}
       onPointerDown={placeTrap}
       onPointerUp={(e) => {
-        if (e.button !== 0 || viewOnlyRef.current) return;
+        if (e.button !== 0) return;
+        onUserGestureRef.current?.();
+        if (viewOnlyRef.current) return;
         focusTrap(true);
       }}
     >

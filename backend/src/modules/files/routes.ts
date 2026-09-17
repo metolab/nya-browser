@@ -5,7 +5,19 @@ import multer from 'multer';
 import { asyncHandler } from '../../http/util.js';
 import { assertSessionAccess, handleHttpError } from '../../http/access.js';
 import { chownSessionFiles } from '../../runtime/sessionManager.js';
-import { listFiles, mkdir, removeEntry, resolveSessionPath } from './service.js';
+import { finishLocalJob, startLocalJob } from './jobs.js';
+import { decodeOriginalName, uniqueName } from './names.js';
+import {
+  applyUploadMtime,
+  getTransfer,
+  listDownloads,
+  listFiles,
+  listUploads,
+  mkdir,
+  recordUpload,
+  removeEntry,
+  resolveSessionPath,
+} from './service.js';
 
 export const filesRouter = Router({ mergeParams: true });
 
@@ -23,6 +35,28 @@ filesRouter.get(
   asyncHandler((req, res) => {
     const result = listFiles(req.params.id, String(req.query.path || '.'));
     res.json(result);
+  }),
+);
+
+filesRouter.get(
+  '/uploads',
+  asyncHandler((req, res) => {
+    res.json({ uploads: listUploads(req.params.id) });
+  }),
+);
+
+filesRouter.get(
+  '/downloads',
+  asyncHandler((req, res) => {
+    res.json({ downloads: listDownloads(req.params.id) });
+  }),
+);
+
+filesRouter.get(
+  '/transfer',
+  asyncHandler(async (req, res) => {
+    const sub = req.query.sub ? String(req.query.sub) : null;
+    res.json(await getTransfer(req.params.id, sub));
   }),
 );
 
@@ -55,8 +89,14 @@ const upload = multer({
         cb(err as Error, undefined);
       }
     },
-    filename: (_req, file, cb) => {
-      cb(null, path.basename(file.originalname));
+    filename: (req, file, cb) => {
+      try {
+        const dirRel = String(req.query.dir || req.body?.dir || '.');
+        const { full } = resolveSessionPath(req.params.id, dirRel);
+        cb(null, uniqueName(full, decodeOriginalName(file.originalname)));
+      } catch (err) {
+        cb(err as Error, undefined);
+      }
     },
   }),
   limits: { fileSize: 512 * 1024 * 1024 },
@@ -66,24 +106,42 @@ filesRouter.post(
   '/upload',
   upload.array('files', 50),
   asyncHandler((req, res) => {
-    chownSessionFiles(req.params.id);
-    res.json({
-      ok: true,
-      files: ((req.files as Express.Multer.File[]) || []).map((f) => ({
+    const files = ((req.files as Express.Multer.File[]) || []).map((f, index) => {
+      const mtimes = req.body?.lastModified;
+      const stamp = Array.isArray(mtimes) ? mtimes[index] : mtimes;
+      applyUploadMtime(f.path, stamp);
+      const dirRel = String(req.query.dir || req.body?.dir || '.');
+      const rel = dirRel && dirRel !== '.' ? `${String(dirRel).replace(/\/$/, '')}/${f.filename}` : f.filename;
+      recordUpload(req.params.id, {
         name: f.filename,
+        path: rel,
         size: f.size,
-      })),
+        mtime: new Date().toISOString(),
+      });
+      return { name: f.filename, path: rel, size: f.size };
     });
+    chownSessionFiles(req.params.id);
+    res.json({ ok: true, files });
   }),
 );
 
 filesRouter.get(
   '/download',
   asyncHandler((req, res) => {
-    const { full } = resolveSessionPath(req.params.id, String(req.query.path || ''));
+    const rel = String(req.query.path || '');
+    const { full } = resolveSessionPath(req.params.id, rel);
     if (!fs.existsSync(full) || fs.statSync(full).isDirectory()) {
       return res.status(404).json({ error: 'File not found' });
     }
-    res.download(full, path.basename(full));
+    const name = path.basename(full);
+    const jobId = String(req.query.job || '').trim();
+    if (jobId) {
+      const st = fs.statSync(full);
+      startLocalJob(req.params.id, jobId, rel, name, st.size);
+      const done = () => finishLocalJob(req.params.id, jobId, res.writableEnded ? 'completed' : 'cancelled');
+      res.once('finish', done);
+      res.once('close', done);
+    }
+    res.download(full, name);
   }),
 );

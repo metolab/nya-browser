@@ -60,6 +60,46 @@ test('files mkdir roundtrip', async () => {
   await admin.dispose();
 });
 
+test('files upload unique name and transfer lists', async () => {
+  const admin = await asAdmin();
+  const created = await admin.post('/api/sessions', { data: { name: `upl${Date.now()}` } });
+  const id = (await created.json()).session.id;
+  const payload = Buffer.from('hello-files');
+  const first = await admin.post(`/api/sessions/${id}/files/upload?dir=.`, {
+    multipart: {
+      files: {
+        name: 'note.txt',
+        mimeType: 'text/plain',
+        buffer: payload,
+      },
+    },
+  });
+  expect(first.ok()).toBeTruthy();
+  const again = await admin.post(`/api/sessions/${id}/files/upload?dir=.`, {
+    multipart: {
+      files: {
+        name: 'note.txt',
+        mimeType: 'text/plain',
+        buffer: payload,
+      },
+    },
+  });
+  const uploaded = await again.json();
+  expect(uploaded.files[0].name).toBe('note (1).txt');
+  const uploads = await admin.get(`/api/sessions/${id}/files/uploads`);
+  const names = ((await uploads.json()).uploads as { name: string }[]).map((row) => row.name);
+  expect(names).toContain('note.txt');
+  expect(names).toContain('note (1).txt');
+  const transfer = await admin.get(`/api/sessions/${id}/files/transfer`);
+  expect(transfer.ok()).toBeTruthy();
+  const body = await transfer.json();
+  expect(Array.isArray(body.uploads)).toBeTruthy();
+  expect(Array.isArray(body.downloads)).toBeTruthy();
+  expect(body.chooser === null || typeof body.chooser.open === 'boolean').toBeTruthy();
+  await admin.delete(`/api/sessions/${id}`);
+  await admin.dispose();
+});
+
 test('change password from more menu', async ({ page }) => {
   const admin = await asAdmin();
   const name = `pwu${Date.now()}`;

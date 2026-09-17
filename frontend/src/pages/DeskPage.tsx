@@ -7,7 +7,9 @@ import { api, ApiError } from '../api/client';
 import { useAuth } from '../auth';
 import ClipboardPanel from '../components/ClipboardPanel';
 import { useClipboardSync } from '../lib/useClipboardSync';
+import DownloadToast from '../components/DownloadToast';
 import FilePanel from '../components/FilePanel';
+import FilePreview from '../components/FilePreview';
 import NotepadPanel from '../components/NotepadPanel';
 import { SessionTree } from '../components/SessionTree';
 import DeskFloat from '../desk/DeskFloat';
@@ -17,6 +19,7 @@ import DisplaySettings from '../desk/DisplaySettings';
 import { defaultDisplayPolicy, formatSize, resolveRemoteSize, type DisplayPolicy, type Size } from '../desk/display';
 import { formatDeskTitle, useDocumentTitle } from '../lib/title';
 import { openSessionDeskWindow, sessionDeskPath } from '../lib/sessionWindow';
+import { useSessionFiles } from '../lib/useSessionFiles';
 import { vncWindowExtra } from '../lib/vnc';
 import {
   AlertDialog,
@@ -52,6 +55,7 @@ export default function DeskPage() {
   const [takeover, setTakeover] = useState<Session | null>(null);
   const [clipOpen, setClipOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [filesTab, setFilesTab] = useState<'uploads' | 'downloads'>('uploads');
   const [notepadOpen, setNotepadOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [display, setDisplay] = useState<DisplayPolicy>(defaultDisplayPolicy);
@@ -61,6 +65,11 @@ export default function DeskPage() {
 
   const remote = resolveRemoteSize(pane, display);
   const clip = useClipboardSync({
+    sessionId: active?.session.id,
+    subId: active ? vncWindowExtra(active.windowId) : null,
+    enabled: Boolean(active?.windowId),
+  });
+  const files = useSessionFiles({
     sessionId: active?.session.id,
     subId: active ? vncWindowExtra(active.windowId) : null,
     enabled: Boolean(active?.windowId),
@@ -242,6 +251,8 @@ export default function DeskPage() {
           display={display}
           sizeTick={sizeTick}
           onPaneChange={onPaneChange}
+          transferPaused={files.paused}
+          onUserGesture={files.armGesture}
           onRemoteClipboard={() => {
             void clip.flushRemote().catch(() => undefined);
           }}
@@ -395,12 +406,68 @@ export default function DeskPage() {
           title="文件管理"
           subtitle={active.session.name}
           onClose={() => setFilesOpen(false)}
-          className={clipOpen ? 'right-[19.5rem] bottom-16' : 'right-3 bottom-16'}
+          className={clipOpen ? 'right-[25.5rem] bottom-16 w-96' : 'right-3 bottom-16 w-96'}
           bodyClassName="h-72"
         >
-          <FilePanel sessionId={active.session.id} />
+          <FilePanel
+            tab={filesTab}
+            onTab={setFilesTab}
+            uploads={files.transfer.uploads}
+            downloads={files.transfer.downloads}
+            onUpload={files.openLocalPicker}
+            onRefresh={() => void files.refresh()}
+            onDownload={files.downloadToLocal}
+            onRemove={files.remove}
+            onPreview={(path, name) => files.setPreview({ path, name })}
+          />
         </DeskFloat>
       ) : null}
+
+      {active ? (
+        <DownloadToast
+          downloads={files.transfer.downloads}
+          onOpen={(path, name) => files.setPreview({ path, name })}
+          onSave={files.downloadToLocal}
+        />
+      ) : null}
+
+      {active && files.preview ? (
+        <FilePreview
+          sessionId={active.session.id}
+          path={files.preview.path}
+          name={files.preview.name}
+          onClose={() => files.setPreview(null)}
+        />
+      ) : null}
+
+      {active && files.fallback ? (
+        <div className="fixed bottom-3 left-1/2 z-[60] -translate-x-1/2">
+          <button
+            type="button"
+            className="rounded-full border bg-card px-3 py-1.5 text-xs shadow"
+            onClick={files.openLocalPicker}
+          >
+            选择本机文件
+          </button>
+        </div>
+      ) : null}
+
+      {files.uploading ? (
+        <div className="fixed top-3 left-1/2 z-[60] -translate-x-1/2 rounded-full border bg-card px-3 py-1 text-xs shadow">
+          正在上传… {Math.round(files.uploadRatio * 100)}%
+        </div>
+      ) : null}
+
+      <input
+        ref={files.inputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          const picked = Array.from(event.target.files || []);
+          if (picked.length) void files.uploadFiles(picked);
+        }}
+      />
 
       <AlertDialog
         open={Boolean(takeover)}

@@ -12,12 +12,15 @@ import {
   type SessionGroup,
   type SessionWindow,
   type SessionPassword,
+  type SessionTransfer,
+  type SessionUpload,
+  type SessionDownload,
   type UserPublic,
 } from '@nya/shared';
 import { withBase } from '../basePath';
 
 export { emptyProxy };
-export type { FileEntry, ProxyConfig, Session, UserPublic };
+export type { FileEntry, ProxyConfig, Session, SessionDownload, SessionTransfer, SessionUpload, UserPublic };
 
 export class ApiError extends Error {
   status: number;
@@ -289,19 +292,54 @@ export const api = {
       `/api/sessions/${id}/files?path=${encodeURIComponent(path)}`,
       { method: 'DELETE' },
     ),
-  upload: async (id: string, dir: string, files: FileList | File[]) => {
+  upload: async (
+    id: string,
+    dir: string,
+    files: FileList | File[],
+    onProgress?: (ratio: number) => void,
+  ) => {
     const form = new FormData();
-    Array.from(files).forEach((f) => form.append('files', f));
-    const res = await fetch(
-      withBase(`/api/sessions/${id}/files/upload?dir=${encodeURIComponent(dir)}`),
-      { method: 'POST', body: form, credentials: 'include' },
+    Array.from(files).forEach((f) => {
+      form.append('files', f);
+      form.append('lastModified', String(f.lastModified));
+    });
+    const data = await new Promise<{ ok: boolean; files: { name: string; path: string; size: number }[] }>(
+      (resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', withBase(`/api/sessions/${id}/files/upload?dir=${encodeURIComponent(dir)}`));
+        xhr.withCredentials = true;
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
+        };
+        xhr.onload = () => {
+          try {
+            const body = JSON.parse(xhr.responseText || '{}');
+            if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+            else reject(new Error(body.error || `HTTP ${xhr.status}`));
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error('upload failed'));
+          }
+        };
+        xhr.onerror = () => reject(new Error('upload failed'));
+        xhr.onabort = () => reject(new Error('upload cancelled'));
+        xhr.send(form);
+      },
     );
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
   },
-  downloadUrl: (id: string, path: string) =>
-    withBase(`/api/sessions/${id}/files/download?path=${encodeURIComponent(path)}`),
+  downloadUrl: (id: string, path: string, job?: string) =>
+    withBase(
+      `/api/sessions/${id}/files/download?path=${encodeURIComponent(path)}${
+        job ? `&job=${encodeURIComponent(job)}` : ''
+      }`,
+    ),
+  listUploads: (id: string) => request<{ uploads: SessionUpload[] }>(`/api/sessions/${id}/files/uploads`),
+  listDownloads: (id: string) =>
+    request<{ downloads: SessionDownload[] }>(`/api/sessions/${id}/files/downloads`),
+  transfer: (id: string, subId?: string | null) =>
+    request<SessionTransfer>(
+      `/api/sessions/${id}/files/transfer${subId ? `?sub=${encodeURIComponent(subId)}` : ''}`,
+    ),
 
   listUsers: () =>
     request<{ users: (UserPublic & { grants: AccessGrant[] })[] }>('/api/users'),

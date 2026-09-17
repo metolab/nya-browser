@@ -143,6 +143,49 @@ export interface FileEntry {
   mtime: string;
 }
 
+export type SessionDownloadState = 'in_progress' | 'completed' | 'cancelled' | 'failed';
+
+export interface SessionUpload {
+  name: string;
+  path: string;
+  size: number;
+  mtime: string;
+}
+
+export interface SessionDownload {
+  id: string;
+  name: string;
+  path: string;
+  url: string;
+  state: SessionDownloadState;
+  receivedBytes: number;
+  totalBytes: number;
+  startedAt: string;
+  updatedAt: string;
+  missing?: boolean;
+}
+
+export interface LocalFileJob {
+  id: string;
+  path: string;
+  name: string;
+  sent: number;
+  total: number;
+  state: 'active' | 'completed' | 'cancelled' | 'error';
+}
+
+export interface SessionFileChooser {
+  open: boolean;
+  title: string;
+}
+
+export interface SessionTransfer {
+  chooser: SessionFileChooser | null;
+  uploads: SessionUpload[];
+  downloads: SessionDownload[];
+  localJobs: LocalFileJob[];
+}
+
 export interface AuditLog {
   id: string;
   at: string;

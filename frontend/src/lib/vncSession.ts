@@ -79,8 +79,31 @@ const UPGRADE_HOLD_MS = 2000;
 const SAMPLE_W = 48;
 const SAMPLE_H = 27;
 
+type PausedSock = Sock & { __nyaPaused?: boolean };
+
 function rfbMessages(): Messages | null {
   return (RFB as typeof RFB & { messages?: Messages }).messages || null;
+}
+
+let fbWrapped = false;
+
+function wrapFramebufferRequests() {
+  if (fbWrapped) return;
+  const messages = rfbMessages();
+  if (!messages?.fbUpdateRequest) return;
+  fbWrapped = true;
+  const origFb = messages.fbUpdateRequest;
+  messages.fbUpdateRequest = (sock, incremental, x, y, w, h) => {
+    if ((sock as PausedSock | undefined)?.__nyaPaused) return;
+    origFb(sock, incremental, x, y, w, h);
+  };
+  const origCu = RFB.messages.enableContinuousUpdates;
+  if (origCu) {
+    RFB.messages.enableContinuousUpdates = (sock, enable, x, y, w, h) => {
+      if ((sock as PausedSock | undefined)?.__nyaPaused && enable) return;
+      origCu(sock, enable, x, y, w, h);
+    };
+  }
 }
 
 function connectionHint(): { downlink?: number; rtt?: number } {
@@ -273,6 +296,7 @@ export class VncSession {
   private readonly onHidden = () => {
     if (document.visibilityState === 'hidden') this.releasePointer();
   };
+  private transferPaused = false;
   private clickAnchor: { x: number; y: number } | null = null;
   private origHandleMouseButton: RfbHandle['_handleMouseButton'] | null = null;
   private origHandleMouseMove: RfbHandle['_handleMouseMove'] | null = null;
@@ -329,6 +353,7 @@ export class VncSession {
     window.addEventListener('pointerup', this.onPointerUp, true);
     window.addEventListener('pointercancel', this.onPointerUp, true);
     this.installClickSlop();
+    wrapFramebufferRequests();
   }
 
   private installClickSlop() {
@@ -418,7 +443,7 @@ export class VncSession {
           flushing: Boolean(this.rfb._flushing),
           queued,
         });
-        if (!this.visible || this.ws.readyState !== WebSocket.OPEN) return;
+        if (!this.visible || this.transferPaused || this.ws.readyState !== WebSocket.OPEN) return;
         if (queued && idleMs > 1000) this.unstickDisplay();
         if (idleMs > 8000 && !this.stuckArmed) {
           this.stuckArmed = true;
@@ -427,6 +452,24 @@ export class VncSession {
         }
       }, 1000);
     }
+  }
+
+  setTransferPaused(paused: boolean) {
+    if (this.disposed || this.transferPaused === paused) return;
+    this.transferPaused = paused;
+    const sock = this.rfb._sock as PausedSock | undefined;
+    if (sock) sock.__nyaPaused = paused;
+    if (paused) {
+      this.releasePointer();
+      const messages = rfbMessages();
+      const w = this.rfb._fbWidth || 0;
+      const h = this.rfb._fbHeight || 0;
+      if (messages && sock && RFB.messages.enableContinuousUpdates && w > 0 && h > 0) {
+        RFB.messages.enableContinuousUpdates(sock, false, 0, 0, w, h);
+      }
+      return;
+    }
+    this.requestKeyframe();
   }
 
   setVisible(visible: boolean) {
@@ -489,7 +532,7 @@ export class VncSession {
   }
 
   requestKeyframe() {
-    if (this.disposed || !this.visible) return;
+    if (this.disposed || !this.visible || this.transferPaused) return;
     const messages = rfbMessages();
     const sock = this.rfb._sock;
     const w = this.rfb._fbWidth || 0;

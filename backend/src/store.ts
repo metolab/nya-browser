@@ -46,13 +46,57 @@ export function chromeProfileDir(id: string) {
   return path.join(sessionDir(id), 'chrome');
 }
 
+export function filesDir(id: string) {
+  return path.join(sessionDir(id), 'files');
+}
+
 export function downloadsDir(id: string) {
-  return path.join(sessionDir(id), 'downloads');
+  return filesDir(id);
+}
+
+export function ensureFilesDir(id: string) {
+  const dest = filesDir(id);
+  fs.mkdirSync(dest, { recursive: true });
+  migrateLegacyDownloads(id, dest);
+  return dest;
+}
+
+function migrateLegacyDownloads(id: string, dest: string) {
+  const legacy = path.join(sessionDir(id), 'downloads');
+  if (path.resolve(legacy) === path.resolve(dest) || !fs.existsSync(legacy)) return;
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(legacy, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.name === '.keep.html') continue;
+    const from = path.join(legacy, entry.name);
+    const to = path.join(dest, entry.name);
+    if (fs.existsSync(to)) continue;
+    try {
+      fs.renameSync(from, to);
+    } catch {
+      try {
+        fs.cpSync(from, to, { recursive: true });
+        fs.rmSync(from, { recursive: true, force: true });
+      } catch {
+        /* leave the leftover for the next start */
+      }
+    }
+  }
+  try {
+    const left = fs.readdirSync(legacy).filter((name) => name !== '.keep.html');
+    if (!left.length) fs.rmSync(legacy, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 export function ensureSessionDirs(id: string) {
   fs.mkdirSync(chromeProfileDir(id), { recursive: true });
-  fs.mkdirSync(downloadsDir(id), { recursive: true });
+  ensureFilesDir(id);
 }
 
 export function normalizeHomeUrl(input: unknown) {
