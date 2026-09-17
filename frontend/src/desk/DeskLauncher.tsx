@@ -110,10 +110,10 @@ export default function DeskLauncher({
 
   const left = drag.pos?.x ?? 12;
   const bottom = drag.pos?.y ?? 12;
-  const expanded = Boolean((hover || control) && !drag.dragging);
+  const expanded = Boolean((!hasSession || hover || control) && !drag.dragging);
   menuLock.current = control;
 
-  const menuW = canNotepad ? 420 : 340;
+  const menuW = hasSession ? (canNotepad ? 500 : 420) : isAdmin ? 200 : 120;
   const dockLeft = dir === 'left';
 
   useEffect(() => {
@@ -192,31 +192,57 @@ export default function DeskLauncher({
           Notepad
         </Button>
       ) : null}
-      <Button
-        variant="ghost"
-        size="sm"
-        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-        disabled={!hasSession}
-        onClick={() => {
-          setControl(false);
-          onEnd();
-        }}
-      >
-        <CircleStopIcon />
-        结束会话
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={!hasSession}
-        onClick={() => {
-          setControl(false);
-          onLeave();
-        }}
-      >
-        <HouseIcon />
-        退出会话
-      </Button>
+      {hasSession ? (
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setControl(false);
+              onFiles();
+            }}
+          >
+            <FolderIcon />
+            文件
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={() => {
+              setControl(false);
+              onEnd();
+            }}
+          >
+            <CircleStopIcon />
+            结束会话
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setControl(false);
+              onLeave();
+            }}
+          >
+            <HouseIcon />
+            退出会话
+          </Button>
+        </>
+      ) : null}
+      {!hasSession && isAdmin ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            setControl(false);
+            onAdmin();
+          }}
+        >
+          <SettingsIcon />
+          管理
+        </Button>
+      ) : null}
       <DropdownMenu modal={false} open={control} onOpenChange={setControl}>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="sm">
@@ -272,17 +298,6 @@ export default function DeskLauncher({
                 <ClipboardIcon />
                 剪贴板
               </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!hasSession}
-                onSelect={(event: Event) => {
-                  event.preventDefault();
-                  setControl(false);
-                  onFiles();
-                }}
-              >
-                <FolderIcon />
-                文件管理
-              </DropdownMenuItem>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
           <DropdownMenuSeparator />
@@ -299,7 +314,7 @@ export default function DeskLauncher({
             <KeyRoundIcon />
             修改密码
           </DropdownMenuItem>
-          {isAdmin ? (
+          {hasSession && isAdmin ? (
             <DropdownMenuItem
               onSelect={(event: Event) => {
                 event.preventDefault();

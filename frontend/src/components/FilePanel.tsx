@@ -1,7 +1,7 @@
-import { DownloadIcon, FileIcon, RefreshCwIcon, Trash2Icon, UploadIcon } from 'lucide-react';
+import { DownloadIcon, EyeIcon, FileIcon, RefreshCwIcon, Trash2Icon, UploadIcon } from 'lucide-react';
 import type { SessionDownload, SessionUpload } from '@nya/shared';
 import { Button } from '@/components/ui/button';
-import { formatBytes, hostOf } from '../lib/files';
+import { canOnlinePreview, formatBytes, hostOf } from '../lib/files';
 
 type Tab = 'uploads' | 'downloads';
 
@@ -15,7 +15,7 @@ type Props = {
   onRefresh: () => void;
   onDownload: (path: string, name: string, size: number) => void;
   onRemove: (path: string) => void;
-  onPreview: (path: string, name: string) => void;
+  onPreview: (path: string, name: string, size: number) => void;
 };
 
 function stateLabel(state: SessionDownload['state']) {
@@ -65,10 +65,12 @@ export default function FilePanel({
                 key={row.path}
                 name={row.name}
                 hint={formatBytes(row.size)}
+                size={row.size}
                 canDownload
+                canPreview
                 onDownload={() => onDownload(row.path, row.name, row.size)}
                 onRemove={() => onRemove(row.path)}
-                onPreview={() => onPreview(row.path, row.name)}
+                onPreview={() => onPreview(row.path, row.name, row.size)}
               />
             ))
           )
@@ -83,10 +85,12 @@ export default function FilePanel({
                 row.url ? ` · ${hostOf(row.url)}` : ''
               }${row.missing ? ' · 文件已删除' : ''}`}
               url={row.url}
+              size={row.totalBytes || row.receivedBytes}
               canDownload={row.state === 'completed' && !row.missing}
+              canPreview={row.state === 'completed' && !row.missing}
               onDownload={() => onDownload(row.path, row.name, row.totalBytes || row.receivedBytes)}
               onRemove={() => onRemove(row.path)}
-              onPreview={() => onPreview(row.path, row.name)}
+              onPreview={() => onPreview(row.path, row.name, row.totalBytes || row.receivedBytes)}
             />
           ))
         )}
@@ -99,7 +103,9 @@ function FileRow({
   name,
   hint,
   url,
+  size,
   canDownload,
+  canPreview,
   onDownload,
   onRemove,
   onPreview,
@@ -107,19 +113,30 @@ function FileRow({
   name: string;
   hint: string;
   url?: string;
+  size: number;
   canDownload: boolean;
+  canPreview: boolean;
   onDownload: () => void;
   onRemove: () => void;
   onPreview: () => void;
 }) {
+  const online = canPreview && canOnlinePreview(size);
+  const previewTitle = !canPreview
+    ? '文件未就绪，无法预览'
+    : online
+      ? '预览'
+      : '超过 5 MB，无法在线预览';
   return (
     <div className="flex items-start gap-2 border-b border-border/60 py-1.5 last:border-0">
       <FileIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-      <button type="button" className="min-w-0 flex-1 text-left" onClick={onPreview} title={url || name}>
+      <div className="min-w-0 flex-1" title={url || name}>
         <div className="truncate text-sm">{name}</div>
         <div className="truncate text-[11px] text-muted-foreground">{hint}</div>
-      </button>
+      </div>
       <span className="flex shrink-0 items-center">
+        <Button size="icon-xs" variant="ghost" title={previewTitle} disabled={!online} onClick={onPreview}>
+          <EyeIcon />
+        </Button>
         {canDownload ? (
           <Button size="icon-xs" variant="ghost" title="下载到本机" onClick={onDownload}>
             <DownloadIcon />

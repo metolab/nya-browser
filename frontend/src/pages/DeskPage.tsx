@@ -442,7 +442,7 @@ export default function DeskPage() {
             onRefresh={() => void files.refresh()}
             onDownload={files.downloadToLocal}
             onRemove={files.remove}
-            onPreview={(path, name) => files.setPreview({ path, name })}
+            onPreview={files.openPreview}
           />
         </DeskFloat>
       ) : null}
@@ -452,7 +452,7 @@ export default function DeskPage() {
           sessionId={active.session.id}
           ready={files.ready}
           downloads={files.transfer.downloads}
-          onOpen={(path, name) => files.setPreview({ path, name })}
+          onOpen={(path, name, size) => files.openPreview(path, name, size)}
           onSave={files.downloadToLocal}
         />
       ) : null}
@@ -462,6 +462,7 @@ export default function DeskPage() {
           sessionId={active.session.id}
           path={files.preview.path}
           name={files.preview.name}
+          size={files.preview.size}
           onClose={() => files.setPreview(null)}
         />
       ) : null}

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { hasUserActivation, randomId } from './files';
+import { canOnlinePreview, hasUserActivation, PREVIEW_MAX_BYTES, randomId } from './files';
 
 describe('randomId', () => {
   it('uses crypto.randomUUID when the context is secure', () => {
@@ -19,6 +19,14 @@ describe('randomId', () => {
     const id = randomId();
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     vi.unstubAllGlobals();
+  });
+});
+
+describe('canOnlinePreview', () => {
+  it('allows files up to 5 MB', () => {
+    expect(canOnlinePreview(0)).toBe(true);
+    expect(canOnlinePreview(PREVIEW_MAX_BYTES)).toBe(true);
+    expect(canOnlinePreview(PREVIEW_MAX_BYTES + 1)).toBe(false);
   });
 });
 

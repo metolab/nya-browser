@@ -8,7 +8,7 @@ type Props = {
   sessionId?: string;
   ready: boolean;
   downloads: SessionDownload[];
-  onOpen: (path: string, name: string) => void;
+  onOpen: (path: string, name: string, size: number) => void;
   onSave: (path: string, name: string, size: number) => void;
 };
 
@@ -109,7 +109,7 @@ export default function DownloadToast({ sessionId, ready, downloads, onOpen, onS
             </div>
             <div className="mt-1 flex justify-end gap-1">
               {!row.missing ? (
-                <Button size="xs" variant="outline" onClick={() => onOpen(row.path, row.name)}>
+                <Button size="xs" variant="outline" onClick={() => onOpen(row.path, row.name, row.totalBytes || row.receivedBytes)}>
                   打开
                 </Button>
               ) : null}

@@ -16,8 +16,8 @@ import {
   SlidersHorizontalIcon,
   Trash2Icon,
 } from 'lucide-react';
-import type { Session, SessionGroup } from '@nya/shared';
-import { childrenOf, groupSelectOptions, groupSessionCount } from '@/lib/groups';
+import type { ProxyRecord, Session, SessionGroup } from '@nya/shared';
+import { childrenOf, groupSelectOptions, groupSessionCount, NONE_KEY } from '@/lib/groups';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -53,6 +53,7 @@ export type SessionTreeProps = {
   onEditFolder?: (group: SessionGroup) => void;
   onDeleteFolder?: (group: SessionGroup) => void;
   onAssignFolder?: (group: SessionGroup) => void;
+  proxies?: ProxyRecord[];
   className?: string;
   disabled?: boolean;
   openingId?: string | null;
@@ -70,10 +71,18 @@ function matchesQuery(session: Session, query: string) {
   );
 }
 
-function proxyText(session: Session) {
+function proxyText(session: Session, proxies?: ProxyRecord[]) {
   const p = session.proxy;
   if (!p || p.type === 'none') return '直连';
+  const named = proxies?.find((row) => row.id === session.proxyId);
+  if (named?.name) return named.name;
   return `${p.type}://${p.host}:${p.port}`;
+}
+
+function localeText(session: Session) {
+  const city = (session.timezone || '').split('/').pop()?.replace(/_/g, ' ') || session.timezone || '—';
+  const lang = session.chromeLanguage || '—';
+  return `${city}/${lang}`;
 }
 
 function indentStyle(mode: 'pick' | 'manage', depth: number) {
@@ -83,7 +92,6 @@ function indentStyle(mode: 'pick' | 'manage', depth: number) {
 function SessionActions({
   session,
   groups,
-  onEditSession,
   onCloneSession,
   onDeleteSession,
   onAssignSession,
@@ -95,7 +103,6 @@ function SessionActions({
   groups: SessionGroup[];
 } & Pick<
   SessionTreeProps,
-  | 'onEditSession'
   | 'onCloneSession'
   | 'onDeleteSession'
   | 'onAssignSession'
@@ -111,10 +118,6 @@ function SessionActions({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-44">
-        <DropdownMenuItem onSelect={() => onEditSession?.(session)}>
-          <PencilIcon />
-          编辑
-        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onCloneSession?.(session)}>
           <CopyPlusIcon />
           克隆
@@ -157,7 +160,9 @@ function SessionRow({
   depth,
   mode,
   groups,
+  proxies,
   onPick,
+  onEditSession,
   disabled,
   openingId,
   ...actions
@@ -176,6 +181,7 @@ function SessionRow({
   | 'onViewPasswords'
   | 'onExportSession'
   | 'onMoveSession'
+  | 'proxies'
   | 'disabled'
   | 'openingId'
 >) {
@@ -206,7 +212,7 @@ function SessionRow({
 
   return (
     <div
-      className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)_3.5rem_2rem] items-center gap-2 px-2 py-1.5 text-sm hover:bg-muted/70"
+      className="group grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)_3.5rem_4rem] items-center gap-2 px-2 py-1.5 text-sm hover:bg-muted/70"
       style={indentStyle(mode, depth)}
     >
       <div className="min-w-0">
@@ -215,10 +221,22 @@ function SessionRow({
           <div className="truncate text-xs text-muted-foreground">{session.description}</div>
         ) : null}
       </div>
-      <div className="truncate text-xs text-muted-foreground">{proxyText(session)}</div>
-      <div className="truncate text-xs text-muted-foreground">{session.homeUrl || '—'}</div>
+      <div className="truncate text-xs text-muted-foreground">{proxyText(session, proxies)}</div>
+      <div className="truncate text-xs text-muted-foreground">{localeText(session)}</div>
       <div className="text-center tabular-nums text-xs text-muted-foreground">{running}</div>
       <div className="flex justify-end">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          title="编辑"
+          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEditSession?.(session);
+          }}
+        >
+          <PencilIcon />
+        </Button>
         <SessionActions session={session} groups={groups} {...actions} />
       </div>
     </div>
@@ -246,6 +264,7 @@ function SessionList({
   | 'onViewPasswords'
   | 'onExportSession'
   | 'onMoveSession'
+  | 'proxies'
   | 'disabled'
   | 'openingId'
 >) {
@@ -296,10 +315,9 @@ function FolderNode({
         >
           <ChevronRightIcon className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
           <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className={cn('min-w-0 flex-1 truncate', compact ? 'text-[13px]' : 'text-sm font-medium')}>
-            {group.name}
+          <span className={cn('min-w-0 truncate', compact ? 'text-[13px]' : 'text-sm font-medium')}>
+            {group.name} ({count})
           </span>
-          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{count}</span>
         </button>
         {rest.mode === 'manage' ? (
           <DropdownMenu>
@@ -365,6 +383,7 @@ function FolderNode({
             onViewPasswords={rest.onViewPasswords}
             onExportSession={rest.onExportSession}
             onMoveSession={rest.onMoveSession}
+            proxies={rest.proxies}
             disabled={rest.disabled}
             openingId={rest.openingId}
           />
@@ -389,7 +408,7 @@ export function SessionTree(props: SessionTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    setExpanded(new Set(groups.map((g) => g.id)));
+    setExpanded(new Set([...groups.map((g) => g.id), NONE_KEY]));
   }, [groups]);
 
   const roots = childrenOf(groups, null);
@@ -422,6 +441,7 @@ export function SessionTree(props: SessionTreeProps) {
     onEditFolder: props.onEditFolder,
     onDeleteFolder: props.onDeleteFolder,
     onAssignFolder: props.onAssignFolder,
+    proxies: props.proxies,
     disabled: props.disabled,
     openingId: props.openingId,
   };
@@ -453,10 +473,10 @@ export function SessionTree(props: SessionTreeProps) {
         ) : null}
       </div>
       {mode === 'manage' ? (
-        <div className="grid shrink-0 grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)_3.5rem_2rem] gap-2 border-b px-2 pb-1.5 text-xs text-muted-foreground">
+        <div className="grid shrink-0 grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)_3.5rem_4rem] gap-2 border-b px-2 pb-1.5 text-xs text-muted-foreground">
           <div>名称</div>
           <div>代理</div>
-          <div>首页</div>
+          <div>时区/语言</div>
           <div className="text-center">窗口</div>
           <div />
         </div>
@@ -480,47 +500,62 @@ export function SessionTree(props: SessionTreeProps) {
           <div>
             <div
               className={cn(
-                'flex items-center gap-1.5 text-muted-foreground',
-                compact ? 'px-2 py-0.5 text-[13px]' : 'border-b bg-muted/40 px-2 py-1.5 text-sm font-medium',
+                'group flex items-center gap-1.5 hover:bg-muted/60',
+                compact ? 'rounded-md px-1 py-0.5' : 'border-b bg-muted/40 px-1 py-1.5',
               )}
+              style={indentStyle(mode, 0)}
             >
-              <InboxIcon className="size-3.5" />
-              未归类
-              <span className="text-[11px] tabular-nums">{loose.length}</span>
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                onClick={() => toggle(NONE_KEY)}
+              >
+                <ChevronRightIcon
+                  className={cn(
+                    'size-3.5 shrink-0 text-muted-foreground transition-transform',
+                    expanded.has(NONE_KEY) && 'rotate-90',
+                  )}
+                />
+                <InboxIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className={cn('min-w-0 truncate', compact ? 'text-[13px]' : 'text-sm font-medium')}>
+                  未归类 ({loose.length})
+                </span>
+              </button>
               {mode === 'manage' ? (
-                <div className="ml-auto">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-xs">
-                        <MoreHorizontalIcon />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="min-w-40">
-                      <DropdownMenuItem onSelect={() => props.onBatchEditUncategorized?.()}>
-                        <SlidersHorizontalIcon />
-                        批量修改
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-xs">
+                      <MoreHorizontalIcon />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-40">
+                    <DropdownMenuItem onSelect={() => props.onBatchEditUncategorized?.()}>
+                      <SlidersHorizontalIcon />
+                      批量修改
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               ) : null}
             </div>
-            <SessionList
-              items={loose}
-              depth={1}
-              mode={mode}
-              groups={groups}
-              onPick={props.onPick}
-              onEditSession={props.onEditSession}
-              onCloneSession={props.onCloneSession}
-              onDeleteSession={props.onDeleteSession}
-              onAssignSession={props.onAssignSession}
-              onViewPasswords={props.onViewPasswords}
-              onExportSession={props.onExportSession}
-              onMoveSession={props.onMoveSession}
-              disabled={props.disabled}
-              openingId={props.openingId}
-            />
+            {expanded.has(NONE_KEY) ? (
+              <SessionList
+                items={loose}
+                depth={1}
+                mode={mode}
+                groups={groups}
+                onPick={props.onPick}
+                onEditSession={props.onEditSession}
+                onCloneSession={props.onCloneSession}
+                onDeleteSession={props.onDeleteSession}
+                onAssignSession={props.onAssignSession}
+                onViewPasswords={props.onViewPasswords}
+                onExportSession={props.onExportSession}
+                onMoveSession={props.onMoveSession}
+                proxies={props.proxies}
+                disabled={props.disabled}
+                openingId={props.openingId}
+              />
+            ) : null}
           </div>
         ) : null}
         {filtered.length === 0 ? (

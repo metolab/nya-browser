@@ -20,6 +20,13 @@ export function hostOf(url: string) {
   }
 }
 
+export const PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
+
+export function canOnlinePreview(size: number | null | undefined) {
+  const n = Number(size || 0);
+  return Number.isFinite(n) && n <= PREVIEW_MAX_BYTES;
+}
+
 export type PreviewKind = 'image' | 'pdf' | 'text' | 'none';
 
 const TEXT_EXT = new Set(['txt', 'md', 'json', 'csv', 'log', 'xml', 'yml', 'yaml', 'ini', 'conf']);

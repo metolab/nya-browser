@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { SessionTransfer } from '@nya/shared';
 import { api } from '../api/client';
-import { randomId, TRANSFER_PAUSE_BYTES } from './files';
+import { canOnlinePreview, randomId, TRANSFER_PAUSE_BYTES } from './files';
 import { encodePasteImage } from './pasteImage';
 import {
   classifyTransfer,
@@ -31,7 +31,7 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
   const [uploading, setUploading] = useState(false);
   const [uploadRatio, setUploadRatio] = useState(0);
   const [paused, setPaused] = useState(false);
-  const [preview, setPreview] = useState<{ path: string; name: string } | null>(null);
+  const [preview, setPreview] = useState<{ path: string; name: string; size?: number } | null>(null);
   const [note, setNote] = useState('');
   const sessionKey = `${sessionId || ''}:${subId || ''}`;
   const [readyFor, setReadyFor] = useState('');
@@ -248,6 +248,14 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
     [beginPause, sessionId],
   );
 
+  const openPreview = useCallback((path: string, name: string, size = 0) => {
+    if (!canOnlinePreview(size)) {
+      toast.warning('超过 5 MB，无法在线预览');
+      return;
+    }
+    setPreview({ path, name, size });
+  }, []);
+
   const remove = useCallback(
     async (filePath: string) => {
       if (!sessionId) return;
@@ -269,6 +277,7 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
     paused,
     preview,
     setPreview,
+    openPreview,
     note,
     ingestFiles,
     ingestPaste,

@@ -1,22 +1,24 @@
 import { useEffect, useState } from 'react';
 import DeskFloat from '../desk/DeskFloat';
 import { api } from '../api/client';
-import { previewKind } from '../lib/files';
+import { canOnlinePreview, previewKind } from '../lib/files';
 
 type Props = {
   sessionId: string;
   path: string;
   name: string;
+  size?: number;
   onClose: () => void;
 };
 
-export default function FilePreview({ sessionId, path, name, onClose }: Props) {
+export default function FilePreview({ sessionId, path, name, size, onClose }: Props) {
   const kind = previewKind(name);
   const src = api.downloadUrl(sessionId, path);
   const [text, setText] = useState('');
+  const allowed = canOnlinePreview(size);
 
   useEffect(() => {
-    if (kind !== 'text') return undefined;
+    if (!allowed || kind !== 'text') return undefined;
     let gone = false;
     void fetch(src, { credentials: 'include' })
       .then((res) => res.text())
@@ -29,7 +31,7 @@ export default function FilePreview({ sessionId, path, name, onClose }: Props) {
     return () => {
       gone = true;
     };
-  }, [kind, src]);
+  }, [allowed, kind, src]);
 
   return (
     <DeskFloat
@@ -38,7 +40,9 @@ export default function FilePreview({ sessionId, path, name, onClose }: Props) {
       className="right-3 top-16 z-[70] w-[min(32rem,calc(100vw-1.5rem))]"
       bodyClassName="max-h-[min(28rem,60vh)] overflow-auto"
     >
-      {kind === 'image' ? (
+      {!allowed ? (
+        <p className="py-6 text-center text-xs text-muted-foreground">超过 5 MB，无法在线预览，请下载到本机查看。</p>
+      ) : kind === 'image' ? (
         <img src={src} alt={name} className="max-h-[min(26rem,56vh)] max-w-full object-contain" />
       ) : kind === 'pdf' ? (
         <iframe title={name} src={src} sandbox="" className="h-[min(26rem,56vh)] w-full bg-background" />

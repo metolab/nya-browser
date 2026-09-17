@@ -181,6 +181,7 @@ export default function SessionsPage() {
           className="min-h-0 flex-1"
           groups={groups}
           sessions={sessions}
+          proxies={proxies}
           query={query}
           onQueryChange={setQuery}
           onCreateSession={(groupId) => {
