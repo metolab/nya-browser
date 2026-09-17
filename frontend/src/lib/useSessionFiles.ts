@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { SessionTransfer } from '@nya/shared';
 import { api } from '../api/client';
-import { TRANSFER_PAUSE_BYTES } from './files';
+import { hasUserActivation, randomId, TRANSFER_PAUSE_BYTES } from './files';
 
 const emptyTransfer = (): SessionTransfer => ({
   chooser: null,
@@ -68,17 +68,18 @@ export function useSessionFiles({ sessionId, subId, enabled }: Opts) {
 
   const openLocalPicker = useCallback(() => {
     inputRef.current?.click();
-    setFallback(false);
   }, []);
+
+  const tryOpenPicker = useCallback(() => {
+    if (!hasUserActivation()) return false;
+    openLocalPicker();
+    return true;
+  }, [openLocalPicker]);
 
   const armGesture = useCallback(() => {
     gestureAt.current = Date.now();
     const chooser = transferRef.current.chooser;
     if (!chooser?.open) return;
-    if (Date.now() - gestureAt.current > 5000) {
-      setFallback(true);
-      return;
-    }
     const token = chooser.title || 'open';
     if (pickerFor.current === token) return;
     pickerFor.current = token;
@@ -89,17 +90,16 @@ export function useSessionFiles({ sessionId, subId, enabled }: Opts) {
     if (!transfer.chooser?.open) {
       pickerFor.current = '';
       setFallback(false);
-      return;
-    }
-    if (Date.now() - gestureAt.current > 5000) {
-      setFallback(true);
-      return;
+      return undefined;
     }
     const token = transfer.chooser.title || 'open';
-    if (pickerFor.current === token) return;
-    pickerFor.current = token;
-    openLocalPicker();
-  }, [openLocalPicker, transfer.chooser?.open, transfer.chooser?.title]);
+    if (pickerFor.current !== token && Date.now() - gestureAt.current <= 5000 && tryOpenPicker()) {
+      pickerFor.current = token;
+    }
+    // http://IP is not a secure context: delayed input.click() is often ignored with no error.
+    const timer = window.setTimeout(() => setFallback(true), 300);
+    return () => window.clearTimeout(timer);
+  }, [transfer.chooser?.open, transfer.chooser?.title, tryOpenPicker]);
 
   const uploadFiles = useCallback(
     async (files: File[]) => {
@@ -126,7 +126,7 @@ export function useSessionFiles({ sessionId, subId, enabled }: Opts) {
   const downloadToLocal = useCallback(
     async (filePath: string, name: string, size: number) => {
       if (!sessionId) return;
-      const job = crypto.randomUUID();
+      const job = randomId();
       const endPause = beginPause(size);
       const link = document.createElement('a');
       link.href = api.downloadUrl(sessionId, filePath, job);

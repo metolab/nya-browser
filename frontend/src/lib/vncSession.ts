@@ -175,14 +175,20 @@ let tlsHushed = false;
 export function hushNovncTlsWarning() {
   if (tlsHushed) return;
   tlsHushed = true;
-  const orig = console.error.bind(console);
-  console.error = (...args: unknown[]) => {
-    if (args.some((a) => String(a).includes('secure context (TLS)'))) return;
-    orig(...args);
-  };
+  const hush = (orig: typeof console.error) =>
+    (...args: unknown[]) => {
+      if (args.some((a) => String(a).includes('secure context (TLS)'))) return;
+      orig(...args);
+    };
+  console.error = hush(console.error.bind(console));
+  console.warn = hush(console.warn.bind(console));
 }
 
-export function withVncCanvasHints<T>(fn: () => T): T {
+let canvasHinted = false;
+
+export function installVncCanvasHints() {
+  if (canvasHinted || typeof HTMLCanvasElement === 'undefined') return;
+  canvasHinted = true;
   const proto = HTMLCanvasElement.prototype;
   const orig = proto.getContext;
   proto.getContext = function (this: HTMLCanvasElement, type: string, attrs?: CanvasRenderingContext2DSettings) {
@@ -190,16 +196,17 @@ export function withVncCanvasHints<T>(fn: () => T): T {
       attrs = {
         alpha: false,
         ...attrs,
+        willReadFrequently: true,
         desynchronized: false,
       };
     }
     return orig.call(this, type, attrs);
   } as typeof orig;
-  try {
-    return fn();
-  } finally {
-    proto.getContext = orig;
-  }
+}
+
+export function withVncCanvasHints<T>(fn: () => T): T {
+  installVncCanvasHints();
+  return fn();
 }
 
 let sampleCtx: CanvasRenderingContext2D | null = null;

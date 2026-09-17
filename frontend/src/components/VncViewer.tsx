@@ -23,6 +23,7 @@ import {
   hasHold,
   holdCanvas,
   hushNovncTlsWarning,
+  installVncCanvasHints,
   isDocumentVisible,
   trackVncSocket,
   VncSession,
@@ -43,6 +44,7 @@ function measureTrapText(text: string) {
 }
 
 hushNovncTlsWarning();
+installVncCanvasHints();
 
 type Props = {
   sessionId: string;
@@ -668,7 +670,7 @@ export default function VncViewer({
         rows={1}
         wrap="off"
         tabIndex={-1}
-        aria-hidden="true"
+        aria-label="远程输入"
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
