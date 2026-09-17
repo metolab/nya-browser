@@ -16,6 +16,7 @@ import {
   WEBRTC_MODE_LABELS,
   FONT_PROFILES,
   FONT_PROFILE_LABELS,
+  DEFAULT_IDLE_TIMEOUT_MINUTES,
   IDLE_TIMEOUT_MINUTES_MAX,
   PINNED_CHROME_LANGUAGES,
   chromeLanguageOptionLabel,
@@ -148,7 +149,7 @@ export default function SessionFormDialog({
   initialGeoLongitude = null,
   initialGeoAccuracy = 100,
   initialHomeUrl = 'https://www.google.com/',
-  initialIdleTimeoutMinutes = 0,
+  initialIdleTimeoutMinutes = DEFAULT_IDLE_TIMEOUT_MINUTES,
   proxies,
   groups,
   submitLabel,
@@ -175,7 +176,9 @@ export default function SessionFormDialog({
   const [geoLongitude, setGeoLongitude] = useState(initialGeoLongitude == null ? '' : String(initialGeoLongitude));
   const [geoAccuracy, setGeoAccuracy] = useState(String(initialGeoAccuracy ?? 100));
   const [homeUrl, setHomeUrl] = useState(initialHomeUrl);
-  const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState(String(initialIdleTimeoutMinutes ?? 0));
+  const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState(
+    String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES),
+  );
   const [proxyId, setProxyId] = useState(initialProxyId || NONE_KEY);
   const [groupId, setGroupId] = useState(initialGroupId || NONE_KEY);
 
@@ -198,7 +201,7 @@ export default function SessionFormDialog({
     setGeoLongitude(initialGeoLongitude == null ? '' : String(initialGeoLongitude));
     setGeoAccuracy(String(initialGeoAccuracy ?? 100));
     setHomeUrl(initialHomeUrl || 'https://www.google.com/');
-    setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? 0));
+    setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES));
     setProxyId(initialProxyId || NONE_KEY);
     setGroupId(initialGroupId || NONE_KEY);
     setBusy(false);

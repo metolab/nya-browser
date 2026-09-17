@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ChevronRightIcon,
+  CopyPlusIcon,
   DownloadIcon,
   FolderIcon,
   FolderPlusIcon,
@@ -12,6 +13,7 @@ import {
   PlusIcon,
   SearchIcon,
   ShieldIcon,
+  SlidersHorizontalIcon,
   Trash2Icon,
 } from 'lucide-react';
 import type { Session, SessionGroup } from '@nya/shared';
@@ -38,7 +40,10 @@ export type SessionTreeProps = {
   mode: 'pick' | 'manage';
   onPick?: (session: Session) => void;
   onEditSession?: (session: Session) => void;
+  onCloneSession?: (session: Session) => void;
   onDeleteSession?: (session: Session) => void;
+  onBatchEditFolder?: (group: SessionGroup) => void;
+  onBatchEditUncategorized?: () => void;
   onAssignSession?: (session: Session) => void;
   onViewPasswords?: (session: Session) => void;
   onExportSession?: (session: Session) => void;
@@ -79,6 +84,7 @@ function SessionActions({
   session,
   groups,
   onEditSession,
+  onCloneSession,
   onDeleteSession,
   onAssignSession,
   onViewPasswords,
@@ -90,6 +96,7 @@ function SessionActions({
 } & Pick<
   SessionTreeProps,
   | 'onEditSession'
+  | 'onCloneSession'
   | 'onDeleteSession'
   | 'onAssignSession'
   | 'onViewPasswords'
@@ -107,6 +114,10 @@ function SessionActions({
         <DropdownMenuItem onSelect={() => onEditSession?.(session)}>
           <PencilIcon />
           编辑
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onCloneSession?.(session)}>
+          <CopyPlusIcon />
+          克隆
         </DropdownMenuItem>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>移动到目录</DropdownMenuSubTrigger>
@@ -159,6 +170,7 @@ function SessionRow({
   SessionTreeProps,
   | 'onPick'
   | 'onEditSession'
+  | 'onCloneSession'
   | 'onDeleteSession'
   | 'onAssignSession'
   | 'onViewPasswords'
@@ -228,6 +240,7 @@ function SessionList({
   SessionTreeProps,
   | 'onPick'
   | 'onEditSession'
+  | 'onCloneSession'
   | 'onDeleteSession'
   | 'onAssignSession'
   | 'onViewPasswords'
@@ -312,6 +325,10 @@ function FolderNode({
                 <ShieldIcon />
                 分配权限
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => rest.onBatchEditFolder?.(group)}>
+                <SlidersHorizontalIcon />
+                批量修改
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => rest.onDeleteFolder?.(group)}>
                 <Trash2Icon />
@@ -342,6 +359,7 @@ function FolderNode({
             groups={groups}
             onPick={rest.onPick}
             onEditSession={rest.onEditSession}
+            onCloneSession={rest.onCloneSession}
             onDeleteSession={rest.onDeleteSession}
             onAssignSession={rest.onAssignSession}
             onViewPasswords={rest.onViewPasswords}
@@ -391,7 +409,10 @@ export function SessionTree(props: SessionTreeProps) {
     mode,
     onPick: props.onPick,
     onEditSession: props.onEditSession,
+    onCloneSession: props.onCloneSession,
     onDeleteSession: props.onDeleteSession,
+    onBatchEditFolder: props.onBatchEditFolder,
+    onBatchEditUncategorized: props.onBatchEditUncategorized,
     onAssignSession: props.onAssignSession,
     onViewPasswords: props.onViewPasswords,
     onExportSession: props.onExportSession,
@@ -466,6 +487,23 @@ export function SessionTree(props: SessionTreeProps) {
               <InboxIcon className="size-3.5" />
               未归类
               <span className="text-[11px] tabular-nums">{loose.length}</span>
+              {mode === 'manage' ? (
+                <div className="ml-auto">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon-xs">
+                        <MoreHorizontalIcon />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-40">
+                      <DropdownMenuItem onSelect={() => props.onBatchEditUncategorized?.()}>
+                        <SlidersHorizontalIcon />
+                        批量修改
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              ) : null}
             </div>
             <SessionList
               items={loose}
@@ -474,6 +512,7 @@ export function SessionTree(props: SessionTreeProps) {
               groups={groups}
               onPick={props.onPick}
               onEditSession={props.onEditSession}
+              onCloneSession={props.onCloneSession}
               onDeleteSession={props.onDeleteSession}
               onAssignSession={props.onAssignSession}
               onViewPasswords={props.onViewPasswords}

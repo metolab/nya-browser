@@ -11,6 +11,7 @@ import {
   createSessionSchema,
   pickSessionFingerprint,
   IDLE_TIMEOUT_MINUTES_MAX,
+  DEFAULT_IDLE_TIMEOUT_MINUTES,
   putNotepadSchema,
   typeTextSchema,
   TYPE_TEXT_MAX,
@@ -116,9 +117,9 @@ describe('schemas', () => {
     expect(p.port).toBe(1080);
   });
 
-  it('defaults idle timeout to 0', () => {
+  it('defaults idle timeout to 30', () => {
     const s = createSessionSchema.parse({ name: 's1' });
-    expect(s.idleTimeoutMinutes).toBe(0);
+    expect(s.idleTimeoutMinutes).toBe(DEFAULT_IDLE_TIMEOUT_MINUTES);
     expect(s.notepad).toBe('');
   });
 

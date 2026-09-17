@@ -122,6 +122,7 @@ export const updateProxySchema = proxyFieldsSchema.partial();
 
 /** Idle auto-stop timeout stored on each session. Unit is minutes; 0 disables. */
 export const IDLE_TIMEOUT_MINUTES_MAX = 7 * 24 * 60;
+export const DEFAULT_IDLE_TIMEOUT_MINUTES = 30;
 
 export const idleTimeoutMinutesSchema = z.number().int().min(0).max(IDLE_TIMEOUT_MINUTES_MAX);
 
@@ -197,7 +198,7 @@ export const createSessionSchema = z.object({
   chromeLanguage: z.enum(CHROME_LANGUAGE_LIST).optional(),
   ...sessionFingerprintFields,
   homeUrl: z.string().max(2000).optional(),
-  idleTimeoutMinutes: idleTimeoutMinutesSchema.optional().default(0),
+  idleTimeoutMinutes: idleTimeoutMinutesSchema.optional().default(DEFAULT_IDLE_TIMEOUT_MINUTES),
 });
 
 export const updateSessionSchema = z.object({

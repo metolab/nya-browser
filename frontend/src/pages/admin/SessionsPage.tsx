@@ -1,14 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { ProxyRecord, Session, SessionGroup, UserPublic } from '@nya/shared';
-import { DEFAULT_CHROME_LANGUAGE, DEFAULT_GPU_PROFILE, DEFAULT_TIMEZONE, NATIVE_MEDIA_LABEL, normalizeGeo } from '@nya/shared';
+import {
+  DEFAULT_CHROME_LANGUAGE,
+  DEFAULT_GPU_PROFILE,
+  DEFAULT_IDLE_TIMEOUT_MINUTES,
+  DEFAULT_TIMEZONE,
+  NATIVE_MEDIA_LABEL,
+  normalizeGeo,
+} from '@nya/shared';
 import type { SessionFormValues } from '../../components/SessionFormDialog';
 import { api } from '../../api/client';
 import { SessionTree } from '../../components/SessionTree';
 import SessionFormDialog from '../../components/SessionFormDialog';
+import BatchSessionFormDialog, { type BatchSessionPatch } from '../../components/BatchSessionFormDialog';
 import { SessionPasswordsDialog } from '../../components/SessionPasswordsDialog';
 import { UserGrantList } from './GrantEditor';
-import { NONE_KEY, groupSelectOptions } from '@/lib/groups';
+import { NONE_KEY, filterSessionsByGroup, groupSelectOptions } from '@/lib/groups';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -36,6 +44,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+
+const SESSION_NAME_MAX = 64;
+
+function cloneSessionName(name: string) {
+  const suffix = ' copy';
+  if (name.length + suffix.length <= SESSION_NAME_MAX) return `${name}${suffix}`;
+  return `${name.slice(0, SESSION_NAME_MAX - suffix.length)}${suffix}`;
+}
 
 function mediaLabel(value: string) {
   const raw = value.trim();
@@ -83,6 +99,8 @@ export default function SessionsPage() {
   const [query, setQuery] = useState('');
   const [createGroupId, setCreateGroupId] = useState<string | null>(null);
   const [openCreate, setOpenCreate] = useState(false);
+  const [cloneFrom, setCloneFrom] = useState<Session | null>(null);
+  const [batchTargets, setBatchTargets] = useState<Session[] | null>(null);
   const [edit, setEdit] = useState<Session | null>(null);
   const [passwords, setPasswords] = useState<Session | null>(null);
   const [assign, setAssign] = useState<Session | null>(null);
@@ -166,8 +184,30 @@ export default function SessionsPage() {
           query={query}
           onQueryChange={setQuery}
           onCreateSession={(groupId) => {
+            setCloneFrom(null);
             setCreateGroupId(groupId);
             setOpenCreate(true);
+          }}
+          onCloneSession={(session) => {
+            setCloneFrom(session);
+            setCreateGroupId(session.groupId);
+            setOpenCreate(true);
+          }}
+          onBatchEditFolder={(group) => {
+            const items = filterSessionsByGroup(sessions, groups, group.id);
+            if (!items.length) {
+              toast.error('没有可修改的会话');
+              return;
+            }
+            setBatchTargets(items);
+          }}
+          onBatchEditUncategorized={() => {
+            const items = filterSessionsByGroup(sessions, groups, NONE_KEY);
+            if (!items.length) {
+              toast.error('没有可修改的会话');
+              return;
+            }
+            setBatchTargets(items);
           }}
           onEditSession={setEdit}
           onDeleteSession={setPendingDelete}
@@ -205,19 +245,64 @@ export default function SessionsPage() {
 
       <SessionFormDialog
         open={openCreate}
-        title="新建会话"
+        title={cloneFrom ? '克隆会话' : '新建会话'}
         submitLabel="创建"
         proxies={proxies}
         groups={groups}
-        initialGroupId={createGroupId}
-        onCancel={() => setOpenCreate(false)}
+        initialName={cloneFrom ? cloneSessionName(cloneFrom.name) : ''}
+        initialGroupId={cloneFrom?.groupId ?? createGroupId}
+        initialProxyId={cloneFrom?.proxyId}
+        initialTimezone={cloneFrom?.timezone || DEFAULT_TIMEZONE}
+        initialChromeLanguage={cloneFrom?.chromeLanguage || DEFAULT_CHROME_LANGUAGE}
+        initialGpuProfile={cloneFrom?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
+        initialWebrtcMode={cloneFrom?.fingerprint?.webrtcMode}
+        initialFontProfile={cloneFrom?.fingerprint?.fontProfile}
+        initialMediaAudioInput={cloneFrom?.fingerprint?.mediaDevices?.audioInput || NATIVE_MEDIA_LABEL}
+        initialMediaAudioOutput={cloneFrom?.fingerprint?.mediaDevices?.audioOutput || NATIVE_MEDIA_LABEL}
+        initialMediaVideoInput={cloneFrom?.fingerprint?.mediaDevices?.videoInput || NATIVE_MEDIA_LABEL}
+        initialGeoPermission={cloneFrom?.fingerprint?.geo?.permission}
+        initialGeoLatitude={cloneFrom?.fingerprint?.geo?.latitude}
+        initialGeoLongitude={cloneFrom?.fingerprint?.geo?.longitude}
+        initialGeoAccuracy={cloneFrom?.fingerprint?.geo?.accuracy}
+        initialHomeUrl={cloneFrom?.homeUrl}
+        initialIdleTimeoutMinutes={cloneFrom?.idleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES}
+        onCancel={() => {
+          setOpenCreate(false);
+          setCloneFrom(null);
+        }}
         onSubmit={async (data) => {
-          await api.createSession({
-            ...sessionFingerprintPayload(data),
-            groupId: data.groupId ?? createGroupId,
-          });
+          await api.createSession(sessionFingerprintPayload(data));
           await load();
           toast.success('已创建');
+        }}
+      />
+      <BatchSessionFormDialog
+        open={Boolean(batchTargets?.length)}
+        count={batchTargets?.length || 0}
+        proxies={proxies}
+        onCancel={() => setBatchTargets(null)}
+        onSubmit={async (patch: BatchSessionPatch) => {
+          const targets = batchTargets || [];
+          let ok = 0;
+          const failures: string[] = [];
+          const toastId = toast.loading(`正在更新 0/${targets.length}`);
+          for (const session of targets) {
+            try {
+              await api.updateSession(session.id, patch);
+              ok += 1;
+              toast.loading(`正在更新 ${ok}/${targets.length}`, { id: toastId });
+            } catch (e) {
+              failures.push(`${session.name}: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+          if (failures.length) {
+            toast.error(`已更新 ${ok}/${targets.length}。失败：${failures.slice(0, 3).join('；')}`, {
+              id: toastId,
+            });
+          } else {
+            toast.success(`已更新 ${ok} 个会话`, { id: toastId });
+          }
+          await load();
         }}
       />
       <SessionFormDialog
