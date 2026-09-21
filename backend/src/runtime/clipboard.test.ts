@@ -9,7 +9,7 @@ import {
   shouldRememberGet,
   shouldSkipTextHold,
   type ClipboardHolder,
-} from './clipboard.js';
+} from './clipboardLock.js';
 
 function holder(partial: Partial<ClipboardHolder> = {}): ClipboardHolder {
   return {

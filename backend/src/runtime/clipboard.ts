@@ -1,12 +1,38 @@
 import { execFile, spawn } from 'child_process';
 import path from 'path';
-import { normalizeClipboardText, type ClipboardKind, type SessionClipboard } from '@nya/shared';
+import { normalizeClipboardText, type ClipboardKind } from '@nya/shared';
 import { uriList } from '../modules/files/fileUri.js';
 import { getDisplayHolder, killTree, sessionEnv } from './sessionManager.js';
+import {
+  applyTargetsReady,
+  beginHold,
+  binaryTargetsMatch,
+  CLIP_HTTP_CAP_MS,
+  CLIP_LOCK_MS,
+  clipboardState,
+  failHoldIfCurrent,
+  rememberedClipboard,
+  shouldRememberGet,
+  shouldSkipTextHold,
+  type ClipboardHolder,
+} from './clipboardLock.js';
 
-export const CLIP_LOCK_MS = 2000;
-export const CLIP_READY_SLACK_MS = 250;
-export const CLIP_HTTP_CAP_MS = 150;
+export {
+  applyTargetsReady,
+  beginHold,
+  binaryTargetsMatch,
+  CLIP_HTTP_CAP_MS,
+  CLIP_LOCK_MS,
+  CLIP_READY_SLACK_MS,
+  clipboardState,
+  clearClipboardLock,
+  failHoldIfCurrent,
+  rememberedClipboard,
+  shouldRememberGet,
+  shouldSkipTextHold,
+} from './clipboardLock.js';
+export type { ClipboardHolder } from './clipboardLock.js';
+
 export const CLIP_PROBE_SEC = '0.1';
 
 type Runtime = {
@@ -15,115 +41,6 @@ type Runtime = {
   gid?: number;
   id?: string;
 };
-
-export type ClipboardHolder = {
-  display?: number;
-  clipboardKind?: ClipboardKind | string;
-  clipboardText?: string;
-  clipboardFiles?: string[];
-  clipboardHolder?: { pid?: number } | null;
-  clipboardLockUntil?: number;
-  holdGen?: number;
-};
-
-export function clipboardState(
-  holder: ClipboardHolder,
-  kind: ClipboardKind,
-  text = '',
-  files: string[] = [],
-): SessionClipboard {
-  return {
-    kind,
-    text: kind === 'text' ? text : '',
-    files: kind === 'files' ? files : [],
-  };
-}
-
-export function rememberedClipboard(holder: ClipboardHolder): SessionClipboard {
-  const kind = (holder.clipboardKind || 'text') as ClipboardKind;
-  const text = typeof holder.clipboardText === 'string' ? holder.clipboardText : '';
-  const files = (Array.isArray(holder.clipboardFiles) ? holder.clipboardFiles : []).map((item) =>
-    path.basename(item),
-  );
-  return clipboardState(holder, kind, text, files);
-}
-
-export function isBinaryKind(kind?: string) {
-  return kind === 'image' || kind === 'files';
-}
-
-export function shouldSkipTextHold(holder: ClipboardHolder, now = Date.now()) {
-  return isBinaryKind(String(holder.clipboardKind || '')) && now < (holder.clipboardLockUntil || 0);
-}
-
-export function shouldRememberGet(holder: ClipboardHolder, now = Date.now()) {
-  return shouldSkipTextHold(holder, now);
-}
-
-export function binaryTargetsMatch(kind: string, targets: string) {
-  if (kind === 'image') return /image\/png/i.test(targets);
-  if (kind === 'files') return /text\/uri-list|x-special\/gnome-copied-files/i.test(targets);
-  return /UTF8_STRING|text\/plain|STRING/i.test(targets);
-}
-
-export function beginHold(
-  holder: ClipboardHolder,
-  opts: {
-    kind: ClipboardKind;
-    text?: string;
-    files?: string[];
-    child: { pid?: number } | null;
-    spawnAt: number;
-  },
-) {
-  const prev = {
-    kind: (holder.clipboardKind || 'text') as ClipboardKind,
-    text: typeof holder.clipboardText === 'string' ? holder.clipboardText : '',
-    files: Array.isArray(holder.clipboardFiles) ? holder.clipboardFiles.slice() : [],
-    child: holder.clipboardHolder || null,
-  };
-  holder.holdGen = (holder.holdGen || 0) + 1;
-  holder.clipboardHolder = opts.child;
-  holder.clipboardKind = opts.kind;
-  holder.clipboardText = opts.kind === 'text' ? String(opts.text || '') : '';
-  holder.clipboardFiles = opts.kind === 'files' ? opts.files || [] : [];
-  holder.clipboardLockUntil = isBinaryKind(opts.kind) ? opts.spawnAt + CLIP_LOCK_MS : 0;
-  return { gen: holder.holdGen, prev };
-}
-
-export function applyTargetsReady(
-  holder: ClipboardHolder,
-  opts: { gen: number; child: { pid?: number } | null; readyAt: number },
-) {
-  if (opts.gen !== holder.holdGen || opts.child !== holder.clipboardHolder) return false;
-  if (!isBinaryKind(String(holder.clipboardKind || ''))) return true;
-  holder.clipboardLockUntil = Math.min(holder.clipboardLockUntil || 0, opts.readyAt + CLIP_READY_SLACK_MS);
-  return true;
-}
-
-export function failHoldIfCurrent(
-  holder: ClipboardHolder,
-  opts: {
-    gen: number;
-    child: { pid?: number } | null;
-    prev: { kind: ClipboardKind; text: string; files: string[] };
-    resolved: boolean;
-  },
-) {
-  if (opts.resolved) return false;
-  if (opts.gen !== holder.holdGen || opts.child !== holder.clipboardHolder) return false;
-  holder.clipboardHolder = null;
-  holder.clipboardLockUntil = 0;
-  holder.clipboardKind = opts.prev.kind;
-  holder.clipboardText = opts.prev.text;
-  holder.clipboardFiles = opts.prev.files;
-  return true;
-}
-
-export function clearClipboardLock(holder: ClipboardHolder | null | undefined) {
-  if (!holder) return;
-  holder.clipboardLockUntil = 0;
-}
 
 function execFileOnHolder(
   runtime: Runtime,
