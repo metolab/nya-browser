@@ -24,9 +24,10 @@ type Opts = {
   subId?: string | null;
   enabled: boolean;
   onText?: (text: string) => Promise<void> | void;
+  onClipboardKind?: (kind: 'image' | 'files', sessionId: string, subId?: string | null) => void;
 };
 
-export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
+export function useSessionFiles({ sessionId, subId, enabled, onText, onClipboardKind }: Opts) {
   const [transfer, setTransfer] = useState<SessionTransfer>(emptyTransfer);
   const [uploading, setUploading] = useState(false);
   const [uploadRatio, setUploadRatio] = useState(0);
@@ -40,9 +41,11 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
   const transferRef = useRef(transfer);
   const queue = useRef(Promise.resolve());
   const onTextRef = useRef(onText);
+  const onClipboardKindRef = useRef(onClipboardKind);
   const seenRef = useRef(new Map<string, { path: string; kind: 'file' | 'image' }>());
   transferRef.current = transfer;
   onTextRef.current = onText;
+  onClipboardKindRef.current = onClipboardKind;
 
   const beginPause = useCallback((bytes: number) => {
     if (bytes < TRANSFER_PAUSE_BYTES) return () => {};
@@ -73,16 +76,26 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
       return undefined;
     }
     let timer = 0;
+    // Hidden tabs skip refresh so chooser / download toast / localJobs freeze until visible (delay, not loss).
     const tick = async () => {
-      try {
-        await refresh();
-      } catch {
-        /* keep last */
+      if (document.visibilityState === 'visible') {
+        try {
+          await refresh();
+        } catch {
+          /* keep last */
+        }
       }
       timer = window.setTimeout(() => void tick(), 400);
     };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh().catch(() => undefined);
+    };
+    document.addEventListener('visibilitychange', onVisible);
     void tick();
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [enabled, refresh, sessionId]);
 
   const uploadFiles = useCallback(
@@ -115,7 +128,11 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
         await onTextRef.current?.(classified.text);
         return { inject: forRemotePaste, ok: true };
       }
+      const mark = (kind: 'image' | 'files') => {
+        if (sessionId) onClipboardKindRef.current?.(kind, sessionId, subId);
+      };
       if (classified.mode === 'image') {
+        mark('image');
         const images = classified.images;
         const prints = await Promise.all(images.map((image) => contentFingerprint(image)));
         const unseen = images.filter((_, index) => !seenRef.current.has(prints[index]));
@@ -125,7 +142,10 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
         try {
           if (!unseen.length) {
             const path = [...prints].reverse().map((fp) => seenRef.current.get(fp)?.path).find(Boolean);
-            if (path) await api.setClipboardImagePath(sessionId, path, subId);
+            if (path) {
+              await api.setClipboardImagePath(sessionId, path, subId);
+              mark('image');
+            }
             return { inject: forRemotePaste, ok: true };
           }
           let lastPath = '';
@@ -133,6 +153,7 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
             const encoded = await encodePasteImage(image);
             if (!encoded.compressed) toast.message('图片未压缩，已按原图上传');
             const saved = await api.setClipboardImage(sessionId, encoded.blob, subId);
+            mark('image');
             const fp = prints[images.indexOf(image)];
             if (saved.file?.path && fp) seenRef.current.set(fp, { path: saved.file.path, kind: 'image' });
             lastPath = saved.file?.path || lastPath;
@@ -154,6 +175,7 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
         toast.error(`${file.name} 超过 50MB`);
       }
       if (!kept.length) return { inject: false, ok: false };
+      mark('files');
       const prints = await Promise.all(kept.map((file) => contentFingerprint(file)));
       const fresh: File[] = [];
       const freshFp: string[] = [];
@@ -177,6 +199,7 @@ export function useSessionFiles({ sessionId, subId, enabled, onText }: Opts) {
       if (!paths.length) return { inject: false, ok: false };
       try {
         await api.setClipboardFiles(sessionId, paths, subId);
+        mark('files');
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err));
         return { inject: false, ok: false };

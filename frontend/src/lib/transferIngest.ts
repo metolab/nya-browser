@@ -1,6 +1,13 @@
 import { FILE_UPLOAD_MAX_BYTES } from '@nya/shared';
 
-export const GENERIC_IMAGE_NAME = /^(image|untitled|picture|screenshot|img)(\.[a-z0-9]+)?$/i;
+export const GENERIC_IMAGE_NAME = /^(image|untitled|picture|screenshot|img)(?: \(\d+\))?(\.[a-z0-9]+)?$/i;
+export const OS_SCREENSHOT_NAME =
+  /^(Screenshot \d|Screen Shot |Screenshot from |Screenshot_|屏幕截图|截圖)/i;
+
+export function isScreenshotName(name: string) {
+  const value = name || 'image.png';
+  return GENERIC_IMAGE_NAME.test(value) || OS_SCREENSHOT_NAME.test(value);
+}
 const FRESH_IMAGE_MS = 5000;
 
 export type TransferSource = 'clipboard' | 'picker';
@@ -29,9 +36,10 @@ export function dedupeFiles(files: File[]) {
   return out;
 }
 
+/** Fresh named screenshots only. OS screenshots older than 5s stay files. */
 export function isGenericImageFile(file: File) {
   if (!file.type.startsWith('image/')) return false;
-  if (!GENERIC_IMAGE_NAME.test(file.name || 'image.png')) return false;
+  if (!isScreenshotName(file.name || 'image.png')) return false;
   return Date.now() - file.lastModified < FRESH_IMAGE_MS;
 }
 
@@ -84,7 +92,7 @@ export async function contentFingerprint(file: File) {
     file.slice(0, headLen).arrayBuffer(),
     tailStart ? file.slice(tailStart).arrayBuffer() : Promise.resolve(new ArrayBuffer(0)),
   ]);
-  const generic = GENERIC_IMAGE_NAME.test(file.name || 'image.png');
+  const generic = isScreenshotName(file.name || 'image.png');
   const label = generic ? `img:${size}:${file.type}` : `${file.name}:${size}:${file.lastModified}`;
   return `${label}:${fnv1a(head)}:${fnv1a(tail)}`;
 }

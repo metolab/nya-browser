@@ -13,7 +13,7 @@ type Props = {
   display: DisplayPolicy;
   sizeTick: number;
   onPaneChange: (pane: Size) => void;
-  onRemoteClipboard?: (text: string) => void;
+  onRemoteClipboard?: () => void;
   onVncFocus?: () => void;
   transferPaused?: boolean;
   onUserGesture?: () => void;

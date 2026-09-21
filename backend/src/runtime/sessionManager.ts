@@ -25,7 +25,6 @@ import {
   posixLocale,
   acceptLanguageHeader,
   AUDIT_ACTIONS,
-  normalizeClipboardText,
   gpuProfileById,
   coerceWebrtcMode,
   coerceFontProfile,
@@ -36,7 +35,6 @@ import {
 } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
 import { isFileDialogTitle } from '../modules/files/names.js';
-import { uriList } from '../modules/files/fileUri.js';
 import {
   hasChromeLifecycle,
   startChromeLifecycle,
@@ -97,7 +95,7 @@ function envOn(name) {
   return raw === '1' || raw === 'true' || raw === 'on';
 }
 
-function killTree(child, signal = 'SIGTERM') {
+export function killTree(child, signal = 'SIGTERM') {
   if (!child?.pid) return;
   try {
     process.kill(-child.pid, signal);
@@ -511,7 +509,7 @@ export function markActiveDisplay(sessionId, display) {
   writeActiveDisplay(runtime, display);
 }
 
-function sessionEnv(runtime, extra = {}) {
+export function sessionEnv(runtime, extra = {}) {
   const home = sessionDir(runtime.id);
   const tmp = path.join(home, 'tmp');
   const session = getSession(runtime.id);
@@ -1559,6 +1557,8 @@ export async function startSession(sessionId, { url, ownerUserId } = {}) {
       clipboardKind: 'text',
       clipboardFiles: [],
       clipboardHolder: null,
+      clipboardLockUntil: 0,
+      holdGen: 0,
       cdpPort: NYA_CDP_BASE > 0 ? NYA_CDP_BASE + slot : null,
       startedAt: new Date().toISOString(),
       launchUrl,
@@ -1712,6 +1712,7 @@ async function forceCleanupRuntime(runtime) {
     killTree(runtime.clipboardHolder, 'SIGKILL');
     runtime.clipboardHolder = null;
   }
+  runtime.clipboardLockUntil = 0;
   if (runtime.tint2) {
     killTree(runtime.tint2, 'SIGKILL');
     runtime.tint2 = null;
@@ -2420,6 +2421,13 @@ export function assertSessionRuntime(sessionId, subId = null) {
   return runtime;
 }
 
+export function getDisplayHolder(sessionId, subId = null) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) throw new Error('Session is not running');
+  const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
+  return { runtime, holder };
+}
+
 function sendChromeControl(sessionId, payload, timeoutMs = 25000) {
   const sockPath = chromeControlSock(sessionId);
   return new Promise((resolve, reject) => {
@@ -2466,6 +2474,7 @@ async function stopSubInternal(runtime, sub) {
     killTree(sub.clipboardHolder, 'SIGKILL');
     sub.clipboardHolder = null;
   }
+  sub.clipboardLockUntil = 0;
   if (sub.tint2) {
     killTree(sub.tint2, 'SIGKILL');
     sub.tint2 = null;
@@ -2586,6 +2595,7 @@ async function respawnSubDesktop(runtime, sub) {
     killTree(sub.clipboardHolder, 'SIGKILL');
     sub.clipboardHolder = null;
   }
+  sub.clipboardLockUntil = 0;
   if (sub.tint2) {
     killTree(sub.tint2, 'SIGKILL');
     sub.tint2 = null;
@@ -2637,6 +2647,8 @@ export async function createSub(sessionId, url, { ownerUserId } = {}) {
     clipboardKind: 'text',
     clipboardFiles: [],
     clipboardHolder: null,
+    clipboardLockUntil: 0,
+    holdGen: 0,
     tint2: null,
     taskbarOn: false,
     taskbarFitted: false,
@@ -3038,175 +3050,3 @@ export function execOnDisplay(sessionId, file, args) {
   });
 }
 
-function clipboardState(holder, kind, text = '', files = []) {
-  return {
-    kind,
-    text: kind === 'text' ? text : '',
-    files: kind === 'files' ? files : [],
-  };
-}
-
-function rememberedClipboard(holder) {
-  const kind = holder.clipboardKind || 'text';
-  const text = typeof holder.clipboardText === 'string' ? holder.clipboardText : '';
-  const files = (Array.isArray(holder.clipboardFiles) ? holder.clipboardFiles : []).map((item) =>
-    path.basename(item),
-  );
-  return clipboardState(holder, kind, text, files);
-}
-
-export async function getClipboard(sessionId, subId = null) {
-  const runtime = runtimes.get(sessionId);
-  if (!runtime) throw new Error('Session is not running');
-  const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
-  try {
-    const targets = await readXclipTargets(runtime, holder);
-    if (/image\/png/i.test(targets)) {
-      holder.clipboardKind = 'image';
-      return clipboardState(holder, 'image');
-    }
-    if (/text\/uri-list|x-special\/gnome-copied-files/i.test(targets)) {
-      holder.clipboardKind = 'files';
-      const names = (holder.clipboardFiles || []).map((item) => path.basename(item));
-      return clipboardState(holder, 'files', '', names);
-    }
-    const previous = typeof holder.clipboardText === 'string' ? holder.clipboardText : '';
-    const text = await readXclip(runtime, holder);
-    const next = normalizeClipboardText(text, previous);
-    if (next == null) return rememberedClipboard(holder);
-    holder.clipboardKind = 'text';
-    holder.clipboardText = next;
-    holder.clipboardFiles = [];
-    return clipboardState(holder, 'text', next);
-  } catch {
-    return rememberedClipboard(holder);
-  }
-}
-
-function readXclip(runtime, holder) {
-  const tryTarget = (target) =>
-    execFileOnHolder(runtime, holder, 'timeout', [
-      '2',
-      'xclip',
-      '-selection',
-      'clipboard',
-      '-o',
-      '-t',
-      target,
-    ]).then(({ stdout }) => String(stdout ?? ''));
-
-  return tryTarget('UTF8_STRING').catch(() =>
-    tryTarget('text/plain;charset=utf-8').catch(() => tryTarget('STRING')),
-  );
-}
-
-function readXclipTargets(runtime, holder) {
-  return execFileOnHolder(runtime, holder, 'timeout', [
-    '2',
-    'xclip',
-    '-selection',
-    'clipboard',
-    '-o',
-    '-t',
-    'TARGETS',
-  ]).then(({ stdout }) => String(stdout ?? ''));
-}
-
-function holdClipboard(runtime, holder, { kind, text = '', files = [], type, payload }) {
-  holder.clipboardKind = kind;
-  holder.clipboardText = kind === 'text' ? text : '';
-  holder.clipboardFiles = kind === 'files' ? files : [];
-  if (holder.clipboardHolder?.pid) {
-    killTree(holder.clipboardHolder, 'SIGKILL');
-    holder.clipboardHolder = null;
-  }
-  return new Promise((resolve, reject) => {
-    const spawnOpts = {
-      env: sessionEnv(runtime, { DISPLAY: `:${holder.display}` }),
-      detached: true,
-      stdio: ['pipe', 'ignore', 'ignore'],
-    };
-    if (Number.isInteger(runtime.uid)) {
-      spawnOpts.uid = runtime.uid;
-      spawnOpts.gid = runtime.gid;
-    }
-    const child = spawn('xclip', ['-selection', 'clipboard', '-t', type, '-i'], spawnOpts);
-    child.on('error', reject);
-    if (Buffer.isBuffer(payload)) child.stdin.end(payload);
-    else child.stdin.end(String(payload ?? ''), 'utf8');
-    setTimeout(() => {
-      holder.clipboardHolder = child;
-      resolve();
-    }, 150);
-  });
-}
-
-function execFileOnHolder(runtime, holder, file, args) {
-  const display = holder.display ?? runtime.display;
-  /** @type {import('child_process').ExecFileOptions} */
-  const opts = {
-    env: sessionEnv(runtime, { DISPLAY: `:${display}` }),
-    maxBuffer: 2 * 1024 * 1024,
-  };
-  if (Number.isInteger(runtime.uid)) {
-    opts.uid = runtime.uid;
-    opts.gid = runtime.gid;
-  }
-  return new Promise((resolve, reject) => {
-    execFile(file, args, opts, (err, stdout, stderr) => {
-      if (err) {
-        err.stderr = stderr;
-        reject(err);
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
-  });
-}
-
-export async function setClipboard(sessionId, text, subId = null) {
-  const runtime = runtimes.get(sessionId);
-  if (!runtime) throw new Error('Session is not running');
-  const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
-  const value = String(text ?? '');
-  await holdClipboard(runtime, holder, {
-    kind: 'text',
-    text: value,
-    type: 'UTF8_STRING',
-    payload: value,
-  });
-}
-
-async function releaseX11Buttons(runtime, holder) {
-  try {
-    await execFileOnHolder(runtime, holder, 'xdotool', ['mouseup', '1', 'mouseup', '2', 'mouseup', '3']);
-  } catch {
-    /* lost mouseup after a file picker is common; ignore if xdotool is busy */
-  }
-}
-
-export async function setClipboardImage(sessionId, png, subId = null) {
-  const runtime = runtimes.get(sessionId);
-  if (!runtime) throw new Error('Session is not running');
-  const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
-  await holdClipboard(runtime, holder, {
-    kind: 'image',
-    type: 'image/png',
-    payload: png,
-  });
-  await releaseX11Buttons(runtime, holder);
-}
-
-export async function setClipboardFiles(sessionId, absPaths, subId = null) {
-  const runtime = runtimes.get(sessionId);
-  if (!runtime) throw new Error('Session is not running');
-  const holder = subId ? getSubOrThrow(runtime, subId) : runtime;
-  const files = (absPaths || []).map((item) => path.resolve(String(item)));
-  await holdClipboard(runtime, holder, {
-    kind: 'files',
-    files,
-    type: 'text/uri-list',
-    payload: uriList(files),
-  });
-  await releaseX11Buttons(runtime, holder);
-}

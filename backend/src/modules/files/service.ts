@@ -164,7 +164,7 @@ function safeFull(sessionId: string, rel: string) {
 }
 
 export async function getTransfer(sessionId: string, subId?: string | null): Promise<SessionTransfer> {
-  const [chooser] = await Promise.all([detectFileDialog(sessionId, subId).catch(() => ({ open: false, title: '' }))]);
+  const chooser = await detectFileDialog(sessionId, subId).catch(() => ({ open: false, title: '' }));
   return {
     chooser: chooser.open ? chooser : null,
     uploads: listUploads(sessionId),

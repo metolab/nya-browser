@@ -169,7 +169,6 @@ export interface LocalFileJob {
   id: string;
   path: string;
   name: string;
-  sent: number;
   total: number;
   state: 'active' | 'completed' | 'cancelled' | 'error';
 }

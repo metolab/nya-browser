@@ -57,13 +57,24 @@ function relativeToRoot(absPath: string, root: string) {
   return full.slice(base.length + 1).replace(/\\/g, '/');
 }
 
-const historyCache = new Map<string, { at: number; rows: SessionDownload[] }>();
+const historyCache = new Map<string, { at: number; fp: string; rows: SessionDownload[] }>();
+
+function fileFingerprint(file: string) {
+  if (!fs.existsSync(file)) return '-';
+  const st = fs.statSync(file);
+  return `${st.mtimeMs}:${st.size}`;
+}
 
 export function readChromeDownloads(sessionId: string, root: string): SessionDownload[] {
-  const cached = historyCache.get(sessionId);
-  if (cached && Date.now() - cached.at < 1500) return cached.rows;
   const src = path.join(chromeProfileDir(sessionId), 'Default', 'History');
-  if (!fs.existsSync(src)) return [];
+  if (!fs.existsSync(src)) {
+    historyCache.delete(sessionId);
+    return [];
+  }
+  const fp = `${fileFingerprint(src)}|${fileFingerprint(`${src}-wal`)}`;
+  const cached = historyCache.get(sessionId);
+  if (cached && cached.fp === fp) return cached.rows;
+  if (cached && Date.now() - cached.at < 1500) return cached.rows;
   let dest = '';
   try {
     dest = copyHistoryDb(src, sessionId);
@@ -119,7 +130,7 @@ export function readChromeDownloads(sessionId: string, root: string): SessionDow
           updatedAt,
         };
       });
-      historyCache.set(sessionId, { at: Date.now(), rows: mapped });
+      historyCache.set(sessionId, { at: Date.now(), fp, rows: mapped });
       return mapped;
     } finally {
       db.close();

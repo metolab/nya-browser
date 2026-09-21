@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
 import { clipboardFilesSchema, clipboardSchema, displaySchema, typeTextSchema } from '@nya/shared';
 import { asyncHandler } from '../../http/util.js';
@@ -9,13 +9,15 @@ import {
   canAccessWindow,
   chownSessionFiles,
   getChromeTitle,
-  getClipboard,
   resizeDisplay,
+  typeText,
+} from '../../runtime/sessionManager.js';
+import {
+  getClipboard,
   setClipboard,
   setClipboardFiles,
   setClipboardImage,
-  typeText,
-} from '../../runtime/sessionManager.js';
+} from '../../runtime/clipboard.js';
 import { toClipboardPng } from '../files/image.js';
 import { resolveClipboardFiles, savePastedImage } from '../files/service.js';
 
@@ -26,7 +28,7 @@ const imageUpload = multer({
 
 export const sessionIoRouter = Router({ mergeParams: true });
 
-function gateWindow(req: import('express').Request, windowId: string | null) {
+function gateWindow(req: Request, windowId: string | null) {
   assertSessionAccess(req, req.params.id);
   if (req.user?.role === 'admin') return;
   const id = windowId || 'main';
@@ -97,7 +99,7 @@ sessionIoRouter.get(
   }),
 );
 
-async function putClipboardImage(req: import('express').Request, res: import('express').Response, subId: string | null) {
+async function putClipboardImage(req: Request, res: Response, subId: string | null) {
   gateWindow(req, subId || 'main');
   assertSessionRuntime(req.params.id, subId);
   const file = req.file;
@@ -118,7 +120,7 @@ async function putClipboardImage(req: import('express').Request, res: import('ex
   res.json({ ok: true, kind: 'image', file: { name: saved.name, path: saved.path, size: saved.size } });
 }
 
-async function putClipboardFiles(req: import('express').Request, res: import('express').Response, subId: string | null) {
+async function putClipboardFiles(req: Request, res: Response, subId: string | null) {
   gateWindow(req, subId || 'main');
   assertSessionRuntime(req.params.id, subId);
   const parsed = clipboardFilesSchema.safeParse(req.body || {});
@@ -131,7 +133,7 @@ async function putClipboardFiles(req: import('express').Request, res: import('ex
   res.json({ ok: true, kind: 'files', files: parsed.data.paths });
 }
 
-async function putClipboardImagePath(req: import('express').Request, res: import('express').Response, subId: string | null) {
+async function putClipboardImagePath(req: Request, res: Response, subId: string | null) {
   gateWindow(req, subId || 'main');
   assertSessionRuntime(req.params.id, subId);
   const rel = String(req.body?.path || '').trim();
@@ -145,152 +147,82 @@ async function putClipboardImagePath(req: import('express').Request, res: import
   res.json({ ok: true, kind: 'image', file: { path: rel } });
 }
 
-sessionIoRouter.get(
-  '/clipboard',
-  asyncHandler(async (req, res) => {
-    try {
-      gateWindow(req, 'main');
-      res.json(await getClipboard(req.params.id));
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
+function addClipboardAndType(prefix: string, subOf: (req: Request) => string | null) {
+  sessionIoRouter.get(
+    `${prefix}/clipboard`,
+    asyncHandler(async (req, res) => {
+      try {
+        gateWindow(req, subOf(req) || 'main');
+        res.json(await getClipboard(req.params.id, subOf(req)));
+      } catch (err) {
+        handleHttpError(err, res);
+      }
+    }),
+  );
 
-sessionIoRouter.put(
-  '/clipboard',
-  asyncHandler(async (req, res) => {
-    try {
-      gateWindow(req, 'main');
-      const parsed = clipboardSchema.safeParse(req.body || {});
-      await setClipboard(req.params.id, parsed.success ? parsed.data.text : '');
-      res.json({ ok: true, kind: 'text' });
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
+  sessionIoRouter.put(
+    `${prefix}/clipboard`,
+    asyncHandler(async (req, res) => {
+      try {
+        gateWindow(req, subOf(req) || 'main');
+        const parsed = clipboardSchema.safeParse(req.body || {});
+        const state = await setClipboard(req.params.id, parsed.success ? parsed.data.text : '', subOf(req));
+        res.json({ ok: true, ...state });
+      } catch (err) {
+        handleHttpError(err, res);
+      }
+    }),
+  );
 
-sessionIoRouter.post(
-  '/clipboard/image',
-  imageUpload.single('image'),
-  asyncHandler(async (req, res) => {
-    try {
-      await putClipboardImage(req, res, null);
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
+  sessionIoRouter.post(
+    `${prefix}/clipboard/image`,
+    imageUpload.single('image'),
+    asyncHandler(async (req, res) => {
+      try {
+        await putClipboardImage(req, res, subOf(req));
+      } catch (err) {
+        handleHttpError(err, res);
+      }
+    }),
+  );
 
-sessionIoRouter.post(
-  '/clipboard/files',
-  asyncHandler(async (req, res) => {
-    try {
-      await putClipboardFiles(req, res, null);
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
+  sessionIoRouter.post(
+    `${prefix}/clipboard/files`,
+    asyncHandler(async (req, res) => {
+      try {
+        await putClipboardFiles(req, res, subOf(req));
+      } catch (err) {
+        handleHttpError(err, res);
+      }
+    }),
+  );
 
-sessionIoRouter.post(
-  '/clipboard/image-path',
-  asyncHandler(async (req, res) => {
-    try {
-      await putClipboardImagePath(req, res, null);
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
+  sessionIoRouter.post(
+    `${prefix}/clipboard/image-path`,
+    asyncHandler(async (req, res) => {
+      try {
+        await putClipboardImagePath(req, res, subOf(req));
+      } catch (err) {
+        handleHttpError(err, res);
+      }
+    }),
+  );
 
-sessionIoRouter.get(
-  '/subs/:subId/clipboard',
-  asyncHandler(async (req, res) => {
-    try {
-      gateWindow(req, req.params.subId);
-      res.json(await getClipboard(req.params.id, req.params.subId));
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
+  sessionIoRouter.post(
+    `${prefix}/type`,
+    asyncHandler(async (req, res) => {
+      try {
+        gateWindow(req, subOf(req) || 'main');
+        const parsed = typeTextSchema.safeParse(req.body || {});
+        if (!parsed.success) return res.status(400).json({ ok: false, error: 'Invalid text' });
+        await typeText(req.params.id, parsed.data.text, subOf(req));
+        res.json({ ok: true });
+      } catch (err) {
+        handleHttpError(err, res);
+      }
+    }),
+  );
+}
 
-sessionIoRouter.put(
-  '/subs/:subId/clipboard',
-  asyncHandler(async (req, res) => {
-    try {
-      gateWindow(req, req.params.subId);
-      const parsed = clipboardSchema.safeParse(req.body || {});
-      await setClipboard(req.params.id, parsed.success ? parsed.data.text : '', req.params.subId);
-      res.json({ ok: true, kind: 'text' });
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
-
-sessionIoRouter.post(
-  '/subs/:subId/clipboard/image',
-  imageUpload.single('image'),
-  asyncHandler(async (req, res) => {
-    try {
-      await putClipboardImage(req, res, req.params.subId);
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
-
-sessionIoRouter.post(
-  '/subs/:subId/clipboard/files',
-  asyncHandler(async (req, res) => {
-    try {
-      await putClipboardFiles(req, res, req.params.subId);
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
-
-sessionIoRouter.post(
-  '/subs/:subId/clipboard/image-path',
-  asyncHandler(async (req, res) => {
-    try {
-      await putClipboardImagePath(req, res, req.params.subId);
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
-
-sessionIoRouter.post(
-  '/type',
-  asyncHandler(async (req, res) => {
-    try {
-      gateWindow(req, 'main');
-      const parsed = typeTextSchema.safeParse(req.body || {});
-      if (!parsed.success) return res.status(400).json({ ok: false, error: 'Invalid text' });
-      await typeText(req.params.id, parsed.data.text);
-      res.json({ ok: true });
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
-
-sessionIoRouter.post(
-  '/subs/:subId/type',
-  asyncHandler(async (req, res) => {
-    try {
-      gateWindow(req, req.params.subId);
-      const parsed = typeTextSchema.safeParse(req.body || {});
-      if (!parsed.success) return res.status(400).json({ ok: false, error: 'Invalid text' });
-      await typeText(req.params.id, parsed.data.text, req.params.subId);
-      res.json({ ok: true });
-    } catch (err) {
-      handleHttpError(err, res);
-    }
-  }),
-);
+addClipboardAndType('', () => null);
+addClipboardAndType('/subs/:subId', (req) => req.params.subId);

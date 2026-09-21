@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { classifyTransfer, contentFingerprint, isGenericImageFile, splitBySize } from './transferIngest';
+import {
+  classifyTransfer,
+  contentFingerprint,
+  isGenericImageFile,
+  isScreenshotName,
+  splitBySize,
+} from './transferIngest';
 import { fitMaxEdge } from './pasteImage';
 
 function file(name: string, type: string, size = 10, lastModified = Date.now()) {
@@ -47,6 +53,33 @@ describe('isGenericImageFile', () => {
   it('rejects old image.png copies from the file manager', () => {
     expect(isGenericImageFile(file('image.png', 'image/png', 20, Date.now() - 60_000))).toBe(false);
   });
+
+  it('treats OS screenshot names as images when fresh', () => {
+    const now = Date.now();
+    for (const name of [
+      'Screenshot 2026-09-21.png',
+      'Screen Shot 2026-09-21 at 11.30.00 AM.png',
+      'Screenshot from 2026-09-21 11-30-00.png',
+      'Screenshot_20260921.png',
+      '屏幕截图 2026-09-21.png',
+      '截圖 2026-09-21.png',
+      'image (2).png',
+    ]) {
+      expect(classifyTransfer({ source: 'clipboard', files: [file(name, 'image/png', 10, now)] }).mode).toBe(
+        'image',
+      );
+    }
+  });
+
+  it('keeps camera and no-space duplicate names as files', () => {
+    const now = Date.now();
+    expect(isScreenshotName('IMG_1234.jpg')).toBe(false);
+    expect(isGenericImageFile(file('IMG_1234.jpg', 'image/jpeg', 10, now))).toBe(false);
+    expect(isGenericImageFile(file('image(2).png', 'image/png', 10, now))).toBe(false);
+    expect(classifyTransfer({ source: 'picker', files: [file('image.png', 'image/png', 10, now)] }).mode).toBe(
+      'files',
+    );
+  });
 });
 
 describe('splitBySize', () => {
@@ -62,6 +95,21 @@ describe('contentFingerprint', () => {
     const a = file('image.png', 'image/png', 32, 1);
     const b = file('image.png', 'image/png', 32, 99);
     expect(await contentFingerprint(a)).toBe(await contentFingerprint(b));
+  });
+
+  it('matches OS screenshot bytes when lastModified changes', async () => {
+    const a = file('Screenshot 2026-01-01.png', 'image/png', 32, 1);
+    const b = file('Screenshot 2026-01-01.png', 'image/png', 32, 99);
+    expect(await contentFingerprint(a)).toBe(await contentFingerprint(b));
+    const c = file('屏幕截图.png', 'image/png', 32, 1);
+    const d = file('屏幕截图.png', 'image/png', 32, 99);
+    expect(await contentFingerprint(c)).toBe(await contentFingerprint(d));
+  });
+
+  it('keeps camera filenames mtime-sensitive', async () => {
+    const a = file('IMG_1234.jpg', 'image/jpeg', 32, 1);
+    const b = file('IMG_1234.jpg', 'image/jpeg', 32, 99);
+    expect(await contentFingerprint(a)).not.toBe(await contentFingerprint(b));
   });
 
   it('changes when the payload changes', async () => {

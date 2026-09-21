@@ -18,7 +18,6 @@ export function startLocalJob(sessionId: string, id: string, filePath: string, n
     sessionId,
     path: filePath,
     name,
-    sent: 0,
     total,
     state: 'active',
   };
@@ -30,7 +29,6 @@ export function finishLocalJob(sessionId: string, id: string, state: Job['state'
   const job = jobs.get(`${sessionId}:${id}`);
   if (!job || job.state !== 'active') return;
   job.state = state;
-  job.sent = state === 'completed' ? job.total : job.sent;
   job.finishedAt = Date.now();
 }
 

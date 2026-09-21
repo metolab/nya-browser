@@ -54,6 +54,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+function sessionIoPath(id: string, subId: string | null | undefined, leaf: string) {
+  const mid = subId ? `/subs/${encodeURIComponent(subId)}` : '';
+  return `/api/sessions/${id}${mid}${leaf}`;
+}
+
 export const api = {
   me: () => request<{ user: UserPublic }>('/api/me'),
   login: (username: string, password: string) =>
@@ -243,55 +248,37 @@ export const api = {
     return { ok: true, geometry: data.geometry };
   },
   getChromeTitle: (id: string, subId?: string | null) =>
-    request<{ title: string }>(
-      subId
-        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/title`
-        : `/api/sessions/${id}/title`,
-    ),
+    request<{ title: string }>(sessionIoPath(id, subId, '/title')),
   getClipboard: (id: string, subId?: string | null) =>
-    request<SessionClipboard>(
-      subId
-        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard`
-        : `/api/sessions/${id}/clipboard`,
-    ),
+    request<SessionClipboard>(sessionIoPath(id, subId, '/clipboard')),
   setClipboard: (id: string, text: string, subId?: string | null) =>
-    request<{ ok: boolean }>(
-      subId
-        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard`
-        : `/api/sessions/${id}/clipboard`,
-      { method: 'PUT', body: JSON.stringify({ text }) },
-    ),
+    request<{ ok: boolean } & SessionClipboard>(sessionIoPath(id, subId, '/clipboard'), {
+      method: 'PUT',
+      body: JSON.stringify({ text }),
+    }),
   setClipboardImage: (id: string, image: Blob, subId?: string | null) => {
     const form = new FormData();
     form.append('image', image, 'image.webp');
     return request<{ ok: boolean; file: { name: string; path: string; size: number } }>(
-      subId
-        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard/image`
-        : `/api/sessions/${id}/clipboard/image`,
+      sessionIoPath(id, subId, '/clipboard/image'),
       { method: 'POST', body: form },
     );
   },
   setClipboardFiles: (id: string, paths: string[], subId?: string | null) =>
-    request<{ ok: boolean }>(
-      subId
-        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard/files`
-        : `/api/sessions/${id}/clipboard/files`,
-      { method: 'POST', body: JSON.stringify({ paths }) },
-    ),
+    request<{ ok: boolean }>(sessionIoPath(id, subId, '/clipboard/files'), {
+      method: 'POST',
+      body: JSON.stringify({ paths }),
+    }),
   setClipboardImagePath: (id: string, path: string, subId?: string | null) =>
-    request<{ ok: boolean }>(
-      subId
-        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/clipboard/image-path`
-        : `/api/sessions/${id}/clipboard/image-path`,
-      { method: 'POST', body: JSON.stringify({ path }) },
-    ),
+    request<{ ok: boolean }>(sessionIoPath(id, subId, '/clipboard/image-path'), {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
   typeText: (id: string, text: string, subId?: string | null) =>
-    request<{ ok: boolean }>(
-      subId
-        ? `/api/sessions/${id}/subs/${encodeURIComponent(subId)}/type`
-        : `/api/sessions/${id}/type`,
-      { method: 'POST', body: JSON.stringify({ text }) },
-    ),
+    request<{ ok: boolean }>(sessionIoPath(id, subId, '/type'), {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
   listSubs: (id: string) =>
     request<{ subs: { id: string; display: number; running: boolean }[] }>(`/api/sessions/${id}/subs`),
   createSub: (id: string, url?: string) =>

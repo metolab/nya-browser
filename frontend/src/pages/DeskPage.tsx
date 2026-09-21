@@ -78,6 +78,7 @@ export default function DeskPage() {
     subId: active ? vncWindowExtra(active.windowId) : null,
     enabled: Boolean(active?.windowId),
     onText: (text) => clip.pushFromPaste(text),
+    onClipboardKind: clip.markRemoteKind,
   });
 
   useEffect(() => {
@@ -273,7 +274,7 @@ export default function DeskPage() {
           onPaneChange={onPaneChange}
           transferPaused={files.paused}
           onRemoteClipboard={() => {
-            void clip.flushRemote().catch(() => undefined);
+            void clip.flushRemote('auto').catch(() => undefined);
           }}
           onLocalPaste={async (data) => {
             if (uploadOpen) return 'done';

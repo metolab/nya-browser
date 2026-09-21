@@ -59,7 +59,7 @@ type Props = {
   occupancyId?: string | null;
   transferPaused?: boolean;
   onFocus: () => void;
-  onRemoteClipboard?: (text: string) => void;
+  onRemoteClipboard?: () => void;
   onUserGesture?: () => void;
   onLocalPaste?: (data: DataTransfer | null) => Promise<'inject' | 'done'>;
 };
@@ -452,9 +452,8 @@ export default function VncViewer({
         rfb.addEventListener('credentialsrequired', () => {
           rfb.sendCredentials({ password: '' });
         });
-        rfb.addEventListener('clipboard', (e: { detail?: { text?: string } }) => {
-          const next = String(e?.detail?.text ?? '');
-          onRemoteClipboardRef.current?.(next);
+        rfb.addEventListener('clipboard', () => {
+          onRemoteClipboardRef.current?.();
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : '画面连接失败');
