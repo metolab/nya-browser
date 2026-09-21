@@ -4,6 +4,11 @@ import { type ClipboardKind, type SessionClipboard } from '@nya/shared';
 export const CLIP_LOCK_MS = 2000;
 export const CLIP_READY_SLACK_MS = 250;
 export const CLIP_HTTP_CAP_MS = 150;
+export const CLIP_BINARY_CAP_MS = 400;
+
+export function httpCapMs(kind: ClipboardKind) {
+  return isBinaryKind(kind) ? CLIP_BINARY_CAP_MS : CLIP_HTTP_CAP_MS;
+}
 
 export type ClipboardHolder = {
   display?: number;

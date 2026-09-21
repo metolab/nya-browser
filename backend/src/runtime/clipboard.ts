@@ -7,10 +7,10 @@ import {
   applyTargetsReady,
   beginHold,
   binaryTargetsMatch,
-  CLIP_HTTP_CAP_MS,
   CLIP_LOCK_MS,
   clipboardState,
   failHoldIfCurrent,
+  httpCapMs,
   rememberedClipboard,
   shouldFailHoldOnExit,
   shouldRememberGet,
@@ -22,9 +22,11 @@ export {
   applyTargetsReady,
   beginHold,
   binaryTargetsMatch,
+  CLIP_BINARY_CAP_MS,
   CLIP_HTTP_CAP_MS,
   CLIP_LOCK_MS,
   CLIP_READY_SLACK_MS,
+  httpCapMs,
   clipboardState,
   clearClipboardLock,
   failHoldIfCurrent,
@@ -135,7 +137,13 @@ function holdClipboard(
     spawnOpts.uid = runtime.uid;
     spawnOpts.gid = runtime.gid;
   }
-  const child = spawn('xclip', ['-selection', 'clipboard', '-t', opts.type, '-i'], spawnOpts);
+  // Stay in the foreground and serve forever. Default xclip forks; the parent
+  // exits 0 and TARGETS probes then race Chrome's paste on the grandchild.
+  const child = spawn(
+    'xclip',
+    ['-selection', 'clipboard', '-t', opts.type, '-i', '-quiet', '-loops', '0'],
+    spawnOpts,
+  );
   const { gen, prev } = beginHold(holder, {
     kind: opts.kind,
     text: opts.text,
@@ -149,12 +157,14 @@ function holdClipboard(
   else child.stdin?.end(String(opts.payload ?? ''), 'utf8');
 
   let resolved = false;
+  let probing = true;
   let settle: (err?: Error) => void;
   const httpWait = new Promise<void>((resolve, reject) => {
     settle = (err) => {
       if (resolved && !err) return;
       if (err && resolved) return;
       resolved = true;
+      probing = false;
       if (err) reject(err);
       else resolve();
     };
@@ -184,7 +194,7 @@ function holdClipboard(
 
   const probe = async () => {
     for (;;) {
-      if (gen !== holder.holdGen || child !== holder.clipboardHolder) return;
+      if (!probing || gen !== holder.holdGen || child !== holder.clipboardHolder) return;
       if (Date.now() >= spawnAt + CLIP_LOCK_MS) return;
       try {
         const targets = await readXclipTargetsQuick(runtime, holder);
@@ -201,7 +211,7 @@ function holdClipboard(
     }
   };
 
-  const cap = setTimeout(() => settle(), CLIP_HTTP_CAP_MS);
+  const cap = setTimeout(() => settle(), httpCapMs(opts.kind));
   void probe();
   return httpWait.finally(() => clearTimeout(cap));
 }

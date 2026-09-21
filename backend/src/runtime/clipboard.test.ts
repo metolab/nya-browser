@@ -3,8 +3,11 @@ import {
   applyTargetsReady,
   beginHold,
   binaryTargetsMatch,
+  CLIP_BINARY_CAP_MS,
+  CLIP_HTTP_CAP_MS,
   CLIP_LOCK_MS,
   failHoldIfCurrent,
+  httpCapMs,
   rememberedClipboard,
   shouldFailHoldOnExit,
   shouldRememberGet,
@@ -35,6 +38,12 @@ describe('clipboard lock helpers', () => {
     expect(h.clipboardLockUntil).toBeGreaterThan(spawnAt);
     expect(shouldSkipTextHold(h, spawnAt + 10)).toBe(true);
     expect(shouldRememberGet(h, spawnAt + 10)).toBe(true);
+  });
+
+  it('gives file/image holds a longer HTTP cap so TARGETS can settle', () => {
+    expect(httpCapMs('text')).toBe(CLIP_HTTP_CAP_MS);
+    expect(httpCapMs('files')).toBe(CLIP_BINARY_CAP_MS);
+    expect(httpCapMs('image')).toBe(CLIP_BINARY_CAP_MS);
   });
 
   it('does not treat leftover STRING as image-ready', () => {

@@ -10,6 +10,7 @@ import {
   clampTrapPos,
   commitTextFromEvents,
   isFallbackInsert,
+  isPasteKey,
   keyboardEventInit,
   shouldForwardKey,
   shouldPreventDefaultKey,
@@ -612,7 +613,15 @@ export default function VncViewer({
       });
     };
 
+    const onPasteKeyCapture = (e: KeyboardEvent) => {
+      if (viewOnlyRef.current) return;
+      if (!isPasteKey(e)) return;
+      e.stopPropagation();
+    };
+
     const wrap = wrapRef.current;
+    wrap?.addEventListener('keydown', onPasteKeyCapture, true);
+    wrap?.addEventListener('keyup', onPasteKeyCapture, true);
     trap.addEventListener('keydown', onKey);
     trap.addEventListener('keyup', onKey);
     trap.addEventListener('compositionstart', onCompositionStart);
@@ -624,6 +633,8 @@ export default function VncViewer({
     trap.addEventListener('paste', onPaste);
     wrap?.addEventListener('paste', onPaste);
     return () => {
+      wrap?.removeEventListener('keydown', onPasteKeyCapture, true);
+      wrap?.removeEventListener('keyup', onPasteKeyCapture, true);
       trap.removeEventListener('keydown', onKey);
       trap.removeEventListener('keyup', onKey);
       trap.removeEventListener('compositionstart', onCompositionStart);
