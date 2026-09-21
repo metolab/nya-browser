@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'child_process';
 import path from 'path';
-import { normalizeClipboardText, type ClipboardKind } from '@nya/shared';
+import { normalizeClipboardText, type ClipboardKind, type SessionClipboard } from '@nya/shared';
 import { uriList } from '../modules/files/fileUri.js';
 import { getDisplayHolder, killTree, sessionEnv } from './sessionManager.js';
 import {
