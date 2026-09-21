@@ -21,6 +21,12 @@ describe('file names', () => {
   it('decodes multer latin1 names', () => {
     const raw = Buffer.from('报告.pdf', 'utf8').toString('latin1');
     expect(decodeOriginalName(raw)).toBe('报告.pdf');
+    expect(decodeOriginalName(decodeOriginalName(raw))).toBe('报告.pdf');
+  });
+
+  it('keeps already-decoded unicode names', () => {
+    expect(decodeOriginalName('报告.pdf')).toBe('报告.pdf');
+    expect(decodeOriginalName('测试 文件.txt')).toBe('测试 文件.txt');
   });
 
   it('renames collisions to name (1).ext', () => {

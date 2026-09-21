@@ -7,7 +7,7 @@ import { assertSessionAccess, handleHttpError } from '../../http/access.js';
 import { chownSessionFiles } from '../../runtime/sessionManager.js';
 import { finishLocalJob, startLocalJob } from './jobs.js';
 import { FILE_UPLOAD_MAX_BYTES } from '@nya/shared';
-import { decodeOriginalName, uniqueName } from './names.js';
+import { uniqueName } from './names.js';
 import {
   applyUploadMtime,
   getTransfer,
@@ -94,7 +94,7 @@ const upload = multer({
       try {
         const dirRel = String(req.query.dir || req.body?.dir || '.');
         const { full } = resolveSessionPath(req.params.id, dirRel);
-        cb(null, uniqueName(full, decodeOriginalName(file.originalname)));
+        cb(null, uniqueName(full, file.originalname));
       } catch (err) {
         cb(err as Error, undefined);
       }

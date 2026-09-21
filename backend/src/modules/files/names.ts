@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { decodeUtf8FromLatin1 } from '@nya/shared';
 
 export const UPLOAD_LOG_NAME = 'upload-log.json';
 export const HIDDEN_FILE_NAMES = new Set(['.keep.html', UPLOAD_LOG_NAME]);
@@ -13,12 +14,7 @@ export function isHiddenFileName(name: string) {
 
 export function decodeOriginalName(raw: string) {
   const value = String(raw || '').trim() || 'file';
-  let decoded = value;
-  try {
-    decoded = Buffer.from(value, 'latin1').toString('utf8') || value;
-  } catch {
-    decoded = value;
-  }
+  const decoded = decodeUtf8FromLatin1(value) ?? value;
   const base = path.basename(decoded).replace(/[\u0000-\u001f]/g, '') || 'file';
   if (base === '.' || base === '..') return 'file';
   return base;
