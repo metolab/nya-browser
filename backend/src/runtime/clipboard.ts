@@ -12,6 +12,7 @@ import {
   clipboardState,
   failHoldIfCurrent,
   rememberedClipboard,
+  shouldFailHoldOnExit,
   shouldRememberGet,
   shouldSkipTextHold,
   type ClipboardHolder,
@@ -176,7 +177,8 @@ function holdClipboard(
     if (resolved && gen === holder.holdGen) return;
     fail(err);
   });
-  child.on('exit', () => {
+  child.on('exit', (code, signal) => {
+    if (!shouldFailHoldOnExit(code, signal)) return;
     fail();
   });
 

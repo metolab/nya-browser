@@ -6,6 +6,7 @@ import {
   CLIP_LOCK_MS,
   failHoldIfCurrent,
   rememberedClipboard,
+  shouldFailHoldOnExit,
   shouldRememberGet,
   shouldSkipTextHold,
   type ClipboardHolder,
@@ -69,6 +70,13 @@ describe('clipboard lock helpers', () => {
     expect(h.clipboardHolder).toBe(second);
     expect(applyTargetsReady(h, { gen: b.gen, child: second, readyAt: 240 })).toBe(true);
     expect(h.clipboardLockUntil).toBe(240 + 250);
+  });
+
+  it('does not treat xclip parent daemonize as a failed hold', () => {
+    expect(shouldFailHoldOnExit(0, null)).toBe(false);
+    expect(shouldFailHoldOnExit(null, null)).toBe(false);
+    expect(shouldFailHoldOnExit(1, null)).toBe(true);
+    expect(shouldFailHoldOnExit(null, 'SIGKILL')).toBe(true);
   });
 
   it('fail-restore only for the current unresolved hold', () => {

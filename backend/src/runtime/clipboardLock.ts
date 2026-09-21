@@ -90,6 +90,12 @@ export function applyTargetsReady(
   return true;
 }
 
+/** xclip forks after reading stdin; the parent exits 0. That is not a failed hold. */
+export function shouldFailHoldOnExit(code: number | null, signal?: NodeJS.Signals | string | null) {
+  if (signal) return true;
+  return code != null && code !== 0;
+}
+
 export function failHoldIfCurrent(
   holder: ClipboardHolder,
   opts: {
