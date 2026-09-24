@@ -119,13 +119,25 @@ RUN set -eux; \
       passwd \
       xauth \
       iptables \
-    && sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen \
-    && locale-gen \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 COPY config/fonts.conf /etc/fonts/conf.d/99-nya.conf
 RUN fc-cache -f
+
+# Sessions run with LC_ALL=<chrome language>.UTF-8; a missing locale drops glibc
+# to ASCII and Chrome crashes pasting non-ASCII file paths.
+COPY shared/src/languages.ts /tmp/nya-languages.ts
+RUN set -eux; \
+    : > /etc/locale.gen; \
+    for loc in zh_CN.UTF-8 $(grep -oE "posix: '[^']+'" /tmp/nya-languages.ts | cut -d"'" -f2 | sort -u); do \
+      name="${loc%%.*}"; \
+      if [ -f "/usr/share/i18n/locales/${name}" ]; then echo "${name}.UTF-8 UTF-8" >> /etc/locale.gen; \
+      else echo "skip ${loc}: no glibc source"; fi; \
+    done; \
+    sort -u -o /etc/locale.gen /etc/locale.gen; \
+    locale-gen; \
+    rm -f /tmp/nya-languages.ts
 
 WORKDIR /app
 

@@ -35,6 +35,7 @@ import {
 } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
 import { isFileDialogTitle } from '../modules/files/names.js';
+import { sessionLocale } from './locale.js';
 import {
   hasChromeLifecycle,
   startChromeLifecycle,
@@ -514,7 +515,8 @@ export function sessionEnv(runtime, extra = {}) {
   const tmp = path.join(home, 'tmp');
   const session = getSession(runtime.id);
   const language = normalizeChromeLanguage(session?.chromeLanguage);
-  const posix = posixLocale(language);
+  const wanted = posixLocale(language);
+  const posix = sessionLocale(wanted);
   const env = {
     ...process.env,
     DISPLAY: `:${runtime.display}`,
@@ -529,7 +531,7 @@ export function sessionEnv(runtime, extra = {}) {
     XDG_CONFIG_HOME: path.join(home, '.config'),
     LANG: posix,
     LC_ALL: posix,
-    LANGUAGE: posix.split('.')[0],
+    LANGUAGE: wanted.split('.')[0],
     TZ: normalizeTimezone(session?.timezone),
     GTK_CSD: '1',
     GTK_USE_PORTAL: '0',
