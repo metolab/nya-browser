@@ -5,6 +5,7 @@ import {
   BINARY_HOLD_MS,
   EMPTY_SETTLE_MS,
   clipText,
+  keepPendingOnSkip,
   normalizeClip,
   shouldApplyRemote,
   shouldPushLocalText,
@@ -107,11 +108,12 @@ export function useClipboardSync(opts: {
         if (writeEpochRef.current !== queuedEpoch) return;
         const next = normalizeClip(value, lastRef.current);
         if (next == null) return;
-        const decision = shouldPushLocalText(gateState(), next, mode, Date.now(), opts);
+        const state = gateState();
+        const now = Date.now();
+        const decision = shouldPushLocalText(state, next, mode, now, opts);
         if (decision === 'skip') {
-          if (next && (Date.now() < binaryUntilRef.current || opts?.pendingFlush)) {
-            pendingLocalRef.current = next;
-          }
+          if (keepPendingOnSkip(state, next, now, opts)) pendingLocalRef.current = next;
+          else if (pendingLocalRef.current === next) pendingLocalRef.current = null;
           return;
         }
         pendingLocalRef.current = next;

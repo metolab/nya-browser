@@ -38,6 +38,17 @@ export function shouldPushLocalText(
   return 'push';
 }
 
+/** Keep a skipped local text queued only while it still needs to reach the remote. */
+export function keepPendingOnSkip(
+  state: GateState,
+  next: string,
+  now = Date.now(),
+  opts?: { pendingFlush?: boolean },
+) {
+  if (!next || next === state.lastText) return false;
+  return now < state.binaryUntil || Boolean(opts?.pendingFlush);
+}
+
 export function shouldApplyRemote(
   state: GateState,
   remote: { kind?: string; text?: string },

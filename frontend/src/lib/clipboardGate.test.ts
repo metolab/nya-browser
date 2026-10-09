@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BINARY_HOLD_MS,
+  keepPendingOnSkip,
   shouldApplyRemote,
   shouldPushLocalText,
   type GateState,
@@ -43,6 +44,26 @@ describe('shouldPushLocalText', () => {
     expect(shouldPushLocalText(state, '', 'auto', 7_000)).toBe('skip');
     expect(shouldPushLocalText(state, 'leftover', 'auto', 7_000)).toBe('skip');
     expect(shouldPushLocalText(state, 'hello', 'auto', 7_000)).toBe('skip');
+  });
+});
+
+describe('keepPendingOnSkip', () => {
+  it('drops a pending flush that already landed while queued', () => {
+    const state = base({ remoteKind: 'text', lastText: 'hello' });
+    expect(shouldPushLocalText(state, 'hello', 'auto', 9_000, { pendingFlush: true })).toBe('skip');
+    expect(keepPendingOnSkip(state, 'hello', 9_000, { pendingFlush: true })).toBe(false);
+  });
+
+  it('keeps new text queued during binary lock or settle', () => {
+    expect(keepPendingOnSkip(base({ remoteKind: 'image', binaryUntil: 5_000 }), 'new', 1_000)).toBe(true);
+    expect(
+      keepPendingOnSkip(base({ emptySettleUntil: 8_000 }), 'new', 7_000, { pendingFlush: true }),
+    ).toBe(true);
+  });
+
+  it('does not queue plain auto skips or empty text', () => {
+    expect(keepPendingOnSkip(base(), 'new', 9_000)).toBe(false);
+    expect(keepPendingOnSkip(base({ binaryUntil: 5_000 }), '', 1_000)).toBe(false);
   });
 });
 
