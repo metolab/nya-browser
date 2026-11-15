@@ -8,6 +8,7 @@ declare global {
     interface Request {
       user?: AuthedUser;
       authToken?: string;
+      apiKeyId?: string | null;
     }
   }
 }

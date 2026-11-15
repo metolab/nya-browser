@@ -41,6 +41,7 @@ import {
 } from '../../runtime/sessionManager.js';
 import { sessionIoRouter } from './io.js';
 import { filesRouter } from '../files/routes.js';
+import { cdpRouter } from '../cdp/routes.js';
 import { presentSession, presentSessions, visibleWindows } from './present.js';
 import { listSessionPasswords } from '../../runtime/sessionPasswords.js';
 
@@ -488,5 +489,6 @@ sessionsRouter.delete(
 );
 
 sessionsRouter.use('/:id/files', filesRouter);
+sessionsRouter.use('/:id/cdp', cdpRouter);
 sessionsRouter.use('/:id', sessionIoRouter);
 

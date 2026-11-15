@@ -63,6 +63,13 @@ export const changePasswordSchema = z.object({
   newPassword: z.string().min(4).max(200),
 });
 
+export const API_KEY_MAX_DAYS = 3650;
+
+export const createApiKeySchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  expiresInDays: z.number().int().min(1).max(API_KEY_MAX_DAYS).nullable().optional(),
+});
+
 export const accessKindSchema = z.enum(['session', 'folder']);
 
 export const userGrantItemSchema = z.object({

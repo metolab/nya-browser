@@ -69,6 +69,9 @@ export default function LivePage() {
               </div>
               <div className="text-sm text-muted-foreground">{r.windows.length} 窗口</div>
               <div className="text-sm text-muted-foreground">观看 {r.viewerCount}</div>
+              {r.cdpClients > 0 ? (
+                <div className="text-sm font-medium text-primary">Agent {r.cdpClients}</div>
+              ) : null}
               <Button
                 size="sm"
                 variant="outline"

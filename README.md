@@ -21,6 +21,10 @@ NVIDIA 机器上打开硬件加速（Xvfb 出图，GL/WebGL 走 GPU）：
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
+## Agent / SDK
+
+每个会话的浏览器通过 `wss://<host><BASE_PATH>/ws/cdp/<sessionId>` 暴露 CDP，用 API Key（菜单里的「API Keys」）认证，权限与创建它的账号相同。Python SDK 见 [`sdk/python`](sdk/python/README.md)。反向代理需要对 `/ws/cdp/` 开启 WebSocket 升级。
+
 ## 本地构建镜像
 
 ```bash

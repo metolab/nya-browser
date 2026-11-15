@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import {
   ActivityIcon,
+  BotIcon,
   CloudIcon,
   GlobeIcon,
   LaptopIcon,
@@ -15,6 +17,7 @@ import { api } from '../../api/client';
 import { APP_NAME, APP_VERSION, formatManagementTitle, useDocumentTitle } from '../../lib/title';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import ApiKeysDialog from '@/components/ApiKeysDialog';
 import { cn } from '@/lib/utils';
 
 const items = [
@@ -30,6 +33,7 @@ const items = [
 export default function AdminLayout() {
   const loc = useLocation();
   const { user } = useAuth();
+  const [apiKeysOpen, setApiKeysOpen] = useState(false);
   const page = items.find((it) => it.key === loc.pathname)?.title || '管理控制台';
   useDocumentTitle(formatManagementTitle(page));
 
@@ -75,6 +79,10 @@ export default function AdminLayout() {
               返回桌面
             </Link>
           </Button>
+          <Button variant="ghost" size="sm" className="justify-start" onClick={() => setApiKeysOpen(true)}>
+            <BotIcon />
+            API Keys
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -92,6 +100,7 @@ export default function AdminLayout() {
           <Outlet />
         </div>
       </main>
+      <ApiKeysDialog open={apiKeysOpen} onOpenChange={setApiKeysOpen} />
     </div>
   );
 }

@@ -61,6 +61,16 @@ export const authTokens = sqliteTable('auth_tokens', {
   expiresAt: integer('expires_at').notNull(),
 });
 
+export const apiKeys = sqliteTable('api_keys', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  name: text('name').notNull(),
+  keyHash: text('key_hash').notNull().unique(),
+  createdAt: text('created_at').notNull(),
+  lastUsedAt: text('last_used_at'),
+  expiresAt: integer('expires_at'),
+});
+
 export const auditLogs = sqliteTable('audit_logs', {
   id: text('id').primaryKey(),
   at: text('at').notNull(),

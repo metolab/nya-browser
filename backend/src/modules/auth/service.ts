@@ -6,6 +6,7 @@ import type { UserPublic } from '@nya/shared';
 import { AUTH_TTL_MS, BASE_PATH } from '../../config.js';
 import { db } from '../../db/client.js';
 import { authTokens, users } from '../../db/schema.js';
+import { isApiKey, resolveApiKey } from './apiKeys.js';
 
 export function toPublicUser(row: typeof users.$inferSelect): UserPublic {
   return {
@@ -86,8 +87,21 @@ function purgeExpired() {
   db.delete(authTokens).where(lte(authTokens.expiresAt, Date.now())).run();
 }
 
+export function resolveAuth(token: string | undefined): { user: UserPublic; apiKeyId: string | null } | null {
+  if (!isApiKey(token)) {
+    const user = resolveToken(token);
+    return user ? { user, apiKeyId: null } : null;
+  }
+  const hit = resolveApiKey(token);
+  if (!hit) return null;
+  const user = getUserById(hit.userId);
+  if (!user || user.disabled) return null;
+  return { user: toPublicUser(user), apiKeyId: hit.keyId };
+}
+
 export function resolveToken(token: string | undefined): UserPublic | null {
   if (!token) return null;
+  if (isApiKey(token)) return resolveAuth(token)?.user || null;
   const row = db.select().from(authTokens).where(eq(authTokens.token, token)).get();
   if (!row) return null;
   if (row.expiresAt <= Date.now()) {

@@ -13,6 +13,7 @@ import { users } from '../../db/schema.js';
 import { asyncHandler, requireAdmin } from '../../http/util.js';
 import { auditFromReq } from '../audit/service.js';
 import { revokeUserTokens, toPublicUser } from '../auth/service.js';
+import { deleteUserApiKeys } from '../auth/apiKeys.js';
 import { deleteGrantsForUser, listAllGrants, setUserGrants } from '../../store.js';
 
 export const usersRouter = Router();
@@ -99,6 +100,7 @@ usersRouter.delete(
       if (admins.length <= 1) return res.status(400).json({ error: 'Cannot delete the last admin' });
     }
     revokeUserTokens(row.id);
+    deleteUserApiKeys(row.id);
     deleteGrantsForUser(row.id);
     db.delete(users).where(eq(users.id, row.id)).run();
     auditFromReq(req, {

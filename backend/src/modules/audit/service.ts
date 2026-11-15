@@ -45,6 +45,7 @@ export function auditFromReq(
     actorUsername: req.user?.username || null,
     ip: clientIp(req),
     ...input,
+    detail: req.apiKeyId ? { ...(input.detail || {}), apiKeyId: req.apiKeyId } : input.detail,
   });
 }
 

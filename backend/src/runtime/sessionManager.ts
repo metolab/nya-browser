@@ -2712,6 +2712,7 @@ export function getRuntimePublic(sessionId) {
     vncPort: runtime.vncPort,
     hasProxy: Boolean(runtime.localProxyPort),
     cdpPort: runtime.cdpPort || null,
+    cdpClients: cdpClientCount(sessionId),
     startedAt: runtime.startedAt,
     windows: listWindows(sessionId),
     subs: (runtime.subs || []).map((sub) => ({
@@ -2730,10 +2731,32 @@ const vncClients = new Map();
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const idleTimers = new Map();
 
+/** @type {Map<string, Set<import('ws').WebSocket>>} */
+const cdpClients = new Map();
+
+export function cdpClientCount(sessionId) {
+  return cdpClients.get(sessionId)?.size || 0;
+}
+
+export function registerCdpClient(sessionId, ws) {
+  let set = cdpClients.get(sessionId);
+  if (!set) {
+    set = new Set();
+    cdpClients.set(sessionId, set);
+  }
+  set.add(ws);
+  syncIdleWatch(sessionId);
+  ws.on('close', () => {
+    set.delete(ws);
+    if (set.size === 0 && cdpClients.get(sessionId) === set) cdpClients.delete(sessionId);
+    syncIdleWatch(sessionId);
+  });
+}
+
 function totalVncConnections(sessionId) {
   const runtime = runtimes.get(sessionId);
   if (!runtime) return 0;
-  let n = getVncCount(sessionId, null);
+  let n = getVncCount(sessionId, null) + cdpClientCount(sessionId);
   for (const sub of runtime.subs || []) {
     n += getVncCount(sessionId, sub.id);
   }
@@ -2783,7 +2806,7 @@ async function stopIdleSession(sessionId) {
     syncIdleWatch(sessionId);
     return;
   }
-  console.log(`[idle] session=${sessionId} no VNC for ${minutes}m, stopping`);
+  console.log(`[idle] session=${sessionId} no VNC/CDP clients for ${minutes}m, stopping`);
   writeAudit({
     action: AUDIT_ACTIONS.sessionStop,
     resourceType: 'session',
@@ -2957,7 +2980,7 @@ export async function maybeStopIdle(sessionId) {
   if (!runtime) return false;
   const hasOwner = Boolean(runtime.mainOwnerUserId);
   const hasSub = (runtime.subs || []).length > 0;
-  if (hasOwner || hasSub) return false;
+  if (hasOwner || hasSub || cdpClientCount(sessionId) > 0) return false;
   await stopSession(sessionId);
   return true;
 }

@@ -61,6 +61,15 @@ export interface UserPublic {
   createdAt: string;
 }
 
+export interface ApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+}
+
 export interface SessionGroup {
   id: string;
   name: string;
@@ -112,6 +121,7 @@ export interface RuntimeInfo {
   hasProxy?: boolean;
   startedAt?: string;
   cdpPort?: number | null;
+  cdpClients?: number;
   windows?: SessionWindow[];
   usage?: ProcessUsage;
 }
@@ -276,6 +286,7 @@ export interface LiveSession {
   windows: SessionWindow[];
   chrome: ProcessUsage;
   viewerCount: number;
+  cdpClients: number;
 }
 
 export const DEFAULT_HOME_URL = 'https://www.google.com/';

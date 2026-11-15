@@ -1,5 +1,11 @@
-import { Router } from 'express';
-import { AUTH_COOKIE, AUDIT_ACTIONS, changePasswordSchema, loginSchema } from '@nya/shared';
+import { Router, type NextFunction, type Request, type Response } from 'express';
+import {
+  AUTH_COOKIE,
+  AUDIT_ACTIONS,
+  changePasswordSchema,
+  createApiKeySchema,
+  loginSchema,
+} from '@nya/shared';
 import { asyncHandler, clientIp } from '../../http/util.js';
 import { BASE_PATH } from '../../config.js';
 import {
@@ -11,6 +17,7 @@ import {
   verifyUser,
 } from './service.js';
 import { auditFromReq, writeAudit } from '../audit/service.js';
+import { createApiKey, deleteApiKey, listApiKeys } from './apiKeys.js';
 
 const loginHits = new Map<string, number[]>();
 
@@ -101,8 +108,57 @@ privateAuthRouter.get(
   }),
 );
 
+function rejectApiKeyAuth(req: Request, res: Response, next: NextFunction) {
+  if (req.apiKeyId) return res.status(403).json({ error: 'API keys cannot manage API keys' });
+  next();
+}
+
+privateAuthRouter.get(
+  '/me/api-keys',
+  asyncHandler((req, res) => {
+    res.json({ apiKeys: listApiKeys(req.user!.id) });
+  }),
+);
+
+privateAuthRouter.post(
+  '/me/api-keys',
+  rejectApiKeyAuth,
+  asyncHandler((req, res) => {
+    const parsed = createApiKeySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
+    }
+    const { apiKey, key } = createApiKey(req.user!.id, parsed.data.name, parsed.data.expiresInDays);
+    auditFromReq(req, {
+      action: AUDIT_ACTIONS.apiKeyCreate,
+      resourceType: 'apikey',
+      resourceId: apiKey.id,
+      success: true,
+      detail: { name: apiKey.name, expiresAt: apiKey.expiresAt },
+    });
+    res.status(201).json({ apiKey, key });
+  }),
+);
+
+privateAuthRouter.delete(
+  '/me/api-keys/:keyId',
+  rejectApiKeyAuth,
+  asyncHandler((req, res) => {
+    const ok = deleteApiKey(req.user!.id, req.params.keyId);
+    if (!ok) return res.status(404).json({ error: 'Not found' });
+    auditFromReq(req, {
+      action: AUDIT_ACTIONS.apiKeyDelete,
+      resourceType: 'apikey',
+      resourceId: req.params.keyId,
+      success: true,
+    });
+    res.json({ ok: true });
+  }),
+);
+
 privateAuthRouter.post(
   '/me/password',
+  rejectApiKeyAuth,
   asyncHandler(async (req, res) => {
     const parsed = changePasswordSchema.safeParse(req.body);
     if (!parsed.success) {

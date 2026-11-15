@@ -21,6 +21,8 @@ browser/scripts
 browser/Dockerfile.build
 browser/args.gn
 
+sdk
+
 scripts/e2e.mjs
 scripts/e2e-fingerprint.mjs
 scripts/e2e-multi-display.mjs

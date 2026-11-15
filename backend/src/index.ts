@@ -11,6 +11,7 @@ import { resolveToken } from './modules/auth/service.js';
 import { writeAudit } from './modules/audit/service.js';
 import { getSession, userCanAccessSession } from './store.js';
 import { startSampler } from './modules/monitor/sampler.js';
+import { handleCdpUpgrade } from './modules/cdp/gateway.js';
 import {
   canAccessWindow,
   getRuntime,
@@ -44,6 +45,14 @@ function parseCookie(header: string) {
 server.on('upgrade', (req, socket, head) => {
   try {
     const url = new URL(req.url || '', `http://${req.headers.host}`);
+    const cdpPrefix = joinBasePath(BASE_PATH, '/ws/cdp/');
+    if (url.pathname.startsWith(cdpPrefix)) {
+      handleCdpUpgrade(req, socket, head, url, cdpPrefix).catch((err) => {
+        logger.error({ err }, 'cdp upgrade error');
+        socket.destroy();
+      });
+      return;
+    }
     const wsPrefix = joinBasePath(BASE_PATH, '/ws/vnc/');
     if (!url.pathname.startsWith(wsPrefix)) {
       socket.destroy();

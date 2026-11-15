@@ -10,6 +10,12 @@ backend/dist/
 frontend/dist/
 *.tsbuildinfo
 
+# python sdk build outputs
+__pycache__/
+*.egg-info/
+sdk/python/dist/
+sdk/python/build/
+
 # runtime data
 data/
 *.log

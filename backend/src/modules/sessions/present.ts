@@ -20,6 +20,8 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
   const admin = user?.role === 'admin';
   const live = getRuntimePublic(session.id);
   const runtime = {
+    running: Boolean(live),
+    cdpClients: live?.cdpClients || 0,
     windows: (live?.windows || []).map((w) => {
       const owner = w.ownerUserId ? getUserById(w.ownerUserId) : null;
       return {

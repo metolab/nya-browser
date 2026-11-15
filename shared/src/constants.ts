@@ -45,6 +45,9 @@ export const AUDIT_ACTIONS = {
   windowCreate: 'window.create',
   windowClose: 'window.close',
   vncConnect: 'vnc.connect',
+  cdpConnect: 'cdp.connect',
+  apiKeyCreate: 'apikey.create',
+  apiKeyDelete: 'apikey.delete',
   backupExport: 'backup.export',
   backupImport: 'backup.import',
 } as const;

@@ -1,5 +1,6 @@
 import {
   emptyProxy,
+  type ApiKey,
   type AuditLog,
   type FileEntry,
   type LiveSession,
@@ -21,7 +22,7 @@ import {
 import { withBase } from '../basePath';
 
 export { emptyProxy };
-export type { FileEntry, ProxyConfig, Session, SessionClipboard, SessionDownload, SessionTransfer, SessionUpload, UserPublic };
+export type { ApiKey, FileEntry, ProxyConfig, Session, SessionClipboard, SessionDownload, SessionTransfer, SessionUpload, UserPublic };
 
 export class ApiError extends Error {
   status: number;
@@ -72,6 +73,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
     }),
+  listApiKeys: () => request<{ apiKeys: ApiKey[] }>('/api/me/api-keys'),
+  createApiKey: (name: string, expiresInDays: number | null) =>
+    request<{ apiKey: ApiKey; key: string }>('/api/me/api-keys', {
+      method: 'POST',
+      body: JSON.stringify({ name, expiresInDays }),
+    }),
+  deleteApiKey: (id: string) =>
+    request<{ ok: boolean }>(`/api/me/api-keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listSessions: () => request<{ sessions: Session[] }>('/api/sessions'),
   createSession: (payload: {

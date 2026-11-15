@@ -41,6 +41,7 @@ const liveHandler = asyncHandler((req, res) => {
         }),
         chrome: snap?.chrome || { pid: null, rssBytes: 0, cpuPercent: 0 },
         viewerCount,
+        cdpClients: presented.runtime.cdpClients || 0,
       };
     });
   res.json({ sessions });

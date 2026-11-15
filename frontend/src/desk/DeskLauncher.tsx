@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
+  BotIcon,
   CircleStopIcon,
   ClipboardIcon,
   FolderIcon,
@@ -26,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import ChangePasswordDialog from '@/components/ChangePasswordDialog';
+import ApiKeysDialog from '@/components/ApiKeysDialog';
 import { APP_NAME, APP_VERSION } from '@/lib/title';
 import { cn } from '@/lib/utils';
 
@@ -102,6 +104,7 @@ export default function DeskLauncher({
   const [hover, setHover] = useState(false);
   const [control, setControl] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [apiKeysOpen, setApiKeysOpen] = useState(false);
   const [dir, setDir] = useState<Dir>('right');
   const [popupSide, setPopupSide] = useState<PopupSide>('top');
   const leaveTimer = useRef(0);
@@ -314,6 +317,16 @@ export default function DeskLauncher({
             <KeyRoundIcon />
             修改密码
           </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={(event: Event) => {
+              event.preventDefault();
+              setControl(false);
+              setApiKeysOpen(true);
+            }}
+          >
+            <BotIcon />
+            API Keys
+          </DropdownMenuItem>
           {hasSession && isAdmin ? (
             <DropdownMenuItem
               onSelect={(event: Event) => {
@@ -394,6 +407,7 @@ export default function DeskLauncher({
         )}
       </div>
       <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
+      <ApiKeysDialog open={apiKeysOpen} onOpenChange={setApiKeysOpen} />
     </>
   );
 }
