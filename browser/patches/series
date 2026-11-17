@@ -20,3 +20,4 @@ nya/021-x11-extra-normal-windows.patch
 nya/022-webrtc-media-webgpu.patch
 nya/023-disable-webrtc-api.patch
 nya/024-fonts.patch
+nya/025-device-memory-client-hints.patch

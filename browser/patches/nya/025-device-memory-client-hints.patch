@@ -1,0 +1,57 @@
+--- a/third_party/blink/common/BUILD.gn
++++ b/third_party/blink/common/BUILD.gn
+@@ -310,6 +310,7 @@
+     "//base",
+     "//build:android_buildflags",
+     "//build:chromecast_buildflags",
++    "//components/ungoogled:ungoogled_switches",
+     "//media/capture:capture_base",
+     "//media/capture/mojom:video_capture_mojom_support",
+     "//mojo/public/cpp/system",
+--- a/third_party/blink/common/device_memory/approximated_device_memory.cc
++++ b/third_party/blink/common/device_memory/approximated_device_memory.cc
+@@ -6,12 +6,34 @@
+ 
+ #include "base/byte_size.h"
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/system/sys_info.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ #include "third_party/blink/public/common/features.h"
+ 
+ namespace blink {
+ 
++namespace {
++
++// Same bounds as nya::DeviceMemory() so headers and navigator agree.
++float NyaDeviceMemoryOverride() {
++  const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch(switches::kNyaDeviceMemory)) {
++    return 0.0f;
++  }
++  double value = 0;
++  if (!base::StringToDouble(
++          cmd->GetSwitchValueASCII(switches::kNyaDeviceMemory), &value) ||
++      value <= 0 || value > 32) {
++    return 0.0f;
++  }
++  return static_cast<float>(value);
++}
++
++}  // namespace
++
+ // static
+ float ApproximatedDeviceMemory::approximated_device_memory_gb_ = 0.0;
+ int64_t ApproximatedDeviceMemory::physical_memory_mb_ = 0;
+@@ -23,6 +45,9 @@
+   DCHECK_EQ(0, physical_memory_mb_);
+   physical_memory_mb_ = ::base::SysInfo::AmountOfTotalPhysicalMemory().InMiB();
+   CalculateAndSetApproximatedDeviceMemory();
++  if (const float override_gb = NyaDeviceMemoryOverride(); override_gb > 0) {
++    approximated_device_memory_gb_ = override_gb;
++  }
+ }
+ 
+ // static
