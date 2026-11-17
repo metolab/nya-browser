@@ -21,6 +21,9 @@ import {
   PINNED_CHROME_LANGUAGES,
   chromeLanguageOptionLabel,
   gpuProfileOptionLabel,
+  hardwareProfileId,
+  hardwareProfileOptions,
+  parseHardwareProfileId,
   listTimezones,
   timezoneOptionLabel,
   CHROME_LANGUAGES,
@@ -71,6 +74,11 @@ const FONT_OPTIONS = FONT_PROFILES.map((id) => ({
   value: id,
   label: FONT_PROFILE_LABELS[id],
 }));
+const RANDOM_HARDWARE_KEY = '__random__';
+
+function initialHardwareKey(cores?: number, memory?: number) {
+  return cores && memory ? hardwareProfileId(cores, memory) : RANDOM_HARDWARE_KEY;
+}
 
 export type SessionFormValues = {
   name: string;
@@ -83,6 +91,9 @@ export type SessionFormValues = {
   gpuProfile: string;
   webrtcMode: string;
   fontProfile: string;
+  /** Unset means the backend picks a common combo from the fingerprint seed. */
+  hardwareConcurrency?: number;
+  deviceMemory?: number;
   deviceName: string;
   mediaAudioInput: string;
   mediaAudioOutput: string;
@@ -108,6 +119,8 @@ type Props = {
   initialGpuProfile?: string;
   initialWebrtcMode?: string;
   initialFontProfile?: string;
+  initialHardwareConcurrency?: number;
+  initialDeviceMemory?: number;
   initialDeviceName?: string;
   initialMediaAudioInput?: string;
   initialMediaAudioOutput?: string;
@@ -140,6 +153,8 @@ export default function SessionFormDialog({
   initialGpuProfile = DEFAULT_GPU_PROFILE,
   initialWebrtcMode = DEFAULT_WEBRTC_MODE,
   initialFontProfile = DEFAULT_FONT_PROFILE,
+  initialHardwareConcurrency,
+  initialDeviceMemory,
   initialDeviceName = '',
   initialMediaAudioInput = NATIVE_MEDIA_LABEL,
   initialMediaAudioOutput = NATIVE_MEDIA_LABEL,
@@ -167,6 +182,9 @@ export default function SessionFormDialog({
   const [gpuProfile, setGpuProfile] = useState(initialGpuProfile);
   const [webrtcMode, setWebrtcMode] = useState(initialWebrtcMode);
   const [fontProfile, setFontProfile] = useState(initialFontProfile);
+  const [hardware, setHardware] = useState(() =>
+    initialHardwareKey(initialHardwareConcurrency, initialDeviceMemory),
+  );
   const [deviceName, setDeviceName] = useState(initialDeviceName);
   const [mediaAudioInput, setMediaAudioInput] = useState(initialMediaAudioInput);
   const [mediaAudioOutput, setMediaAudioOutput] = useState(initialMediaAudioOutput);
@@ -192,6 +210,7 @@ export default function SessionFormDialog({
     setGpuProfile(initialGpuProfile || DEFAULT_GPU_PROFILE);
     setWebrtcMode(initialWebrtcMode || DEFAULT_WEBRTC_MODE);
     setFontProfile(initialFontProfile || DEFAULT_FONT_PROFILE);
+    setHardware(initialHardwareKey(initialHardwareConcurrency, initialDeviceMemory));
     setDeviceName(initialDeviceName || '');
     setMediaAudioInput(initialMediaAudioInput || NATIVE_MEDIA_LABEL);
     setMediaAudioOutput(initialMediaAudioOutput || NATIVE_MEDIA_LABEL);
@@ -217,6 +236,8 @@ export default function SessionFormDialog({
     initialGpuProfile,
     initialWebrtcMode,
     initialFontProfile,
+    initialHardwareConcurrency,
+    initialDeviceMemory,
     initialDeviceName,
     initialMediaAudioInput,
     initialMediaAudioOutput,
@@ -250,6 +271,8 @@ export default function SessionFormDialog({
               gpuProfile: gpuProfile || DEFAULT_GPU_PROFILE,
               webrtcMode: webrtcMode || DEFAULT_WEBRTC_MODE,
               fontProfile: fontProfile || DEFAULT_FONT_PROFILE,
+              hardwareConcurrency: parseHardwareProfileId(hardware)?.cores,
+              deviceMemory: parseHardwareProfileId(hardware)?.memory,
               deviceName: deviceName.trim(),
               mediaAudioInput: mediaAudioInput.trim(),
               mediaAudioOutput: mediaAudioOutput.trim(),
@@ -338,6 +361,30 @@ export default function SessionFormDialog({
                 <p className="text-xs text-muted-foreground">
                   WebGL 卡名和 WebGPU vendor/architecture/device 一起改。只限
                   NVIDIA 桌面卡，扩展和 MAX_* 仍用本机。
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label>CPU / 内存</Label>
+                <Select value={hardware} onValueChange={setHardware}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="max-h-64">
+                    {!(initialHardwareConcurrency && initialDeviceMemory) && (
+                      <SelectItem value={RANDOM_HARDWARE_KEY}>随机（常见配置）</SelectItem>
+                    )}
+                    {hardwareProfileOptions(
+                      initialHardwareKey(initialHardwareConcurrency, initialDeviceMemory),
+                    ).map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  改 navigator.hardwareConcurrency、navigator.deviceMemory 和 Device-Memory
+                  请求头。Chrome 桌面版内存只报 2/4/8/16/32 GB，32 表示 32 GB 及以上。
                 </p>
               </div>
               <div className="grid gap-2">

@@ -10,6 +10,7 @@ export * from './mediaDevices.js';
 export * from './geo.js';
 export * from './deviceName.js';
 export * from './fontProfiles.js';
+export * from './hardwareProfiles.js';
 export * from './displayLimits.js';
 export * from './region.js';
 export * from './clipboardText.js';

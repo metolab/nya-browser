@@ -15,6 +15,8 @@ import {
   PINNED_CHROME_LANGUAGES,
   chromeLanguageOptionLabel,
   gpuProfileOptionLabel,
+  hardwareProfileOptions,
+  parseHardwareProfileId,
   listTimezones,
   timezoneOptionLabel,
   CHROME_LANGUAGES,
@@ -80,6 +82,7 @@ const FONT_OPTIONS = [
     label: FONT_PROFILE_LABELS[id],
   })),
 ];
+const HARDWARE_OPTIONS = [{ value: KEEP_KEY, label: '不修改' }, ...hardwareProfileOptions()];
 
 function mediaLabel(value: string) {
   const raw = value.trim();
@@ -94,6 +97,8 @@ export type BatchSessionPatch = {
   gpuProfile?: string;
   webrtcMode?: string;
   fontProfile?: string;
+  hardwareConcurrency?: number;
+  deviceMemory?: number;
   mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
   geo?: {
     permission?: string;
@@ -120,6 +125,7 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
   const [gpuProfile, setGpuProfile] = useState(KEEP_KEY);
   const [webrtcMode, setWebrtcMode] = useState(KEEP_KEY);
   const [fontProfile, setFontProfile] = useState(KEEP_KEY);
+  const [hardware, setHardware] = useState(KEEP_KEY);
   const [mediaAudioInput, setMediaAudioInput] = useState(KEEP_KEY);
   const [mediaAudioOutput, setMediaAudioOutput] = useState(KEEP_KEY);
   const [mediaVideoInput, setMediaVideoInput] = useState(KEEP_KEY);
@@ -138,6 +144,7 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
     setGpuProfile(KEEP_KEY);
     setWebrtcMode(KEEP_KEY);
     setFontProfile(KEEP_KEY);
+    setHardware(KEEP_KEY);
     setMediaAudioInput(KEEP_KEY);
     setMediaAudioOutput(KEEP_KEY);
     setMediaVideoInput(KEEP_KEY);
@@ -159,6 +166,11 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
     if (gpuProfile !== KEEP_KEY) patch.gpuProfile = gpuProfile;
     if (webrtcMode !== KEEP_KEY) patch.webrtcMode = webrtcMode;
     if (fontProfile !== KEEP_KEY) patch.fontProfile = fontProfile;
+    const hw = parseHardwareProfileId(hardware);
+    if (hw) {
+      patch.hardwareConcurrency = hw.cores;
+      patch.deviceMemory = hw.memory;
+    }
 
     const mediaDevices: NonNullable<BatchSessionPatch['mediaDevices']> = {};
     if (mediaAudioInput !== KEEP_KEY) mediaDevices.audioInput = mediaLabel(mediaAudioInput);
@@ -241,6 +253,21 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
               options={GPU_OPTIONS}
               searchPlaceholder="搜索 GTX / RTX"
             />
+          </div>
+          <div className="grid gap-2">
+            <Label>CPU / 内存</Label>
+            <Select value={hardware} onValueChange={setHardware}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" className="max-h-64">
+                {HARDWARE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="grid gap-2">
             <Label>WebRTC</Label>

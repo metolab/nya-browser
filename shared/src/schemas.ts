@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { GPU_PROFILE_IDS } from './gpuProfiles.js';
 import { GEO_PERMISSIONS } from './geo.js';
 import { FONT_PROFILES } from './fontProfiles.js';
+import { CPU_CORE_OPTIONS, DEVICE_MEMORY_OPTIONS, isCpuCores, isDeviceMemory } from './hardwareProfiles.js';
 import { WEBRTC_MODES } from './webrtc.js';
 import { CHROME_LANGUAGE_LIST } from './languages.js';
 import { isValidTimezone } from './timezones.js';
@@ -137,6 +138,14 @@ export const webrtcModeSchema = z.enum(WEBRTC_MODES);
 
 export const fontProfileSchema = z.enum(FONT_PROFILES);
 
+export const hardwareConcurrencySchema = z
+  .number()
+  .refine(isCpuCores, { message: `hardwareConcurrency must be one of ${CPU_CORE_OPTIONS.join(', ')}` });
+
+export const deviceMemorySchema = z
+  .number()
+  .refine(isDeviceMemory, { message: `deviceMemory must be one of ${DEVICE_MEMORY_OPTIONS.join(', ')}` });
+
 export const geoSchema = z.object({
   permission: z.enum(GEO_PERMISSIONS).optional(),
   latitude: z.number().min(-90).max(90).nullable().optional(),
@@ -163,6 +172,8 @@ export const fingerprintFieldsSchema = z.object({
   mediaDevices: mediaDevicesSchema.optional(),
   geo: geoSchema.optional(),
   fontProfile: fontProfileSchema.optional(),
+  hardwareConcurrency: hardwareConcurrencySchema.optional(),
+  deviceMemory: deviceMemorySchema.optional(),
 });
 
 const sessionFingerprintFields = {
@@ -172,6 +183,8 @@ const sessionFingerprintFields = {
   mediaDevices: mediaDevicesSchema.optional(),
   geo: geoSchema.optional(),
   fontProfile: fontProfileSchema.optional(),
+  hardwareConcurrency: hardwareConcurrencySchema.optional(),
+  deviceMemory: deviceMemorySchema.optional(),
   fingerprint: fingerprintFieldsSchema.optional(),
 };
 
@@ -182,6 +195,8 @@ export function pickSessionFingerprint(input: {
   mediaDevices?: z.infer<typeof mediaDevicesSchema>;
   geo?: z.infer<typeof geoSchema>;
   fontProfile?: z.infer<typeof fontProfileSchema>;
+  hardwareConcurrency?: number;
+  deviceMemory?: number;
   fingerprint?: z.infer<typeof fingerprintFieldsSchema>;
 }) {
   const nested = input.fingerprint || {};
@@ -192,6 +207,8 @@ export function pickSessionFingerprint(input: {
     mediaDevices: input.mediaDevices ?? nested.mediaDevices,
     geo: input.geo ?? nested.geo,
     fontProfile: input.fontProfile ?? nested.fontProfile,
+    hardwareConcurrency: input.hardwareConcurrency ?? nested.hardwareConcurrency,
+    deviceMemory: input.deviceMemory ?? nested.deviceMemory,
   };
 }
 

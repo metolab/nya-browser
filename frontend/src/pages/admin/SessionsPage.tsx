@@ -74,6 +74,8 @@ function sessionFingerprintPayload(data: SessionFormValues) {
     gpuProfile: data.gpuProfile,
     webrtcMode: data.webrtcMode,
     fontProfile: data.fontProfile,
+    hardwareConcurrency: data.hardwareConcurrency,
+    deviceMemory: data.deviceMemory,
     deviceName: data.deviceName.trim(),
     mediaDevices: {
       audioInput: mediaLabel(data.mediaAudioInput),
@@ -258,6 +260,8 @@ export default function SessionsPage() {
         initialGpuProfile={cloneFrom?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
         initialWebrtcMode={cloneFrom?.fingerprint?.webrtcMode}
         initialFontProfile={cloneFrom?.fingerprint?.fontProfile}
+        initialHardwareConcurrency={cloneFrom?.fingerprint?.hardwareConcurrency}
+        initialDeviceMemory={cloneFrom?.fingerprint?.deviceMemory}
         initialMediaAudioInput={cloneFrom?.fingerprint?.mediaDevices?.audioInput || NATIVE_MEDIA_LABEL}
         initialMediaAudioOutput={cloneFrom?.fingerprint?.mediaDevices?.audioOutput || NATIVE_MEDIA_LABEL}
         initialMediaVideoInput={cloneFrom?.fingerprint?.mediaDevices?.videoInput || NATIVE_MEDIA_LABEL}
@@ -322,6 +326,8 @@ export default function SessionsPage() {
         initialGpuProfile={edit?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
         initialWebrtcMode={edit?.fingerprint?.webrtcMode}
         initialFontProfile={edit?.fingerprint?.fontProfile}
+        initialHardwareConcurrency={edit?.fingerprint?.hardwareConcurrency}
+        initialDeviceMemory={edit?.fingerprint?.deviceMemory}
         initialDeviceName={edit?.fingerprint?.deviceName}
         initialMediaAudioInput={edit?.fingerprint?.mediaDevices?.audioInput || NATIVE_MEDIA_LABEL}
         initialMediaAudioOutput={edit?.fingerprint?.mediaDevices?.audioOutput || NATIVE_MEDIA_LABEL}

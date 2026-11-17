@@ -448,6 +448,8 @@ export function createSession(input: {
   mediaDevices?: Partial<FingerprintConfig['mediaDevices']>;
   geo?: Partial<FingerprintConfig['geo']>;
   fontProfile?: FingerprintConfig['fontProfile'];
+  hardwareConcurrency?: number;
+  deviceMemory?: number;
   homeUrl?: string;
   idleTimeoutMinutes?: number;
   fingerprint?: FingerprintConfig;
@@ -476,6 +478,8 @@ export function createSession(input: {
           mediaDevices: input.mediaDevices ?? input.fingerprint.mediaDevices,
           geo: input.geo ?? input.fingerprint.geo,
           fontProfile: input.fontProfile ?? input.fingerprint.fontProfile,
+          hardwareConcurrency: input.hardwareConcurrency ?? input.fingerprint.hardwareConcurrency,
+          deviceMemory: input.deviceMemory ?? input.fingerprint.deviceMemory,
         })
       : createFingerprint(input.gpuProfile, input),
     timezone: normalizeTimezone(input.timezone),
@@ -522,6 +526,8 @@ export function updateSession(
     mediaDevices: Partial<FingerprintConfig['mediaDevices']>;
     geo: Partial<FingerprintConfig['geo']>;
     fontProfile: FingerprintConfig['fontProfile'];
+    hardwareConcurrency: number;
+    deviceMemory: number;
     homeUrl: string;
     idleTimeoutMinutes: number;
     fingerprint: FingerprintConfig;
@@ -560,7 +566,9 @@ export function updateSession(
             patch.deviceName !== undefined ||
             patch.mediaDevices !== undefined ||
             patch.geo !== undefined ||
-            patch.fontProfile !== undefined
+            patch.fontProfile !== undefined ||
+            patch.hardwareConcurrency !== undefined ||
+            patch.deviceMemory !== undefined
           ? mergeFingerprintPatch(current.fingerprint, patch)
           : current.fingerprint,
     ),
@@ -592,6 +600,8 @@ export function ensureSessionFingerprint(id: string) {
     typeof obj.webrtcMode === 'string' &&
     typeof obj.deviceName === 'string' &&
     typeof obj.fontProfile === 'string' &&
+    obj.hardwareConcurrency === fp.hardwareConcurrency &&
+    obj.deviceMemory === fp.deviceMemory &&
     'audioInput' in media &&
     'audioOutput' in media &&
     'videoInput' in media &&
@@ -615,6 +625,8 @@ export function regenerateSessionFingerprint(id: string) {
       mediaDevices: fp.mediaDevices,
       geo: fp.geo,
       fontProfile: fp.fontProfile,
+      hardwareConcurrency: fp.hardwareConcurrency,
+      deviceMemory: fp.deviceMemory,
     }),
   });
 }

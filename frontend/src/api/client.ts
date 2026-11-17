@@ -94,6 +94,8 @@ export const api = {
     gpuProfile?: string;
     webrtcMode?: string;
     fontProfile?: string;
+    hardwareConcurrency?: number;
+    deviceMemory?: number;
     deviceName?: string;
     mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
     geo?: {
@@ -106,6 +108,8 @@ export const api = {
       gpuProfile?: string;
       webrtcMode?: string;
       fontProfile?: string;
+      hardwareConcurrency?: number;
+      deviceMemory?: number;
       deviceName?: string;
       mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
       geo?: {
@@ -135,6 +139,8 @@ export const api = {
       gpuProfile: string;
       webrtcMode: string;
       fontProfile: string;
+      hardwareConcurrency: number;
+      deviceMemory: number;
       deviceName: string;
       mediaDevices: { audioInput?: string; audioOutput?: string; videoInput?: string };
       geo: {
@@ -147,6 +153,8 @@ export const api = {
         gpuProfile?: string;
         webrtcMode?: string;
         fontProfile?: string;
+        hardwareConcurrency?: number;
+        deviceMemory?: number;
         deviceName?: string;
         mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
         geo?: {

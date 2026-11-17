@@ -3,7 +3,10 @@ import {
   coerceFontProfile,
   coerceGpuProfile,
   coerceWebrtcMode,
+  COMMON_HARDWARE_PROFILES,
   DEFAULT_WEBRTC_MODE,
+  isCpuCores,
+  isDeviceMemory,
   normalizeDeviceName,
   normalizeGeo,
   normalizeMediaDevices,
@@ -13,9 +16,6 @@ import {
   type MediaDevicePreset,
   type WebrtcMode,
 } from '@nya/shared';
-
-const CPU_COUNTS = [2, 4, 8, 12];
-const DEVICE_MEMORY = [4, 8];
 
 function seedToUint32(seed: string) {
   const buf = Buffer.from(String(seed || ''), 'hex');
@@ -37,16 +37,13 @@ type FingerprintExtras = {
 export function fingerprintFromSeed(seed: string, extras?: FingerprintExtras): FingerprintConfig {
   const n = seedToUint32(seed);
   const normalizedSeed = String(seed).toLowerCase();
+  const hardware = COMMON_HARDWARE_PROFILES[n % COMMON_HARDWARE_PROFILES.length];
   return {
     seed: normalizedSeed,
-    hardwareConcurrency:
-      typeof extras?.hardwareConcurrency === 'number' && extras.hardwareConcurrency > 0
-        ? extras.hardwareConcurrency
-        : CPU_COUNTS[n % CPU_COUNTS.length],
-    deviceMemory:
-      typeof extras?.deviceMemory === 'number' && extras.deviceMemory > 0
-        ? extras.deviceMemory
-        : DEVICE_MEMORY[(n >>> 8) % DEVICE_MEMORY.length],
+    hardwareConcurrency: isCpuCores(extras?.hardwareConcurrency)
+      ? extras.hardwareConcurrency
+      : hardware.cores,
+    deviceMemory: isDeviceMemory(extras?.deviceMemory) ? extras.deviceMemory : hardware.memory,
     gpuProfile: coerceGpuProfile(extras?.gpuProfile),
     webrtcMode: coerceWebrtcMode(extras?.webrtcMode),
     deviceName: normalizeDeviceName(extras?.deviceName, normalizedSeed),
@@ -121,6 +118,8 @@ export function mergeFingerprintPatch(
     mediaDevices?: Partial<MediaDevicePreset>;
     geo?: Partial<GeoConfig>;
     fontProfile?: FontProfile;
+    hardwareConcurrency?: number;
+    deviceMemory?: number;
   },
 ): FingerprintConfig {
   return normalizeFingerprint({
@@ -131,6 +130,8 @@ export function mergeFingerprintPatch(
     mediaDevices: { ...current.mediaDevices, ...(patch.mediaDevices || {}) },
     geo: { ...current.geo, ...(patch.geo || {}) },
     fontProfile: patch.fontProfile ?? current.fontProfile,
+    hardwareConcurrency: patch.hardwareConcurrency ?? current.hardwareConcurrency,
+    deviceMemory: patch.deviceMemory ?? current.deviceMemory,
   });
 }
 
