@@ -45,6 +45,8 @@ Release tag：`chromium-<version>`，附件：`nya-chromium-<version>-linux64.ta
 
 镜像构建时会从 [Tampermonkey](https://www.tampermonkey.net/crx/tampermonkey_stable.crx) 安装油猴（`browser/TAMPERMONKEY.sha256` 钉版本），会话默认加载、高级模式、不打开新手页。本地可把 CRX 放到 `cache/tampermonkey_stable.crx` 供离线构建。
 
+镜像构建时还会从 Google 组件 CDN 下载 Widevine CDM（`browser/WIDEVINE.sha256` 钉版本）到 `/opt/nya-widevine`，会话通过用户数据目录里的 hint 文件加载。Widevine 是 Google 闭源组件，许可禁止未经授权分发，不要把含它的镜像公开发布。本地可把 CRX 放到 `cache/widevine.crx3` 供离线构建。
+
 无网络 Release、只在本机构镜像时：
 
 ```bash

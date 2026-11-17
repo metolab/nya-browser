@@ -1,0 +1,145 @@
+--- a/chrome/browser/extensions/component_loader.cc
++++ b/chrome/browser/extensions/component_loader.cc
+@@ -633,9 +633,9 @@
+   AddContextualTasksExtension();
+ 
+ // http://crbug.com/41070702
+-#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
++#if !BUILDFLAG(IS_CHROMEOS)
+   AddNetworkSpeechSynthesisExtension();
+-#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
++#endif  // !BUILDFLAG(IS_CHROMEOS)
+ }
+ 
+ void ComponentLoader::
+--- a/chrome/browser/resources/network_speech_synthesis/mv3/service_worker.js
++++ b/chrome/browser/resources/network_speech_synthesis/mv3/service_worker.js
+@@ -2,4 +2,127 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-importScripts('tts_extension.js');
++// Nya: keep the Google voice list but never reach the Google speech server.
++// Utterances play silently with start/end timed like network speech.
++class NyaSilentTts {
++  constructor() {
++    /** @type {?{utterance: string, callback: Function, timer: number,
++     *     endAt: number, remainingMs: number, started: boolean}} */
++    this.current_ = null;
++    this.keepAlive_ = null;
++
++    chrome.ttsEngine.onSpeak.addListener(
++        (utterance, options, callback) =>
++            this.onSpeak_(utterance, options, callback));
++    chrome.ttsEngine.onStop.addListener(() => this.onStop_());
++    chrome.ttsEngine.onPause.addListener(() => this.onPause_());
++    chrome.ttsEngine.onResume.addListener(() => this.onResume_());
++  }
++
++  estimateMs_(utterance, rate) {
++    let ms = 0;
++    for (const ch of utterance) {
++      if (/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uf900-\ufaff]/.test(ch)) {
++        ms += 230;
++      } else if (/[\s.,!?;:]/.test(ch)) {
++        ms += 40;
++      } else {
++        ms += 68;
++      }
++    }
++    const r = Math.min(Math.max(rate || 1, 0.1), 10);
++    return Math.max(350, Math.round(ms / r));
++  }
++
++  onSpeak_(utterance, options, callback) {
++    this.clear_();
++    if (utterance.length === 0) {
++      callback({'type': 'end', 'charIndex': 0});
++      return;
++    }
++    if (utterance.length > 32768) {
++      utterance = utterance.substr(0, 32768);
++    }
++    const cur = {
++      utterance,
++      callback,
++      timer: 0,
++      endAt: 0,
++      remainingMs: this.estimateMs_(utterance, options.rate),
++      started: false,
++    };
++    this.current_ = cur;
++    this.startKeepAlive_();
++    const latency = 180 + Math.floor(Math.random() * 260);
++    cur.timer = setTimeout(() => {
++      if (this.current_ !== cur) {
++        return;
++      }
++      cur.started = true;
++      callback({'type': 'start', 'charIndex': 0});
++      this.scheduleEnd_(cur);
++    }, latency);
++  }
++
++  scheduleEnd_(cur) {
++    cur.endAt = Date.now() + cur.remainingMs;
++    cur.timer = setTimeout(() => {
++      if (this.current_ !== cur) {
++        return;
++      }
++      this.current_ = null;
++      this.stopKeepAlive_();
++      cur.callback({'type': 'end', 'charIndex': cur.utterance.length});
++    }, cur.remainingMs);
++  }
++
++  onStop_() {
++    const cur = this.current_;
++    this.clear_();
++    if (cur) {
++      cur.callback({'type': 'end', 'charIndex': cur.utterance.length});
++    }
++  }
++
++  onPause_() {
++    const cur = this.current_;
++    if (!cur || !cur.started || !cur.timer) {
++      return;
++    }
++    clearTimeout(cur.timer);
++    cur.timer = 0;
++    cur.remainingMs = Math.max(0, cur.endAt - Date.now());
++  }
++
++  onResume_() {
++    const cur = this.current_;
++    if (cur && cur.started && !cur.timer) {
++      this.scheduleEnd_(cur);
++    }
++  }
++
++  clear_() {
++    if (this.current_ && this.current_.timer) {
++      clearTimeout(this.current_.timer);
++    }
++    this.current_ = null;
++    this.stopKeepAlive_();
++  }
++
++  // Extension API calls reset the MV3 idle timer so long utterances still end.
++  startKeepAlive_() {
++    if (this.keepAlive_ === null) {
++      this.keepAlive_ = setInterval(() => chrome.runtime.getPlatformInfo(),
++                                    20 * 1000);
++    }
++  }
++
++  stopKeepAlive_() {
++    if (this.keepAlive_ !== null) {
++      clearInterval(this.keepAlive_);
++      this.keepAlive_ = null;
++    }
++  }
++}
++
++new NyaSilentTts();

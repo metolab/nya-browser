@@ -29,18 +29,38 @@ while IFS= read -r patch || [ -n "${patch}" ]; do
   grep -qxF "${patch}" "${_vendor}/patches/series" || echo "${patch}" >> "${_vendor}/patches/series"
 done < "${_nya_root}/browser/patches/series"
 
-if ! grep -q 'is_chrome_branded=false' "${_vendor}/flags.linux.gn"; then
-  echo >> "${_vendor}/flags.linux.gn"
-  cat "${_nya_root}/browser/args.gn" >> "${_vendor}/flags.linux.gn"
-fi
+while IFS= read -r arg || [ -n "${arg}" ]; do
+  case "${arg}" in ''|'#'*) continue ;; esac
+  grep -qxF "${arg}" "${_vendor}/flags.linux.gn" || echo "${arg}" >> "${_vendor}/flags.linux.gn"
+done < "${_nya_root}/browser/args.gn"
 
 _nya_stamp="${_vendor}/build/src/.nya-patches.stamp"
 _nya_hash="$(cat "${_nya_root}/browser/patches/series" "${_nya_root}/browser/patches/nya/"*.patch | sha256sum | awk '{print $1}')"
 _nya_hook="${_vendor}/build/src/third_party/blink/renderer/platform/nya/nya_farbling.cc"
 if [ -f "${_nya_hook}" ]; then
-  # Sources already have Nya patches; skip prune/re-apply.
-  mkdir -p "${_vendor}/build/src"
-  touch "${_vendor}/build/src/.patched.stamp"
+  # Sources already have Nya patches; skip prune/re-apply and only add patches
+  # appended to the series since the tree was patched.
+  _src="${_vendor}/build/src"
+  _applied="${_src}/.nya-applied"
+  touch "${_src}/.patched.stamp"
+  if [ ! -f "${_applied}" ]; then
+    # Trees patched before this list existed: a patch that no longer applies
+    # forward is already in the sources.
+    : > "${_applied}"
+    while IFS= read -r patch || [ -n "${patch}" ]; do
+      [ -z "${patch}" ] && continue
+      patch -d "${_src}" -p1 --dry-run --forward --ignore-whitespace -s \
+        -i "${_nya_root}/browser/patches/${patch}" >/dev/null 2>&1 || echo "${patch}" >> "${_applied}"
+    done < "${_nya_root}/browser/patches/series"
+  fi
+  while IFS= read -r patch || [ -n "${patch}" ]; do
+    [ -z "${patch}" ] && continue
+    grep -qxF "${patch}" "${_applied}" && continue
+    echo "Applying ${patch} to existing sources"
+    patch -d "${_src}" -p1 --forward --ignore-whitespace --no-backup-if-mismatch \
+      -i "${_nya_root}/browser/patches/${patch}"
+    echo "${patch}" >> "${_applied}"
+  done < "${_nya_root}/browser/patches/series"
   echo "${_nya_hash}" > "${_nya_stamp}"
 elif [ ! -f "${_nya_stamp}" ] || [ "$(cat "${_nya_stamp}" 2>/dev/null || true)" != "${_nya_hash}" ]; then
   rm -f "${_vendor}/build/src/.patched.stamp"
@@ -61,6 +81,7 @@ if [ ! -x "${_out}/chrome" ]; then
 fi
 
 echo "${_nya_hash}" > "${_nya_stamp}"
+grep -v '^$' "${_nya_root}/browser/patches/series" > "${_vendor}/build/src/.nya-applied"
 
 _stage="${_dist}/${_tarball_name}"
 rm -rf "${_stage}"

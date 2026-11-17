@@ -45,6 +45,7 @@ import { snapshotSessionPasswords } from './sessionPasswords.js';
 import { TYPE_TEXT_MAX, runXtype } from './xtype.js';
 import { logChromeCrash } from './chromeCrashLog.js';
 import { TAMPERMONKEY_ID, resolveTampermonkeyDir } from './tampermonkey.js';
+import { writeWidevineHint } from './widevine.js';
 import { startSingboxSidecar, stopSingboxSidecar } from './singbox.js';
 
 const DISPLAY_BASE = Number(process.env.DISPLAY_BASE || 100);
@@ -799,6 +800,7 @@ function writeChromePreferences(sessionId, startUrl) {
     app_locale: language,
   };
   fs.writeFileSync(localStatePath, JSON.stringify(localState));
+  writeWidevineHint(profile);
 }
 
 function writeOpenboxConfig(home) {
@@ -1084,7 +1086,6 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     '--disable-default-apps',
     '--disable-domain-reliability',
     '--disable-client-side-phishing-detection',
-    '--disable-component-extensions-with-background-pages',
     '--disable-breakpad',
     '--metrics-recording-only',
     '--check-for-update-interval=31536000',
@@ -1119,6 +1120,7 @@ function chromeArgs(sessionId, localProxyPort, geom = parseWh(SCREEN_INIT), cdpP
     '--enable-webgl',
     '--enable-webgl2',
     '--disable-ipv6',
+    '--nya-ua-brand=Google Chrome',
     // One EGL-readback compositor per X display (Chromium patches 014/015/021).
     // Menus/bubbles/window.open stay NativeWidgetAura on that compositor.
     // Extra type_normal windows (Ctrl+N / 新窗口) are a second X11 window

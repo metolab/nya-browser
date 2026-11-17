@@ -21,3 +21,5 @@ nya/022-webrtc-media-webgpu.patch
 nya/023-disable-webrtc-api.patch
 nya/024-fonts.patch
 nya/025-device-memory-client-hints.patch
+nya/026-ua-brand.patch
+nya/027-network-speech-voices.patch
