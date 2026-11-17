@@ -207,7 +207,7 @@ async function cdpConnect(port) {
   };
 }
 
-async function evaluate(cdp, expression, awaitPromise = true) {
+async function evaluate(cdp, expression, awaitPromise = true, userGesture = false) {
   let lastErr;
   for (let i = 0; i < 8; i += 1) {
     try {
@@ -215,6 +215,7 @@ async function evaluate(cdp, expression, awaitPromise = true) {
         expression,
         awaitPromise,
         returnByValue: true,
+        userGesture,
         timeout: 45000,
       });
       if (result?.exceptionDetails) {
@@ -365,6 +366,126 @@ const PAGE_PROBE = `async () => {
   };
 }`;
 
+// Google Chrome identity: UA-CH brands, network voices, Widevine. Needs a user
+// gesture for speechSynthesis.speak().
+const IDENTITY_PROBE = `async () => {
+  const out = {
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    deviceMemory: navigator.deviceMemory,
+    brands: (navigator.userAgentData?.brands || []).map((b) => b.brand),
+  };
+  try {
+    const hev = await navigator.userAgentData.getHighEntropyValues(['fullVersionList']);
+    out.fullVersionList = hev.fullVersionList.map((b) => b.brand + '/' + b.version);
+  } catch (err) {
+    out.fullVersionList = String(err);
+  }
+  try {
+    const res = await fetch('https://httpbin.org/headers', { cache: 'no-store' });
+    out.secChUa = (await res.json()).headers['Sec-Ch-Ua'] || null;
+  } catch (err) {
+    out.secChUa = String(err);
+  }
+  let voices = speechSynthesis.getVoices();
+  for (let i = 0; i < 40 && !voices.length; i += 1) {
+    await new Promise((r) => setTimeout(r, 100));
+    voices = speechSynthesis.getVoices();
+  }
+  out.voices = voices.map((v) => ({ name: v.name, lang: v.lang, local: v.localService }));
+  out.speak = await new Promise((resolve) => {
+    const events = [];
+    const u = new SpeechSynthesisUtterance('hello world, this is a speech test');
+    u.voice = voices.find((v) => v.name === 'Google US English') || null;
+    const t0 = performance.now();
+    u.onstart = () => events.push(['start', Math.round(performance.now() - t0)]);
+    u.onend = () => {
+      events.push(['end', Math.round(performance.now() - t0)]);
+      resolve(events);
+    };
+    u.onerror = (e) => {
+      events.push(['error', e.error]);
+      resolve(events);
+    };
+    speechSynthesis.speak(u);
+    setTimeout(() => resolve(events.concat([['timeout']])), 10000);
+  });
+  try {
+    const access = await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{
+      initDataTypes: ['cenc'],
+      videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"', robustness: 'SW_SECURE_CRYPTO' }],
+    }]);
+    const keys = await access.createMediaKeys();
+    const session = keys.createSession();
+    const pssh = Uint8Array.from(
+      atob('AAAAW3Bzc2gAAAAA7e+LqXnWSs6jyCfc1R0h7QAAADsIARIQ62dqu8s0Xpa7z2FmMPGj2hoNd2lkZXZpbmVfdGVzdCIQZmtqM2xqYVNkZmFsa3IzaioCSEQyAA=='),
+      (c) => c.charCodeAt(0),
+    );
+    const message = new Promise((resolve) => {
+      session.addEventListener('message', (e) => resolve(e.messageType));
+      setTimeout(() => resolve('no-message'), 5000);
+    });
+    await session.generateRequest('cenc', pssh);
+    out.widevine = { keySystem: access.keySystem, message: await message };
+  } catch (err) {
+    out.widevine = { error: String(err) };
+  }
+  return out;
+}`;
+
+// Device-Memory hints are only sent after the origin opts in with Accept-CH,
+// so load a fresh httpbin tab that returns it, then read same-origin headers.
+async function probeDeviceMemoryHeaders(cdp, port) {
+  const url =
+    'https://httpbin.org/response-headers?Accept-CH=Sec-CH-Device-Memory%2C%20Device-Memory';
+  const { targetId } = await cdp.browserSend('Target.createTarget', { url });
+  try {
+    let target = null;
+    const started = Date.now();
+    while (Date.now() - started < 20000 && !target) {
+      const list = await fetchJson(`http://127.0.0.1:${port}/json/list`);
+      target = (Array.isArray(list.data) ? list.data : []).find(
+        (t) => t.id === targetId && /httpbin\.org/.test(t.url || ''),
+      );
+      if (!target) await sleep(300);
+    }
+    if (!target?.webSocketDebuggerUrl) return { error: 'httpbin tab did not load' };
+    const sock = openCdpSocket(target.webSocketDebuggerUrl);
+    await sock.ready;
+    try {
+      await sock.send('Runtime.enable');
+      // The initial about:blank is already "complete", so also wait for the origin.
+      for (let i = 0; i < 100; i += 1) {
+        const state = await sock.send('Runtime.evaluate', {
+          expression: `location.origin === 'https://httpbin.org' && document.readyState === 'complete'`,
+          returnByValue: true,
+        });
+        if (state?.result?.value === true) break;
+        await sleep(200);
+      }
+      const res = await sock.send('Runtime.evaluate', {
+        expression: `fetch('/headers', { cache: 'no-store' })
+          .then((r) => r.json())
+          .then((j) => ({ href: location.href, headers: j.headers }))
+          .catch((e) => ({ href: location.href, error: String(e) }))`,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      const value = res?.result?.value || {};
+      const headers = value.headers || {};
+      return {
+        href: value.href ?? null,
+        ...(value.error ? { error: value.error } : {}),
+        secChDeviceMemory: headers['Sec-Ch-Device-Memory'] ?? null,
+        deviceMemory: headers['Device-Memory'] ?? null,
+      };
+    } finally {
+      sock.ws.close();
+    }
+  } finally {
+    await cdp.browserSend('Target.closeTarget', { targetId }).catch(() => {});
+  }
+}
+
 async function login() {
   const res = await fetchJson(`${API}/api/login`, {
     method: 'POST',
@@ -408,14 +529,19 @@ async function cleanup(cookie) {
   }
 }
 
-async function collect(cookie, name, payload) {
+async function collect(cookie, name, input) {
+  const { patch, identity, ...payload } = input;
   const created = await api(cookie, '/api/sessions', 'POST', {
     name: `fp-${name}-${Date.now().toString(36)}`,
     homeUrl: 'https://example.com/',
     gpuProfile: 'rtx-2080',
     ...payload,
   });
-  const session = created.session;
+  let session = created.session;
+  const createdFingerprint = session.fingerprint;
+  if (patch) {
+    session = (await api(cookie, `/api/sessions/${session.id}`, 'PATCH', patch)).session;
+  }
   const started = await api(cookie, `/api/sessions/${session.id}/start`, 'POST');
   const runtime = started.runtime;
   if (!runtime?.cdpPort) throw new Error(`session ${session.id} has no cdpPort`);
@@ -497,6 +623,14 @@ async function collect(cookie, name, payload) {
     page.webgpu = { ...(page.webgpu || {}), error: String(err.message || err) };
   }
   }
+  if (identity) {
+    page.identity = await evaluate(cdp, `(${IDENTITY_PROBE})()`, true, true);
+    try {
+      page.identity.deviceMemoryHeaders = await probeDeviceMemoryHeaders(cdp, runtime.cdpPort);
+    } catch (err) {
+      page.identity.deviceMemoryHeaders = { error: String(err.message || err) };
+    }
+  }
   cdp.close();
   try {
     await api(cookie, `/api/sessions/${session.id}/stop`, 'POST');
@@ -510,6 +644,7 @@ async function collect(cookie, name, payload) {
   }
   return {
     name,
+    created: createdFingerprint,
     stored: session.fingerprint,
     page,
   };
@@ -543,6 +678,17 @@ async function main() {
           videoInput: 'HD Pro Webcam C920',
         },
         geo: { permission: 'allow', latitude: 31.23, longitude: 121.47, accuracy: 80 },
+      },
+    ],
+    [
+      'hardware',
+      {
+        webrtcMode: 'offline',
+        deviceName: 'DESKTOP-HW',
+        hardwareConcurrency: 6,
+        deviceMemory: 16,
+        patch: { hardwareConcurrency: 12, deviceMemory: 32 },
+        identity: true,
       },
     ],
   ];
@@ -621,6 +767,66 @@ async function main() {
     checks.push(check('geo-lat', Math.abs((pos.latitude || 0) - 31.23) < 0.01, pos));
     checks.push(check('geo-lng', Math.abs((pos.longitude || 0) - 121.47) < 0.01, pos));
   }
+  const hardware = byName.hardware;
+  if (hardware) {
+    const id = hardware.page.identity || {};
+    const created = hardware.created || {};
+    checks.push(
+      check('hw-create-stored', created.hardwareConcurrency === 6 && created.deviceMemory === 16, {
+        hardwareConcurrency: created.hardwareConcurrency,
+        deviceMemory: created.deviceMemory,
+      }),
+    );
+    checks.push(
+      check('hw-patch-stored', hardware.stored.hardwareConcurrency === 12 && hardware.stored.deviceMemory === 32, {
+        hardwareConcurrency: hardware.stored.hardwareConcurrency,
+        deviceMemory: hardware.stored.deviceMemory,
+      }),
+    );
+    checks.push(check('hw-js-cores', id.hardwareConcurrency === 12, id.hardwareConcurrency));
+    checks.push(check('hw-js-memory', id.deviceMemory === 32, id.deviceMemory));
+    const memHeaders = id.deviceMemoryHeaders || {};
+    checks.push(
+      check(
+        'hw-memory-client-hint',
+        [memHeaders.secChDeviceMemory, memHeaders.deviceMemory].some((v) => v != null) &&
+          [memHeaders.secChDeviceMemory, memHeaders.deviceMemory].every((v) => v == null || String(v) === '32'),
+        memHeaders,
+      ),
+    );
+    checks.push(check('chrome-brand-js', (id.brands || []).includes('Google Chrome'), id.brands));
+    checks.push(
+      check(
+        'chrome-brand-full-version',
+        Array.isArray(id.fullVersionList) && id.fullVersionList.some((b) => /^Google Chrome\/\d+\.\d+\.\d+\.\d+$/.test(b)),
+        id.fullVersionList,
+      ),
+    );
+    checks.push(check('chrome-brand-header', /"Google Chrome";v="\d+"/.test(id.secChUa || ''), id.secChUa));
+    const voiceNames = (id.voices || []).map((v) => v.name);
+    checks.push(
+      check(
+        'chrome-voices',
+        voiceNames.length === 19 && voiceNames.includes('Google US English') && (id.voices || []).every((v) => v.local === false),
+        voiceNames,
+      ),
+    );
+    const speak = id.speak || [];
+    checks.push(
+      check(
+        'chrome-voice-speak',
+        speak.length === 2 && speak[0][0] === 'start' && speak[1][0] === 'end' && speak[1][1] > speak[0][1],
+        speak,
+      ),
+    );
+    checks.push(
+      check(
+        'widevine',
+        id.widevine?.keySystem === 'com.widevine.alpha' && id.widevine?.message === 'license-request',
+        id.widevine,
+      ),
+    );
+  }
 
   const report = {
     at: new Date().toISOString(),
@@ -636,6 +842,8 @@ async function main() {
         mediaDevices: s.stored.mediaDevices,
         geo: s.stored.geo,
         fontProfile: s.stored.fontProfile,
+        hardwareConcurrency: s.stored.hardwareConcurrency,
+        deviceMemory: s.stored.deviceMemory,
       },
       page: s.page,
     })),

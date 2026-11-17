@@ -10,11 +10,13 @@ test('desk login ui', async ({ page }) => {
   await expect(page.locator('.brand')).toContainText('N');
   await page.locator('.brand').hover();
   await expect(page.getByRole('button', { name: '更多' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '结束会话' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '退出会话' })).toBeVisible();
+  // No session open: admin sits on the badge, end/leave session are hidden.
+  await expect(page.getByRole('button', { name: '管理' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '结束会话' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '退出会话' })).toHaveCount(0);
   await page.getByRole('button', { name: '更多' }).click();
   await expect(page.getByRole('menuitem', { name: '修改密码' })).toBeVisible();
-  await expect(page.getByRole('menuitem', { name: '管理' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'API Keys' })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: '登出' })).toBeVisible();
   await page.getByRole('menuitem', { name: '修改密码' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
@@ -32,8 +34,7 @@ test('admin console pages render', async ({ page }) => {
   await page.getByRole('button', { name: /进\s*入/ }).click();
   await page.locator('.brand').waitFor({ timeout: 15000 });
   await page.locator('.brand').hover();
-  await page.getByRole('button', { name: '更多' }).click();
-  await page.getByRole('menuitem', { name: '管理' }).click();
+  await page.getByRole('button', { name: '管理' }).click();
   await expect(page.getByRole('heading', { name: '会话管理' })).toBeVisible();
   await page.getByRole('link', { name: '用户' }).click();
   await expect(page.getByRole('heading', { name: '用户管理' })).toBeVisible();

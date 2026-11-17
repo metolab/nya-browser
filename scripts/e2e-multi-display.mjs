@@ -5,7 +5,8 @@ import path from 'path';
 import { WebSocket } from 'ws';
 
 const API = process.env.NYA_API || 'http://127.0.0.1:8080';
-const PASSWORD = process.env.AUTH_PASSWORD || 'testpass';
+const USER = process.env.INIT_ADMIN_USER || 'admin';
+const PASSWORD = process.env.INIT_ADMIN_PASSWORD || process.env.AUTH_PASSWORD || 'testpass';
 const DATA_DIR = process.env.DATA_DIR || '/data';
 const xclipHolders = [];
 
@@ -62,7 +63,7 @@ function cookieHeader(cookies) {
 async function login() {
   const res = await fetchJson(`${API}/api/login`, {
     method: 'POST',
-    body: { password: PASSWORD },
+    body: { username: USER, password: PASSWORD },
   });
   if (res.status !== 200) throw new Error(`login failed: ${res.status} ${JSON.stringify(res.data)}`);
   return cookieHeader(res.cookies);
@@ -527,7 +528,7 @@ async function main() {
       const fp = spawnSync(process.execPath, [path.join(here, 'e2e-fingerprint.mjs')], {
         encoding: 'utf8',
         env: process.env,
-        timeout: 240000,
+        timeout: 360000,
       });
       if (fp.status !== 0) {
         throw new Error((fp.stderr || fp.stdout || '').slice(-800) || `exit ${fp.status}`);
