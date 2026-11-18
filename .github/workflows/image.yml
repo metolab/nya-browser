@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      latest:
+        description: Also tag the image as latest
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -31,7 +36,8 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' || inputs.latest }}
       - name: Fetch private assets
         env:
           NYA_ASSETS_SSH_KEY: ${{ secrets.NYA_ASSETS_DEPLOY_KEY }}
