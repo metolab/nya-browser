@@ -1,91 +1,88 @@
-export type MediaDeviceKind = 'audioinput' | 'audiooutput' | 'videoinput';
+import type { OsType } from './osProfiles.js';
 
-export type MediaDevicePreset = {
+/** Endpoint names a session shows to enumerateDevices after a permission grant. */
+export type MediaDeviceNames = {
   audioInput: string;
   audioOutput: string;
   videoInput: string;
 };
 
-export const NATIVE_MEDIA_LABEL = 'native';
+function seedWords(seed: string): [number, number] {
+  const hex = String(seed || '').replace(/[^0-9a-f]/gi, '').padEnd(16, '0');
+  return [Number.parseInt(hex.slice(0, 8), 16) || 0, Number.parseInt(hex.slice(8, 16), 16) || 0];
+}
 
-export const EMPTY_MEDIA_DEVICES: MediaDevicePreset = {
-  audioInput: '',
-  audioOutput: '',
-  videoInput: '',
+/** Windows endpoint names ("Microphone (…)", "Speakers (…)") in the display language. */
+const WINDOWS_ENDPOINT_WORDS: Record<string, [mic: string, speakers: string]> = {
+  en: ['Microphone', 'Speakers'],
+  'zh-CN': ['麦克风', '扬声器'],
+  'zh-TW': ['麥克風', '喇叭'],
+  ja: ['マイク', 'スピーカー'],
+  ko: ['마이크', '스피커'],
+  de: ['Mikrofon', 'Lautsprecher'],
+  fr: ['Microphone', 'Haut-parleurs'],
+  es: ['Micrófono', 'Altavoces'],
+  it: ['Microfono', 'Altoparlanti'],
+  pt: ['Microfone', 'Alto-falantes'],
+  ru: ['Микрофон', 'Динамики'],
+  nl: ['Microfoon', 'Luidsprekers'],
+  pl: ['Mikrofon', 'Głośniki'],
+  tr: ['Mikrofon', 'Hoparlör'],
+  vi: ['Micrô', 'Loa'],
+  th: ['ไมโครโฟน', 'ลำโพง'],
+  id: ['Mikrofon', 'Speaker'],
 };
 
-/** Common consumer labels from public enumerateDevices dumps / USB ID lists. ASCII only. */
-export const MEDIA_AUDIO_INPUTS = [
-  'Default - Microphone (Realtek(R) Audio)',
-  'Microphone (Realtek High Definition Audio)',
-  'USB Audio Device',
-  'Headset Microphone (Logitech H390)',
-  'Microphone Array (Intel Smart Sound Technology)',
-  'Microphone (HD Webcam C615)',
+/** Audio drivers (endpoint suffix) and cameras with the USB id Chrome appends on Windows. */
+const WINDOWS_AUDIO_DRIVERS = ['Realtek(R) Audio', 'Realtek High Definition Audio', 'High Definition Audio Device'] as const;
+const WINDOWS_CAMERAS = [
+  'Integrated Camera (04f2:b6d9)',
+  'HD Pro Webcam C920 (046d:082d)',
+  'Logitech StreamCam (046d:0893)',
+  'USB2.0 HD UVC WebCam (13d3:56dd)',
+  'HD Webcam C615 (046d:082c)',
 ] as const;
 
-export const MEDIA_AUDIO_OUTPUTS = [
-  'Default - Speakers (Realtek(R) Audio)',
-  'Speakers (Realtek High Definition Audio)',
-  'NVIDIA High Definition Audio',
-  'Headphones (Realtek USB Audio)',
-  'Digital Output (S/PDIF)',
-  'Speakers (USB Audio Device)',
-] as const;
-
-export const MEDIA_VIDEO_INPUTS = [
-  'HD Pro Webcam C920',
-  'Integrated Camera',
-  'USB Camera',
-  'Logitech StreamCam',
-  'USB2.0 HD UVC WebCam',
-  'HD Webcam C615',
-] as const;
-
-export const DEFAULT_MEDIA_DEVICES: MediaDevicePreset = EMPTY_MEDIA_DEVICES;
-
-function pick<T>(list: readonly T[], n: number) {
-  return list[Math.abs(n) % list.length];
-}
-
-function seedWord(seed: string, offset: number) {
-  const hex = String(seed || '')
-    .replace(/[^0-9a-f]/gi, '')
-    .padEnd(offset + 8, '0');
-  const n = Number.parseInt(hex.slice(offset, offset + 8), 16);
-  return Number.isFinite(n) ? n : offset + 1;
-}
-
-export function mediaDevicesFromSeed(seed: string): MediaDevicePreset {
-  const a = seedWord(seed, 0);
-  const b = seedWord(seed, 8);
-  const c = seedWord(seed, 16);
+/** Physical endpoint labels a Windows install shows to enumerateDevices after permission. */
+function windowsMediaDevices(seed: string, language: string): MediaDeviceNames {
+  const lang = String(language || '').trim();
+  const base = lang.split('-')[0].toLowerCase();
+  const key = base === 'zh' ? (lang === 'zh-CN' || lang === 'zh-SG' ? 'zh-CN' : 'zh-TW') : base;
+  const [mic, speakers] = WINDOWS_ENDPOINT_WORDS[key] || WINDOWS_ENDPOINT_WORDS.en;
+  const [a, b] = seedWords(seed);
+  const driver = WINDOWS_AUDIO_DRIVERS[a % WINDOWS_AUDIO_DRIVERS.length];
   return {
-    audioInput: pick(MEDIA_AUDIO_INPUTS, a),
-    audioOutput: pick(MEDIA_AUDIO_OUTPUTS, b >>> 3),
-    videoInput: pick(MEDIA_VIDEO_INPUTS, c >>> 5),
+    audioInput: `${mic} (${driver})`,
+    audioOutput: `${speakers} (${driver})`,
+    videoInput: WINDOWS_CAMERAS[(b >>> 3) % WINDOWS_CAMERAS.length],
   };
 }
 
-function clipLabel(value: unknown, fallback: string) {
-  const raw = String(value ?? '').trim();
-  if (!raw || raw === NATIVE_MEDIA_LABEL) return '';
-  return raw.length <= 80 ? raw : fallback;
-}
+/** PulseAudio card descriptions (source and sink share one) and V4L2 cameras as Chrome on Linux names them. */
+const LINUX_AUDIO_CARDS = [
+  'Built-in Audio Analog Stereo',
+  'HD Audio Controller Analog Stereo',
+  'Family 17h/19h HD Audio Controller Analog Stereo',
+] as const;
+const LINUX_CAMERAS = [
+  'Integrated Camera: Integrated C (04f2:b6d9)',
+  'HD Pro Webcam C920 (046d:082d)',
+  'Logitech StreamCam (046d:0893)',
+  'USB2.0 HD UVC WebCam: USB2.0 HD (13d3:56dd)',
+  'HD Webcam C615 (046d:082c)',
+] as const;
 
-export function normalizeMediaDevices(input: unknown, seed: string): MediaDevicePreset {
-  if (!input || typeof input !== 'object') return { ...EMPTY_MEDIA_DEVICES };
-  const obj = input as Partial<MediaDevicePreset>;
-  const keys: Array<keyof MediaDevicePreset> = ['audioInput', 'audioOutput', 'videoInput'];
-  if (!keys.some((key) => key in obj)) return { ...EMPTY_MEDIA_DEVICES };
-  const generated = mediaDevicesFromSeed(seed);
+function linuxMediaDevices(seed: string): MediaDeviceNames {
+  const [a, b] = seedWords(seed);
+  const card = LINUX_AUDIO_CARDS[a % LINUX_AUDIO_CARDS.length];
   return {
-    audioInput: 'audioInput' in obj ? clipLabel(obj.audioInput, generated.audioInput) : '',
-    audioOutput: 'audioOutput' in obj ? clipLabel(obj.audioOutput, generated.audioOutput) : '',
-    videoInput: 'videoInput' in obj ? clipLabel(obj.videoInput, generated.videoInput) : '',
+    audioInput: card,
+    audioOutput: card,
+    videoInput: LINUX_CAMERAS[(b >>> 3) % LINUX_CAMERAS.length],
   };
 }
 
-export function mediaDevicesSpoofed(media: MediaDevicePreset | null | undefined) {
-  return Boolean(media?.audioInput || media?.audioOutput || media?.videoInput);
+/** One stable microphone, speaker and webcam per session, named the way the emulated OS does. */
+export function sessionMediaDevices(os: OsType, seed: string, language: string): MediaDeviceNames {
+  return os === 'windows' ? windowsMediaDevices(seed, language) : linuxMediaDevices(seed);
 }

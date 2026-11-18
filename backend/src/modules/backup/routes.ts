@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import { Router } from 'express';
 import multer from 'multer';
-import { AUDIT_ACTIONS, type BackupManifest } from '@nya/shared';
+import { AUDIT_ACTIONS, DEFAULT_IDLE_TIMEOUT_MINUTES, type BackupManifest } from '@nya/shared';
 import { asyncHandler, requireAdmin } from '../../http/util.js';
 import { auditFromReq } from '../audit/service.js';
 import {
@@ -186,7 +186,7 @@ backupRouter.post(
       timezone: manifest.timezone,
       chromeLanguage: manifest.chromeLanguage,
       homeUrl: manifest.homeUrl,
-      idleTimeoutMinutes: manifest.idleTimeoutMinutes,
+      idleTimeoutMinutes: manifest.idleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES,
       fingerprint: manifest.fingerprint,
       proxyId,
     });

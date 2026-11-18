@@ -87,7 +87,7 @@ const upload = multer({
         fs.mkdirSync(full, { recursive: true });
         cb(null, full);
       } catch (err) {
-        cb(err as Error, undefined);
+        cb(err as Error, '');
       }
     },
     filename: (req, file, cb) => {
@@ -96,7 +96,7 @@ const upload = multer({
         const { full } = resolveSessionPath(req.params.id, dirRel);
         cb(null, uniqueName(full, file.originalname));
       } catch (err) {
-        cb(err as Error, undefined);
+        cb(err as Error, '');
       }
     },
   }),

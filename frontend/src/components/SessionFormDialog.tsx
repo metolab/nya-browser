@@ -2,20 +2,21 @@ import { useEffect, useState } from 'react';
 import type { ProxyRecord, SessionGroup } from '@nya/shared';
 import {
   COMMON_TIMEZONES,
-  DEFAULT_CHROME_LANGUAGE,
   DEFAULT_GPU_PROFILE,
-  NATIVE_MEDIA_LABEL,
   DEFAULT_WEBRTC_MODE,
-  DEFAULT_FONT_PROFILE,
-  DEFAULT_TIMEZONE,
+  AUTO_LOCALE,
+  resolveSessionLocale,
   GPU_PROFILES,
-  MEDIA_AUDIO_INPUTS,
-  MEDIA_AUDIO_OUTPUTS,
-  MEDIA_VIDEO_INPUTS,
   WEBRTC_MODES,
   WEBRTC_MODE_LABELS,
-  FONT_PROFILES,
-  FONT_PROFILE_LABELS,
+  DEFAULT_OS,
+  DEFAULT_WINDOWS_RELEASE,
+  OS_LABELS,
+  OS_TYPES,
+  WINDOWS_RELEASES,
+  WINDOWS_RELEASE_LABELS,
+  coerceOs,
+  coerceWindowsRelease,
   DEFAULT_IDLE_TIMEOUT_MINUTES,
   IDLE_TIMEOUT_MINUTES_MAX,
   PINNED_CHROME_LANGUAGES,
@@ -50,17 +51,24 @@ import {
 import { NONE_KEY, groupSelectOptions } from '@/lib/groups';
 
 const COMMON_TZ = new Set<string>(COMMON_TIMEZONES);
-const TIMEZONE_OPTIONS = listTimezones().map((tz) => ({
-  value: tz,
-  label: timezoneOptionLabel(tz),
-  group: COMMON_TZ.has(tz) ? '常用' : '全部',
-}));
+const AUTO_OPTION = { value: AUTO_LOCALE, label: '自动（跟随代理出口国家）', group: '常用' };
+const TIMEZONE_OPTIONS = [
+  AUTO_OPTION,
+  ...listTimezones().map((tz) => ({
+    value: tz,
+    label: timezoneOptionLabel(tz),
+    group: COMMON_TZ.has(tz) ? '常用' : '全部',
+  })),
+];
 const PINNED_LANG = new Set<string>(PINNED_CHROME_LANGUAGES);
-const LANGUAGE_OPTIONS = CHROME_LANGUAGES.map((code) => ({
-  value: code,
-  label: chromeLanguageOptionLabel(code),
-  group: PINNED_LANG.has(code) ? '常用' : '全部',
-}));
+const LANGUAGE_OPTIONS = [
+  AUTO_OPTION,
+  ...CHROME_LANGUAGES.map((code) => ({
+    value: code,
+    label: chromeLanguageOptionLabel(code),
+    group: PINNED_LANG.has(code) ? '常用' : '全部',
+  })),
+];
 const GPU_OPTIONS = GPU_PROFILES.map((row) => ({
   value: row.id,
   label: gpuProfileOptionLabel(row.id),
@@ -69,10 +77,6 @@ const GPU_OPTIONS = GPU_PROFILES.map((row) => ({
 const WEBRTC_OPTIONS = WEBRTC_MODES.map((id) => ({
   value: id,
   label: WEBRTC_MODE_LABELS[id],
-}));
-const FONT_OPTIONS = FONT_PROFILES.map((id) => ({
-  value: id,
-  label: FONT_PROFILE_LABELS[id],
 }));
 const RANDOM_HARDWARE_KEY = '__random__';
 
@@ -90,14 +94,11 @@ export type SessionFormValues = {
   chromeLanguage: string;
   gpuProfile: string;
   webrtcMode: string;
-  fontProfile: string;
+  os: string;
+  windowsRelease: string;
   /** Unset means the backend picks a common combo from the fingerprint seed. */
   hardwareConcurrency?: number;
   deviceMemory?: number;
-  deviceName: string;
-  mediaAudioInput: string;
-  mediaAudioOutput: string;
-  mediaVideoInput: string;
   geoPermission: string;
   geoLatitude: string;
   geoLongitude: string;
@@ -118,13 +119,10 @@ type Props = {
   initialChromeLanguage?: string;
   initialGpuProfile?: string;
   initialWebrtcMode?: string;
-  initialFontProfile?: string;
+  initialOs?: string;
+  initialWindowsRelease?: string;
   initialHardwareConcurrency?: number;
   initialDeviceMemory?: number;
-  initialDeviceName?: string;
-  initialMediaAudioInput?: string;
-  initialMediaAudioOutput?: string;
-  initialMediaVideoInput?: string;
   initialGeoPermission?: string;
   initialGeoLatitude?: number | null;
   initialGeoLongitude?: number | null;
@@ -148,22 +146,19 @@ export default function SessionFormDialog({
   initialNotepad = '',
   initialProxyId = null,
   initialGroupId = null,
-  initialTimezone = DEFAULT_TIMEZONE,
-  initialChromeLanguage = DEFAULT_CHROME_LANGUAGE,
+  initialTimezone = AUTO_LOCALE,
+  initialChromeLanguage = AUTO_LOCALE,
   initialGpuProfile = DEFAULT_GPU_PROFILE,
   initialWebrtcMode = DEFAULT_WEBRTC_MODE,
-  initialFontProfile = DEFAULT_FONT_PROFILE,
+  initialOs = DEFAULT_OS,
+  initialWindowsRelease = DEFAULT_WINDOWS_RELEASE,
   initialHardwareConcurrency,
   initialDeviceMemory,
-  initialDeviceName = '',
-  initialMediaAudioInput = NATIVE_MEDIA_LABEL,
-  initialMediaAudioOutput = NATIVE_MEDIA_LABEL,
-  initialMediaVideoInput = NATIVE_MEDIA_LABEL,
   initialGeoPermission = 'ask',
   initialGeoLatitude = null,
   initialGeoLongitude = null,
   initialGeoAccuracy = 100,
-  initialHomeUrl = 'https://www.google.com/',
+  initialHomeUrl = '',
   initialIdleTimeoutMinutes = DEFAULT_IDLE_TIMEOUT_MINUTES,
   proxies,
   groups,
@@ -181,14 +176,11 @@ export default function SessionFormDialog({
   const [chromeLanguage, setChromeLanguage] = useState(initialChromeLanguage);
   const [gpuProfile, setGpuProfile] = useState(initialGpuProfile);
   const [webrtcMode, setWebrtcMode] = useState(initialWebrtcMode);
-  const [fontProfile, setFontProfile] = useState(initialFontProfile);
+  const [os, setOs] = useState<string>(coerceOs(initialOs));
+  const [windowsRelease, setWindowsRelease] = useState<string>(coerceWindowsRelease(initialWindowsRelease));
   const [hardware, setHardware] = useState(() =>
     initialHardwareKey(initialHardwareConcurrency, initialDeviceMemory),
   );
-  const [deviceName, setDeviceName] = useState(initialDeviceName);
-  const [mediaAudioInput, setMediaAudioInput] = useState(initialMediaAudioInput);
-  const [mediaAudioOutput, setMediaAudioOutput] = useState(initialMediaAudioOutput);
-  const [mediaVideoInput, setMediaVideoInput] = useState(initialMediaVideoInput);
   const [geoPermission, setGeoPermission] = useState(initialGeoPermission);
   const [geoLatitude, setGeoLatitude] = useState(initialGeoLatitude == null ? '' : String(initialGeoLatitude));
   const [geoLongitude, setGeoLongitude] = useState(initialGeoLongitude == null ? '' : String(initialGeoLongitude));
@@ -198,6 +190,14 @@ export default function SessionFormDialog({
     String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES),
   );
   const [proxyId, setProxyId] = useState(initialProxyId || NONE_KEY);
+  const autoLocaleHint = (() => {
+    if (timezone !== AUTO_LOCALE && chromeLanguage !== AUTO_LOCALE) return '';
+    const exit = proxies.find((p) => p.id === proxyId)?.lastTest;
+    const resolved = resolveSessionLocale({ timezone, chromeLanguage }, exit);
+    const now = `${resolved.timezone} · ${chromeLanguageOptionLabel(resolved.language)}`;
+    if (exit?.ok && exit.loc) return `自动：出口 ${exit.region || exit.loc} → ${now}，代理重新测试后下次启动生效`;
+    return `自动：代理还没有测试出口，暂用 ${now}；测试代理后下次启动自动切换`;
+  })();
   const [groupId, setGroupId] = useState(initialGroupId || NONE_KEY);
 
   useEffect(() => {
@@ -205,21 +205,18 @@ export default function SessionFormDialog({
     setName(initialName);
     setDescription(initialDescription);
     setNotepad(initialNotepad);
-    setTimezone(initialTimezone || DEFAULT_TIMEZONE);
-    setChromeLanguage(initialChromeLanguage || DEFAULT_CHROME_LANGUAGE);
+    setTimezone(initialTimezone || AUTO_LOCALE);
+    setChromeLanguage(initialChromeLanguage || AUTO_LOCALE);
     setGpuProfile(initialGpuProfile || DEFAULT_GPU_PROFILE);
     setWebrtcMode(initialWebrtcMode || DEFAULT_WEBRTC_MODE);
-    setFontProfile(initialFontProfile || DEFAULT_FONT_PROFILE);
+    setOs(coerceOs(initialOs));
+    setWindowsRelease(coerceWindowsRelease(initialWindowsRelease));
     setHardware(initialHardwareKey(initialHardwareConcurrency, initialDeviceMemory));
-    setDeviceName(initialDeviceName || '');
-    setMediaAudioInput(initialMediaAudioInput || NATIVE_MEDIA_LABEL);
-    setMediaAudioOutput(initialMediaAudioOutput || NATIVE_MEDIA_LABEL);
-    setMediaVideoInput(initialMediaVideoInput || NATIVE_MEDIA_LABEL);
     setGeoPermission(initialGeoPermission || 'ask');
     setGeoLatitude(initialGeoLatitude == null ? '' : String(initialGeoLatitude));
     setGeoLongitude(initialGeoLongitude == null ? '' : String(initialGeoLongitude));
     setGeoAccuracy(String(initialGeoAccuracy ?? 100));
-    setHomeUrl(initialHomeUrl || 'https://www.google.com/');
+    setHomeUrl(initialHomeUrl || '');
     setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES));
     setProxyId(initialProxyId || NONE_KEY);
     setGroupId(initialGroupId || NONE_KEY);
@@ -235,13 +232,10 @@ export default function SessionFormDialog({
     initialChromeLanguage,
     initialGpuProfile,
     initialWebrtcMode,
-    initialFontProfile,
+    initialOs,
+    initialWindowsRelease,
     initialHardwareConcurrency,
     initialDeviceMemory,
-    initialDeviceName,
-    initialMediaAudioInput,
-    initialMediaAudioOutput,
-    initialMediaVideoInput,
     initialGeoPermission,
     initialGeoLatitude,
     initialGeoLongitude,
@@ -266,22 +260,19 @@ export default function SessionFormDialog({
               name: name.trim() || initialName || 'Session',
               description,
               notepad,
-              timezone: timezone || DEFAULT_TIMEZONE,
-              chromeLanguage: chromeLanguage || DEFAULT_CHROME_LANGUAGE,
+              timezone: timezone || AUTO_LOCALE,
+              chromeLanguage: chromeLanguage || AUTO_LOCALE,
               gpuProfile: gpuProfile || DEFAULT_GPU_PROFILE,
               webrtcMode: webrtcMode || DEFAULT_WEBRTC_MODE,
-              fontProfile: fontProfile || DEFAULT_FONT_PROFILE,
+              os,
+              windowsRelease,
               hardwareConcurrency: parseHardwareProfileId(hardware)?.cores,
               deviceMemory: parseHardwareProfileId(hardware)?.memory,
-              deviceName: deviceName.trim(),
-              mediaAudioInput: mediaAudioInput.trim(),
-              mediaAudioOutput: mediaAudioOutput.trim(),
-              mediaVideoInput: mediaVideoInput.trim(),
               geoPermission: geoPermission || 'ask',
               geoLatitude: geoLatitude.trim(),
               geoLongitude: geoLongitude.trim(),
               geoAccuracy: geoAccuracy.trim(),
-              homeUrl: homeUrl || 'https://www.google.com/',
+              homeUrl: homeUrl.trim(),
               idleTimeoutMinutes: (() => {
                 const n = Number.parseInt(String(idleTimeoutMinutes), 10);
                 if (!Number.isFinite(n) || n <= 0) return 0;
@@ -349,6 +340,55 @@ export default function SessionFormDialog({
                     searchPlaceholder="搜索语言"
                   />
                 </div>
+                {autoLocaleHint ? (
+                  <p className="text-xs text-muted-foreground sm:col-span-2">{autoLocaleHint}</p>
+                ) : null}
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label>操作系统</Label>
+                  <Select
+                    value={os}
+                    onValueChange={setOs}
+                  >
+                    <SelectTrigger className="w-full" aria-label="操作系统">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent position="popper">
+                      {OS_TYPES.map((id) => (
+                        <SelectItem key={id} value={id}>
+                          {OS_LABELS[id]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {os === 'windows' && (
+                  <div className="grid gap-2">
+                    <Label>Windows 版本</Label>
+                    <Select
+                      value={windowsRelease}
+                      onValueChange={setWindowsRelease}
+                    >
+                      <SelectTrigger className="w-full" aria-label="Windows 版本">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent position="popper">
+                        {WINDOWS_RELEASES.map((id) => (
+                          <SelectItem key={id} value={id}>
+                            {WINDOWS_RELEASE_LABELS[id]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {os === 'windows' && (
+                  <p className="text-xs text-muted-foreground sm:col-span-2">
+                    UA、navigator.platform 和 UA-CH 报告为 Windows，字体自动换成所选版本的 Windows 字体库。建议配合真实 NVIDIA
+                    显卡使用，SwiftShader 在真实 Windows 上很少见。修改后会话需要重启。
+                  </p>
+                )}
               </div>
               <div className="grid gap-2">
                 <Label>显卡</Label>
@@ -403,72 +443,6 @@ export default function SessionFormDialog({
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label>字体库</Label>
-                <Select value={fontProfile} onValueChange={setFontProfile}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent position="popper">
-                    {FONT_OPTIONS.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  伪造 Windows 系统字体枚举，不安装整套字体。measureText 走 Liberation / Noto 度量别名。
-                </p>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="session-device">设备名</Label>
-                <Input
-                  id="session-device"
-                  value={deviceName}
-                  maxLength={32}
-                  placeholder="留空则按指纹生成 DESKTOP-XXXX"
-                  onChange={(e) => setDeviceName(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                <div className="grid gap-2">
-                  <Label>麦克风</Label>
-                  <SearchSelect
-                    value={mediaAudioInput || NATIVE_MEDIA_LABEL}
-                    onChange={setMediaAudioInput}
-                    options={[
-                      { value: NATIVE_MEDIA_LABEL, label: '真实设备（不伪装）' },
-                      ...MEDIA_AUDIO_INPUTS.map((v) => ({ value: v, label: v })),
-                    ]}
-                    searchPlaceholder="搜索"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label>扬声器</Label>
-                  <SearchSelect
-                    value={mediaAudioOutput || NATIVE_MEDIA_LABEL}
-                    onChange={setMediaAudioOutput}
-                    options={[
-                      { value: NATIVE_MEDIA_LABEL, label: '真实设备（不伪装）' },
-                      ...MEDIA_AUDIO_OUTPUTS.map((v) => ({ value: v, label: v })),
-                    ]}
-                    searchPlaceholder="搜索"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label>摄像头</Label>
-                  <SearchSelect
-                    value={mediaVideoInput || NATIVE_MEDIA_LABEL}
-                    onChange={setMediaVideoInput}
-                    options={[
-                      { value: NATIVE_MEDIA_LABEL, label: '真实设备（不伪装）' },
-                      ...MEDIA_VIDEO_INPUTS.map((v) => ({ value: v, label: v })),
-                    ]}
-                    searchPlaceholder="搜索"
-                  />
-                </div>
-              </div>
-              <div className="grid gap-2">
                 <Label>地理位置权限</Label>
                 <Select value={geoPermission} onValueChange={setGeoPermission}>
                   <SelectTrigger className="w-full">
@@ -518,11 +492,11 @@ export default function SessionFormDialog({
                 <Input
                   id="session-url"
                   value={homeUrl}
-                  placeholder="https://www.google.com/"
+                  placeholder="留空打开新标签页"
                   onChange={(e) => setHomeUrl(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  打开窗口时使用，也可以临时填写别的地址
+                  打开窗口时使用，留空为 Chrome 新标签页，也可填 about:blank
                 </p>
               </div>
               <div className="grid gap-2">

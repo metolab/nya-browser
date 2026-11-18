@@ -1,0 +1,848 @@
+diff --git a/content/renderer/media/renderer_webaudiodevice_impl.cc b/content/renderer/media/renderer_webaudiodevice_impl.cc
+index 8a3bccb..cdcb68e 100644
+--- a/content/renderer/media/renderer_webaudiodevice_impl.cc
++++ b/content/renderer/media/renderer_webaudiodevice_impl.cc
+@@ -10,6 +10,7 @@
+ #include <string>
+ 
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+ #include "base/memory/ptr_util.h"
+@@ -275,6 +276,16 @@ void RendererWebAudioDeviceImpl::HandleDeviceStatus(
+   media::OutputDeviceStatus status = device_info.device_status();
+   original_sink_params_ = device_info.output_params();
+ 
++  // Nya Windows emulation: Windows endpoints default to 48 kHz with 10 ms
++  // buffers, whatever the host (fake 44.1 kHz device, PulseAudio, ...) has.
++  if (original_sink_params_.IsValid() &&
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("nya-os") ==
++          "windows") {
++    original_sink_params_.Reset(original_sink_params_.format(),
++                                original_sink_params_.channel_layout_config(),
++                                48000, 480);
++  }
++
+   // On systems without audio hardware the returned parameters may be invalid.
+   // In which case just choose whatever we want for the fake device.
+   if (!original_sink_params_.IsValid()) {
+diff --git a/media/base/supported_types.cc b/media/base/supported_types.cc
+index efc7246..96b47b2 100644
+--- a/media/base/supported_types.cc
++++ b/media/base/supported_types.cc
+@@ -228,10 +228,25 @@ bool IsAudioCodecProprietary(AudioCodec codec) {
+ }
+ #endif  // !BUILDFLAG(USE_PROPRIETARY_CODECS)
+ 
++// Nya Windows emulation on a GPU host: Chrome on Windows decodes HEVC
++// Main/Main10 through D3D11 there.
++bool NyaClaimsWindowsHevc(VideoCodecProfile profile) {
++  static const bool claim = [] {
++    const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
++    return cmd && cmd->GetSwitchValueASCII("nya-os") == "windows" &&
++           cmd->HasSwitch("nya-os-hw-video");
++  }();
++  return claim &&
++         (profile == HEVCPROFILE_MAIN || profile == HEVCPROFILE_MAIN10);
++}
++
+ bool IsDecoderHevcProfileSupported(const VideoType& type) {
+   if (!IsColorSpaceSupported(type.color_space)) {
+     return false;
+   }
++  if (NyaClaimsWindowsHevc(type.profile)) {
++    return true;
++  }
+ 
+ #if BUILDFLAG(ENABLE_PLATFORM_HEVC)
+ #if BUILDFLAG(PLATFORM_HAS_OPTIONAL_HEVC_DECODE_SUPPORT)
+diff --git a/third_party/blink/renderer/modules/media_capabilities/media_capabilities.cc b/third_party/blink/renderer/modules/media_capabilities/media_capabilities.cc
+index e38a8d4..2492055 100644
+--- a/third_party/blink/renderer/modules/media_capabilities/media_capabilities.cc
++++ b/third_party/blink/renderer/modules/media_capabilities/media_capabilities.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/modules/media_capabilities/media_capabilities.h"
+ 
++#include <cctype>
+ #include <memory>
+ #include <optional>
+ #include <sstream>
+@@ -77,6 +78,7 @@
+ #include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
+ #include "third_party/blink/renderer/platform/wtf/vector.h"
+ #include "third_party/webrtc/api/audio_codecs/audio_format.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/geometry/size.h"
+@@ -137,6 +139,19 @@ MediaCapabilitiesDecodingInfo* CreateDecodingInfoWith(bool value) {
+   return info;
+ }
+ 
++// Windows GPUs decode H.264/VP9/HEVC and encode HEVC in hardware for WebRTC.
++bool NyaWebrtcHwCodec(const std::optional<webrtc::SdpVideoFormat>& format,
++                      bool decode) {
++  if (!format || !nya::EmulatesWindowsHwVideo()) {
++    return false;
++  }
++  std::string name = format->name;
++  for (char& c : name) {
++    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
++  }
++  return name == "H265" || (decode && (name == "H264" || name == "VP9"));
++}
++
+ // Utility function that will create a MediaCapabilitiesInfo object with
+ // all the values set to either true or false.
+ MediaCapabilitiesInfo* CreateEncodingInfoWith(bool value) {
+@@ -884,6 +899,11 @@ ScriptPromise<MediaCapabilitiesDecodingInfo> MediaCapabilities::decodingInfo(
+               /*is_decode_stats=*/true, codec_profile, video_pixels,
+               /*hardware_accelerated=*/false);
+ 
++      if (NyaWebrtcHwCodec(sdp_video_format, /*decode=*/true)) {
++        pending_cb_map_.erase(callback_id);
++        resolver->Resolve(CreateDecodingInfoWith(true));
++        return promise;
++      }
+       handler->DecodingInfo(
+           sdp_audio_format, sdp_video_format, spatial_scalability,
+           video_resolution,
+@@ -1121,6 +1141,11 @@ ScriptPromise<MediaCapabilitiesInfo> MediaCapabilities::encodingInfo(
+               /*is_decode_stats=*/false, codec_profile, video_pixels,
+               /*hardware_accelerated=*/false);
+ 
++      if (NyaWebrtcHwCodec(sdp_video_format, /*decode=*/false)) {
++        pending_cb_map_.erase(callback_id);
++        resolver->Resolve(CreateEncodingInfoWith(true));
++        return promise;
++      }
+       handler->EncodingInfo(
+           sdp_audio_format, sdp_video_format, scalability_mode,
+           video_resolution,
+@@ -1396,6 +1421,12 @@ void MediaCapabilities::GetPerfInfo(
+ 
+   const int callback_id = InsertCallbackAndScheduleTimeout(
+       resolver, access, request_time, QueryType::kDecoding);
++  pending_cb_map_.at(callback_id)->nya_power_efficient =
++      nya::EmulatesWindows() &&
++      (video_codec == media::VideoCodec::kH264 ||
++       video_codec == media::VideoCodec::kVP9 ||
++       (video_codec == media::VideoCodec::kHEVC &&
++        nya::EmulatesWindowsHwVideo()));
+ 
+   media::mojom::blink::PredictionFeaturesPtr features =
+       media::mojom::blink::PredictionFeatures::New(
+@@ -1520,7 +1551,8 @@ void MediaCapabilities::ResolveCallbackIfReady(int callback_id) {
+ 
+   if (UseGpuFactoriesForPowerEfficient(execution_context,
+                                        pending_cb->key_system_access)) {
+-    info->setPowerEfficient(*pending_cb->is_gpu_factories_supported);
++    info->setPowerEfficient(*pending_cb->is_gpu_factories_supported ||
++                            pending_cb->nya_power_efficient);
+     // Builtin video codec guarantee a certain codec can be decoded under any
+     // circumstances, and if the result is not powerEfficient and the video
+     // codec is not builtin, that means the video will failed to play at the
+@@ -1532,6 +1564,9 @@ void MediaCapabilities::ResolveCallbackIfReady(int callback_id) {
+   } else {
+     info->setPowerEfficient(*pending_cb->db_is_power_efficient);
+   }
++  if (pending_cb->nya_power_efficient && info->supported()) {
++    info->setPowerEfficient(true);
++  }
+ 
+   info->setSmooth(*pending_cb->db_is_smooth);
+ 
+@@ -1721,7 +1756,8 @@ void MediaCapabilities::OnCallbackTimeout(int callback_id) {
+   if (UseGpuFactoriesForPowerEfficient(execution_context,
+                                        pending_cb->key_system_access)) {
+     const bool is_power_efficient =
+-        pending_cb->is_gpu_factories_supported.value_or(false);
++        pending_cb->is_gpu_factories_supported.value_or(false) ||
++        pending_cb->nya_power_efficient;
+     supported = is_power_efficient ||
+                 pending_cb->is_builtin_video_codec.value_or(false);
+     info->setPowerEfficient(is_power_efficient);
+diff --git a/third_party/blink/renderer/modules/media_capabilities/media_capabilities.h b/third_party/blink/renderer/modules/media_capabilities/media_capabilities.h
+index 2d9f523..e97b6f2 100644
+--- a/third_party/blink/renderer/modules/media_capabilities/media_capabilities.h
++++ b/third_party/blink/renderer/modules/media_capabilities/media_capabilities.h
+@@ -157,6 +157,8 @@ class MODULES_EXPORT MediaCapabilities final
+     std::optional<bool> db_is_power_efficient;
+     std::optional<bool> is_gpu_factories_supported;
+     std::optional<bool> is_builtin_video_codec;
++    // Nya Windows emulation: Windows GPUs decode H.264/VP9 in hardware.
++    bool nya_power_efficient = false;
+     base::TimeTicks request_time;
+     QueryType query_type;
+ 
+diff --git a/third_party/blink/renderer/modules/mediastream/media_devices.cc b/third_party/blink/renderer/modules/mediastream/media_devices.cc
+index cbdf6f2..a119d32 100644
+--- a/third_party/blink/renderer/modules/mediastream/media_devices.cc
++++ b/third_party/blink/renderer/modules/mediastream/media_devices.cc
+@@ -53,6 +53,7 @@
+ #include "third_party/blink/renderer/core/html/html_element.h"
+ #include "third_party/blink/renderer/modules/mediastream/crop_target.h"
+ #include "third_party/blink/renderer/modules/mediastream/input_device_info.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/modules/mediastream/media_stream.h"
+ #include "third_party/blink/renderer/modules/mediastream/navigator_media_stream.h"
+ #include "third_party/blink/renderer/modules/mediastream/restriction_target.h"
+@@ -86,6 +87,82 @@ BASE_FEATURE(kDeviceChangeRequiresPermission, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ namespace {
+ 
++// After a grant Chrome lists each audio kind as "default" (on Windows also
++// "communications") and then the endpoint, all sharing the endpoint's group
++// id. Windows labels them "<prefix> - <endpoint>", Linux "Default" alone.
++MediaDeviceInfoVector NyaMediaDevices(
++    const MediaDeviceInfoVector& devices,
++    const std::vector<nya::MediaDeviceSpoof>& spoofed) {
++  const String default_prefix = String::FromUtf8(nya::MediaDefaultPrefix());
++  const String comm_prefix = String::FromUtf8(nya::MediaCommunicationsPrefix());
++  MediaDeviceInfoVector out;
++  for (mojom::blink::MediaDeviceType type :
++       {mojom::blink::MediaDeviceType::kMediaAudioInput,
++        mojom::blink::MediaDeviceType::kMediaVideoInput,
++        mojom::blink::MediaDeviceType::kMediaAudioOutput}) {
++    const char* kind =
++        type == mojom::blink::MediaDeviceType::kMediaAudioInput   ? "audioinput"
++        : type == mojom::blink::MediaDeviceType::kMediaVideoInput ? "videoinput"
++                                                                  : "audiooutput";
++    MediaDeviceInfo* first = nullptr;
++    MediaDeviceInfo* physical = nullptr;
++    for (const auto& device : devices) {
++      if (device->DeviceType() != type) {
++        continue;
++      }
++      if (!first) {
++        first = device.Get();
++      }
++      if (!physical && device->deviceId() != "default" &&
++          device->deviceId() != "communications") {
++        physical = device.Get();
++      }
++    }
++    if (!first) {
++      continue;
++    }
++    // Without permission the browser already masks the list to one
++    // anonymous entry per kind.
++    if (first->label().empty()) {
++      for (const auto& device : devices) {
++        if (device->DeviceType() == type) {
++          out.push_back(device);
++        }
++      }
++      continue;
++    }
++    if (!physical) {
++      physical = first;
++    }
++    String label = physical->label();
++    for (const auto& row : spoofed) {
++      if (row.kind == kind && !row.label.empty()) {
++        label = String::FromUtf8(row.label);
++        break;
++      }
++    }
++    const String group = physical->groupId();
++    auto add = [&](const String& id, const String& text) {
++      if (type == mojom::blink::MediaDeviceType::kMediaAudioOutput) {
++        out.push_back(
++            MakeGarbageCollected<MediaDeviceInfo>(id, text, group, type));
++      } else {
++        out.push_back(
++            MakeGarbageCollected<InputDeviceInfo>(id, text, group, type));
++      }
++    };
++    if (type != mojom::blink::MediaDeviceType::kMediaVideoInput) {
++      add("default", nya::EmulatesWindows() ? default_prefix + " - " + label
++                                            : default_prefix);
++      if (!comm_prefix.empty()) {
++        add("communications", comm_prefix + " - " + label);
++      }
++    }
++    add(physical->deviceId(), label);
++  }
++  return out;
++}
++
+ constexpr base::TimeDelta kEnumerateDevicesTimeout = base::Seconds(4);
+ 
+ void SendLogMessage(const std::string& message) {
+@@ -1494,6 +1571,39 @@ void MediaDevices::DevicesEnumerated(
+       }
+     }
+   }
++  const std::vector<nya::MediaDeviceSpoof> spoofed = nya::SpoofedMediaDevices();
++  if (!nya::MediaDefaultPrefix().empty()) {
++    media_devices = NyaMediaDevices(media_devices, spoofed);
++  } else if (!spoofed.empty()) {
++    HeapVector<Member<MediaDeviceInfo>> overlaid;
++    for (auto& device : media_devices) {
++      mojom::blink::MediaDeviceType device_type = device->DeviceType();
++      std::string kind = "audiooutput";
++      if (device_type == mojom::blink::MediaDeviceType::kMediaAudioInput) {
++        kind = "audioinput";
++      } else if (device_type == mojom::blink::MediaDeviceType::kMediaVideoInput) {
++        kind = "videoinput";
++      }
++      String label = device->label();
++      if (!label.empty()) {
++        for (const auto& row : spoofed) {
++          if (row.kind == kind && !row.label.empty()) {
++            label = String::FromUtf8(row.label);
++            break;
++          }
++        }
++      }
++      if (device_type == mojom::blink::MediaDeviceType::kMediaAudioInput ||
++          device_type == mojom::blink::MediaDeviceType::kMediaVideoInput) {
++        overlaid.push_back(MakeGarbageCollected<InputDeviceInfo>(
++            device->deviceId(), label, device->groupId(), device_type));
++      } else {
++        overlaid.push_back(MakeGarbageCollected<MediaDeviceInfo>(
++            device->deviceId(), label, device->groupId(), device_type));
++      }
++    }
++    media_devices = std::move(overlaid);
++  }
+ 
+   ReportCompletedEnumerateDevices(result_contains_nonempty_input_device_ids);
+   result_tracker->Resolve(media_devices);
+diff --git a/third_party/blink/renderer/modules/mediastream/media_stream_track_impl.cc b/third_party/blink/renderer/modules/mediastream/media_stream_track_impl.cc
+index 52b7847..ca53d48 100644
+--- a/third_party/blink/renderer/modules/mediastream/media_stream_track_impl.cc
++++ b/third_party/blink/renderer/modules/mediastream/media_stream_track_impl.cc
+@@ -72,6 +72,7 @@
+ #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_track.h"
+ #include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
+ #include "third_party/blink/renderer/platform/mediastream/media_stream_web_audio_source.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
+ #include "third_party/blink/renderer/platform/webrtc/peer_connection_remote_audio_source.h"
+@@ -337,7 +338,38 @@ String MediaStreamTrackImpl::id() const {
+ }
+ 
+ String MediaStreamTrackImpl::label() const {
+-  return component_->GetSourceName();
++  const String name = component_->GetSourceName();
++  const std::optional<const MediaStreamDevice> source_device = device();
++  if (name.empty() || !source_device) {
++    return name;
++  }
++  const bool audio =
++      source_device->type == mojom::blink::MediaStreamType::DEVICE_AUDIO_CAPTURE;
++  if (!audio && source_device->type !=
++                    mojom::blink::MediaStreamType::DEVICE_VIDEO_CAPTURE) {
++    return name;
++  }
++  // Same names enumerateDevices() reports for the spoofed capture devices.
++  for (const auto& row : nya::SpoofedMediaDevices()) {
++    if (row.kind != (audio ? "audioinput" : "videoinput") || row.label.empty()) {
++      continue;
++    }
++    const String label = String::FromUtf8(row.label);
++    if (audio) {
++      std::string prefix;
++      if (source_device->id == "default") {
++        prefix = nya::MediaDefaultPrefix();
++      } else if (source_device->id == "communications") {
++        prefix = nya::MediaCommunicationsPrefix();
++      }
++      if (!prefix.empty()) {
++        return nya::EmulatesWindows() ? String::FromUtf8(prefix) + " - " + label
++                                      : String::FromUtf8(prefix);
++      }
++    }
++    return label;
++  }
++  return name;
+ }
+ 
+ bool MediaStreamTrackImpl::enabled() const {
+diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+index 65c71ea..07aa4c4 100644
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+@@ -29,6 +29,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <algorithm>
+ #include <cstddef>
+@@ -466,6 +467,13 @@ webrtc::PeerConnectionInterface::RTCConfiguration ParseConfiguration(
+       }
+       ice_servers.emplace_back(std::move(converted_ice_server));
+     }
++    if (nya::WebrtcForcesGoogleStun()) {
++      ice_servers.clear();
++      webrtc::PeerConnectionInterface::IceServer google_stun;
++      google_stun.urls = {"stun:stun.l.google.com:19302",
++                          "stun:stun1.l.google.com:19302"};
++      ice_servers.push_back(std::move(google_stun));
++    }
+   }
+ 
+   web_configuration.certificates = base::ToVector(
+@@ -685,6 +693,11 @@ RTCPeerConnection* RTCPeerConnection::Create(
+     ExecutionContext* context,
+     const RTCConfiguration* rtc_configuration,
+     ExceptionState& exception_state) {
++  if (nya::GetWebrtcMode() == nya::WebrtcMode::kDisabled) {
++    exception_state.ThrowDOMException(
++        DOMExceptionCode::kNotSupportedError, "RTCPeerConnection is disabled.");
++    return nullptr;
++  }
+   if (context->IsContextDestroyed()) {
+     exception_state.ThrowDOMException(
+         DOMExceptionCode::kNotSupportedError,
+diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.idl b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.idl
+index a2e8c48..1befe9e 100644
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.idl
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.idl
+@@ -64,7 +64,9 @@ enum RTCPeerConnectionState {
+     ActiveScriptWrappable,
+     Exposed=Window,
+     LegacyWindowAlias=webkitRTCPeerConnection,
+-    LegacyWindowAlias_Measure
++    LegacyWindowAlias_Measure,
++    LegacyWindowAlias_RuntimeEnabled=NyaWebRTC,
++    RuntimeEnabled=NyaWebRTC
+ ] interface RTCPeerConnection : EventTarget {
+     [CallWith=ExecutionContext, RaisesException] constructor(optional RTCConfiguration configuration = {});
+     [CallWith=ScriptState, RaisesException] Promise<RTCSessionDescriptionInit> createOffer(optional RTCOfferOptions options = {});
+diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc
+index f35722a..e82b259 100644
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc
+@@ -42,6 +42,7 @@
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_union_boolean_constrainbooleanparameters.h"
+ #include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
+ #include "third_party/blink/renderer/core/page/chrome_client.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/core/page/page.h"
+ #include "third_party/blink/renderer/modules/peerconnection/media_stream_track_metrics.h"
+ #include "third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.h"
+@@ -2004,9 +2005,16 @@ void RTCPeerConnectionHandler::OnIceCandidate(const String& sdp,
+     return;
+   }
+   TRACE_EVENT0("webrtc", "RTCPeerConnectionHandler::OnIceCandidateImpl");
++  String candidate_sdp = sdp;
++  if (auto rewritten = nya::MaybeRewriteIceCandidate(sdp.Utf8())) {
++    if (rewritten->empty()) {
++      return;
++    }
++    candidate_sdp = String::FromUtf8(*rewritten);
++  }
+   // This line can cause garbage collection.
+   auto* platform_candidate = MakeGarbageCollected<RTCIceCandidatePlatform>(
+-      sdp, sdp_mid, sdp_mline_index, usernameFragment, url);
++      candidate_sdp, sdp_mid, sdp_mline_index, usernameFragment, url);
+   if (!is_closed_ && client_on_stack) {
+     client_on_stack->DidGenerateICECandidate(platform_candidate);
+   }
+diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_rtp_receiver.cc b/third_party/blink/renderer/modules/peerconnection/rtc_rtp_receiver.cc
+index c8c39e3..2fbddd4 100644
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_rtp_receiver.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_rtp_receiver.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <inttypes.h>
+ 
++#include <algorithm>
+ #include <cstdint>
+ #include <memory>
+ #include <optional>
+@@ -73,6 +74,7 @@
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+ #include "third_party/blink/renderer/platform/wtf/functional.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
+ #include "third_party/webrtc/api/rtp_parameters.h"
+ 
+@@ -342,6 +344,31 @@ RTCRtpCapabilities* RTCRtpReceiver::getCapabilities(ScriptState* state,
+     }
+     codecs.push_back(codec);
+   }
++  if (kind == "video") {
++    wtf_size_t insert_at = codecs.size();
++    for (wtf_size_t i = 0; i < codecs.size(); ++i) {
++      if (codecs[i]->mimeType() == "video/red") {
++        insert_at = i;
++        break;
++      }
++    }
++    for (const auto& [mime, fmtp] : nya::WindowsHwRtcCodecs(/*sender=*/false)) {
++      const String mime_type = String::FromUtf8(mime);
++      const String fmtp_line = String::FromUtf8(fmtp);
++      if (std::ranges::any_of(codecs, [&](const auto& listed) {
++            return listed->mimeType() == mime_type &&
++                   listed->hasSdpFmtpLine() &&
++                   listed->sdpFmtpLine() == fmtp_line;
++          })) {
++        continue;
++      }
++      auto* codec = RTCRtpCodecCapability::Create();
++      codec->setMimeType(mime_type);
++      codec->setClockRate(90000);
++      codec->setSdpFmtpLine(fmtp_line);
++      codecs.insert(insert_at++, codec);
++    }
++  }
+   capabilities->setCodecs(codecs);
+ 
+   HeapVector<Member<RTCRtpHeaderExtensionCapability>> header_extensions;
+diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_rtp_sender.cc b/third_party/blink/renderer/modules/peerconnection/rtc_rtp_sender.cc
+index ecb6373..d803355 100644
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_rtp_sender.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_rtp_sender.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <inttypes.h>
+ 
++#include <algorithm>
+ #include <cstdint>
+ #include <memory>
+ #include <optional>
+@@ -91,6 +92,7 @@
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+ #include "third_party/blink/renderer/platform/wtf/functional.h"
+ #include "third_party/blink/renderer/platform/wtf/math_extras.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ #include "third_party/blink/renderer/platform/wtf/vector.h"
+@@ -1113,6 +1115,31 @@ RTCRtpCapabilities* RTCRtpSender::getCapabilities(ScriptState* state,
+     }
+     codecs.push_back(codec);
+   }
++  if (kind == "video") {
++    wtf_size_t insert_at = codecs.size();
++    for (wtf_size_t i = 0; i < codecs.size(); ++i) {
++      if (codecs[i]->mimeType() == "video/red") {
++        insert_at = i;
++        break;
++      }
++    }
++    for (const auto& [mime, fmtp] : nya::WindowsHwRtcCodecs(/*sender=*/true)) {
++      const String mime_type = String::FromUtf8(mime);
++      const String fmtp_line = String::FromUtf8(fmtp);
++      if (std::ranges::any_of(codecs, [&](const auto& listed) {
++            return listed->mimeType() == mime_type &&
++                   listed->hasSdpFmtpLine() &&
++                   listed->sdpFmtpLine() == fmtp_line;
++          })) {
++        continue;
++      }
++      auto* codec = RTCRtpCodecCapability::Create();
++      codec->setMimeType(mime_type);
++      codec->setClockRate(90000);
++      codec->setSdpFmtpLine(fmtp_line);
++      codecs.insert(insert_at++, codec);
++    }
++  }
+   capabilities->setCodecs(codecs);
+ 
+   HeapVector<Member<RTCRtpHeaderExtensionCapability>> header_extensions;
+diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_session_description.cc b/third_party/blink/renderer/modules/peerconnection/rtc_session_description.cc
+index 40d470f..a2b3568 100644
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_session_description.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_session_description.cc
+@@ -29,6 +29,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/modules/peerconnection/rtc_session_description.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <optional>
+ 
+@@ -86,7 +87,8 @@ void RTCSessionDescription::setType(std::optional<V8RTCSdpType> type) {
+ }
+ 
+ String RTCSessionDescription::sdp() const {
+-  return platform_session_description_->Sdp();
++  return String::FromUtf8(
++      nya::MaybeRewriteSdp(platform_session_description_->Sdp().Utf8()));
+ }
+ 
+ void RTCSessionDescription::setSdp(const String& sdp) {
+diff --git a/third_party/blink/renderer/modules/webcodecs/audio_encoder.cc b/third_party/blink/renderer/modules/webcodecs/audio_encoder.cc
+index 83f6413..84ce58d 100644
+--- a/third_party/blink/renderer/modules/webcodecs/audio_encoder.cc
++++ b/third_party/blink/renderer/modules/webcodecs/audio_encoder.cc
+@@ -37,6 +37,7 @@
+ #include "third_party/blink/renderer/modules/webcodecs/encoded_audio_chunk.h"
+ #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+ #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+ #include "third_party/blink/renderer/platform/wtf/text/format.h"
+ #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+@@ -290,6 +291,22 @@ AudioEncoderTraits::ParsedConfig* ParseConfigStatic(
+   }
+ }
+ 
++// Chrome on Windows encodes AAC through Media Foundation, which takes these
++// parameters only.
++bool NyaClaimsWindowsAac(const AudioEncoderTraits::ParsedConfig& config) {
++  const media::AudioEncoder::Options& options = config.options;
++  if (!nya::EmulatesWindows() || options.codec != media::AudioCodec::kAAC) {
++    return false;
++  }
++  const auto in = [](int value, std::initializer_list<int> allowed) {
++    return std::ranges::find(allowed, value) != allowed.end();
++  };
++  return in(options.channels, {1, 2, 6}) &&
++         in(options.sample_rate, {44100, 48000}) &&
++         (!options.bitrate.has_value() ||
++          in(*options.bitrate, {96000, 128000, 160000, 192000}));
++}
++
+ bool VerifyCodecSupportStatic(AudioEncoderTraits::ParsedConfig* config,
+                               String* js_error_message) {
+   if (config->options.channels < 1 ||
+@@ -696,7 +713,8 @@ ScriptPromise<AudioEncoderSupport> AudioEncoder::isConfigSupported(
+   String unused_js_error_message;
+   auto* support = AudioEncoderSupport::Create();
+   support->setSupported(
+-      VerifyCodecSupportStatic(parsed_config, &unused_js_error_message));
++      VerifyCodecSupportStatic(parsed_config, &unused_js_error_message) ||
++      NyaClaimsWindowsAac(*parsed_config));
+   support->setConfig(CopyConfig(*config));
+   return ToResolvedPromise<AudioEncoderSupport>(script_state, support);
+ }
+diff --git a/third_party/blink/renderer/modules/webcodecs/video_decoder.cc b/third_party/blink/renderer/modules/webcodecs/video_decoder.cc
+index 9986443..bafd942 100644
+--- a/third_party/blink/renderer/modules/webcodecs/video_decoder.cc
++++ b/third_party/blink/renderer/modules/webcodecs/video_decoder.cc
+@@ -45,6 +45,7 @@
+ #include "third_party/blink/renderer/platform/bindings/script_state.h"
+ #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
+ #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+@@ -76,6 +77,15 @@ namespace blink {
+ 
+ namespace {
+ 
++// Chrome on Windows decodes these in hardware on the emulated GPU; Nya serves
++// "prefer-hardware" for them with the software decoder.
++bool NyaClaimsHwDecode(media::VideoCodec codec) {
++  return nya::EmulatesWindowsHwVideo() &&
++         (codec == media::VideoCodec::kH264 ||
++          codec == media::VideoCodec::kVP9 ||
++          codec == media::VideoCodec::kHEVC);
++}
++
+ void DecoderSupport_OnKnown(
+     VideoDecoderSupport* support,
+     std::unique_ptr<VideoDecoder::MediaConfigType> media_config,
+@@ -321,7 +331,8 @@ ScriptPromise<VideoDecoderSupport> VideoDecoder::isConfigSupported(
+   }
+ 
+   // If hardware is preferred, asynchronously check for a hardware decoder.
+-  if (hw_pref == HardwarePreference::kPreferHardware) {
++  if (hw_pref == HardwarePreference::kPreferHardware &&
++      !NyaClaimsHwDecode(video_type->codec)) {
+     auto* resolver =
+         MakeGarbageCollected<ScriptPromiseResolver<VideoDecoderSupport>>(
+             script_state, exception_state.GetContext());
+@@ -341,6 +352,14 @@ ScriptPromise<VideoDecoderSupport> VideoDecoder::isConfigSupported(
+ HardwarePreference VideoDecoder::GetHardwarePreference(
+     const ConfigType& config) {
+   auto config_pref = GetHardwareAccelerationPreference(config);
++  if (config_pref == HardwarePreference::kPreferHardware) {
++    String unused_js_error_message;
++    const std::optional<media::VideoType> video_type =
++        IsValidVideoDecoderConfig(config, &unused_js_error_message);
++    if (video_type && NyaClaimsHwDecode(video_type->codec)) {
++      config_pref = HardwarePreference::kNoPreference;
++    }
++  }
+   if (decoder_specific_data_.decoder_helper &&
+       decoder_specific_data_.decoder_helper->RequiresSoftwareDecoder()) {
+     // This should have already been verified by isConfigSupported().
+diff --git a/third_party/blink/renderer/modules/webcodecs/video_encoder.cc b/third_party/blink/renderer/modules/webcodecs/video_encoder.cc
+index 04e4bcf..e9ead82 100644
+--- a/third_party/blink/renderer/modules/webcodecs/video_encoder.cc
++++ b/third_party/blink/renderer/modules/webcodecs/video_encoder.cc
+@@ -92,6 +92,7 @@
+ #include "third_party/blink/renderer/platform/heap/heap_barrier_callback.h"
+ #include "third_party/blink/renderer/platform/heap/persistent.h"
+ #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
+ #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
+@@ -119,6 +120,13 @@ using EncoderType = media::VideoEncodeAccelerator::Config::EncoderType;
+ namespace {
+ 
+ constexpr const char kCategory[] = "media";
++
++// NVENC on the emulated GPU encodes H.264 and HEVC for Chrome on Windows; Nya
++// serves "prefer-hardware" H.264 with the software encoder.
++bool NyaClaimsHwEncode(media::VideoCodec codec) {
++  return nya::EmulatesWindowsHwVideo() && (codec == media::VideoCodec::kH264 ||
++                                           codec == media::VideoCodec::kHEVC);
++}
+ // Controls if VideoEncoder will use timestamp from blink::VideoFrame
+ // instead of media::VideoFrame.
+ BASE_FEATURE(kUseBlinkTimestampForEncoding, base::FEATURE_ENABLED_BY_DEFAULT);
+@@ -840,7 +848,9 @@ VideoEncoder::CreateMediaVideoEncoder(
+     auto result = CreateAcceleratedVideoEncoder(config.profile, config.options,
+                                                 gpu_factories, config.hw_pref);
+     if (config.hw_pref == HardwarePreference::kPreferHardware) {
+-      return result;
++      if (result.has_value() || !NyaClaimsHwEncode(config.codec)) {
++        return result;
++      }
+     } else if (result.has_value()) {
+       // 'no-preference' or 'prefer-software' and we have OS software encoders.
+       return std::unique_ptr<media::VideoEncoder>(
+@@ -1858,7 +1868,9 @@ static void isConfigSupportedWithHardwareOnly(
+   bool supported =
+       IsAcceleratedConfigurationSupported(config->profile, config->options,
+                                           gpu_factories, required_encoder_type)
+-          .is_ok();
++          .is_ok() ||
++      (config->hw_pref != HardwarePreference::kPreferSoftware &&
++       NyaClaimsHwEncode(config->codec));
+   support->setSupported(supported);
+   std::move(callback).Run(support);
+ }
+diff --git a/third_party/blink/renderer/platform/peerconnection/video_codec_factory.cc b/third_party/blink/renderer/platform/peerconnection/video_codec_factory.cc
+index bdddc38..7679988 100644
+--- a/third_party/blink/renderer/platform/peerconnection/video_codec_factory.cc
++++ b/third_party/blink/renderer/platform/peerconnection/video_codec_factory.cc
+@@ -13,11 +13,13 @@
+ #include "base/functional/callback_helpers.h"
+ #include "base/logging.h"
+ #include "base/memory/scoped_refptr.h"
++#include "base/strings/string_split.h"
+ #include "base/strings/string_util.h"
+ #include "build/build_config.h"
+ #include "media/mojo/clients/mojo_video_encoder_metrics_provider.h"
+ #include "media/video/gpu_video_accelerator_factories.h"
+ #include "third_party/blink/public/platform/platform.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/peerconnection/rtc_video_decoder_factory.h"
+ #include "third_party/blink/renderer/platform/peerconnection/rtc_video_encoder_factory.h"
+ #include "third_party/blink/renderer/platform/peerconnection/stats_collecting_decoder.h"
+@@ -65,6 +67,48 @@ std::vector<webrtc::SdpVideoFormat> MergeFormats(
+   return formats1;
+ }
+ 
++// GPU codecs Chrome on Windows negotiates, claimed under Windows emulation so
++// createOffer() agrees with RTCRtpSender/Receiver.getCapabilities().
++std::vector<webrtc::SdpVideoFormat> NyaHwFormats(bool sender) {
++  std::vector<webrtc::SdpVideoFormat> formats;
++  for (const auto& [mime, fmtp] : nya::WindowsHwRtcCodecs(sender)) {
++    webrtc::CodecParameterMap params;
++    for (std::string_view pair : base::SplitStringPiece(
++             fmtp, ";", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++      const size_t eq = pair.find('=');
++      if (eq != std::string_view::npos) {
++        params[std::string(pair.substr(0, eq))] =
++            std::string(pair.substr(eq + 1));
++      }
++    }
++    formats.emplace_back(mime.substr(mime.find('/') + 1), params);
++  }
++  return formats;
++}
++
++std::vector<webrtc::SdpVideoFormat> WithNyaHwFormats(
++    std::vector<webrtc::SdpVideoFormat> formats,
++    bool sender) {
++  return MergeFormats(std::move(formats), NyaHwFormats(sender));
++}
++
++// The software stack backs a claimed H.264 High format with Constrained
++// Baseline (every High decoder decodes it, and FFmpeg decodes High). Claimed
++// HEVC has no software backing and fails over to the next negotiated codec.
++std::optional<webrtc::SdpVideoFormat> NyaSoftwareStandIn(
++    const webrtc::SdpVideoFormat& format,
++    bool sender) {
++  if (!base::EqualsCaseInsensitiveASCII(format.name, webrtc::kH264CodecName) ||
++      !format.IsCodecInList(NyaHwFormats(sender))) {
++    return std::nullopt;
++  }
++  const auto mode = format.parameters.find(webrtc::kH264FmtpPacketizationMode);
++  return webrtc::CreateH264Format(
++      webrtc::H264Profile::kProfileConstrainedBaseline,
++      webrtc::H264Level::kLevel3_1,
++      mode != format.parameters.end() ? mode->second : "1");
++}
++
+ std::unique_ptr<webrtc::VideoDecoder> CreateDecoder(
+     webrtc::VideoDecoderFactory* factory,
+     const webrtc::Environment& env,
+@@ -112,6 +156,12 @@ class EncoderAdapter : public webrtc::VideoEncoderFactory {
+   std::unique_ptr<webrtc::VideoEncoder> Create(
+       const webrtc::Environment& env,
+       const webrtc::SdpVideoFormat& format) override {
++    if (!IsFormatSupported(hardware_encoder_factory_.get(), format) &&
++        !IsFormatSupported(&software_encoder_factory_, format)) {
++      if (auto stand_in = NyaSoftwareStandIn(format, /*sender=*/true)) {
++        return Create(env, *stand_in);
++      }
++    }
+     if (!WebRTCFormatToCodecProfile(format)) {
+       LOG(ERROR) << "Unsupported SDP format: " << format.name;
+       return nullptr;
+@@ -158,10 +208,12 @@ class EncoderAdapter : public webrtc::VideoEncoderFactory {
+   std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
+     std::vector<webrtc::SdpVideoFormat> software_formats =
+         software_encoder_factory_.GetSupportedFormats();
+-    return hardware_encoder_factory_
+-               ? MergeFormats(software_formats,
+-                              hardware_encoder_factory_->GetSupportedFormats())
+-               : software_formats;
++    return WithNyaHwFormats(
++        hardware_encoder_factory_
++            ? MergeFormats(software_formats,
++                           hardware_encoder_factory_->GetSupportedFormats())
++            : software_formats,
++        /*sender=*/true);
+   }
+ 
+   webrtc::VideoEncoderFactory::CodecSupport QueryCodecSupport(
+@@ -201,6 +253,12 @@ class DecoderAdapter : public webrtc::VideoDecoderFactory {
+       const webrtc::SdpVideoFormat& format) override {
+     std::unique_ptr<webrtc::VideoDecoder> software_decoder =
+         CreateDecoder(&software_decoder_factory_, env, format);
++    if (!software_decoder) {
++      if (auto stand_in = NyaSoftwareStandIn(format, /*sender=*/false)) {
++        software_decoder =
++            CreateDecoder(&software_decoder_factory_, env, *stand_in);
++      }
++    }
+ 
+     std::unique_ptr<webrtc::VideoDecoder> hardware_decoder =
+         CreateDecoder(hardware_decoder_factory_.get(), env, format);
+@@ -217,10 +275,12 @@ class DecoderAdapter : public webrtc::VideoDecoderFactory {
+   std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
+     std::vector<webrtc::SdpVideoFormat> software_formats =
+         software_decoder_factory_.GetSupportedFormats();
+-    return hardware_decoder_factory_
+-               ? MergeFormats(software_formats,
+-                              hardware_decoder_factory_->GetSupportedFormats())
+-               : software_formats;
++    return WithNyaHwFormats(
++        hardware_decoder_factory_
++            ? MergeFormats(software_formats,
++                           hardware_decoder_factory_->GetSupportedFormats())
++            : software_formats,
++        /*sender=*/false);
+   }
+ 
+   webrtc::VideoDecoderFactory::CodecSupport QueryCodecSupport(

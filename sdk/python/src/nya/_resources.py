@@ -56,8 +56,9 @@ class SessionsResource:
     def create(self, name: str, **fields: Any) -> Session:
         """Create a session. Fields use snake_case, e.g. ``proxy_id``, ``timezone``,
         ``chrome_language``, ``home_url``, ``idle_timeout_minutes``, ``gpu_profile``,
-        ``webrtc_mode``, ``font_profile``, ``hardware_concurrency`` (2/4/6/8/10/12/16/20/24/32),
-        ``device_memory`` (2/4/8/16/32), ``geo``, ``group_id``."""
+        ``webrtc_mode``, ``hardware_concurrency`` (2/4/6/8/10/12/16/20/24/32),
+        ``device_memory`` (2/4/8/16/32), ``geo``, ``group_id``, ``os`` (``linux``/``windows``),
+        ``windows_release`` (``win10``/``win11``)."""
         body = camelize({"name": name, **fields})
         return self._t.call("POST", "/sessions", json=body, parse=lambda d: self._session(d["session"]))
 

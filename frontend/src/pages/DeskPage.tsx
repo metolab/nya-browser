@@ -17,7 +17,14 @@ import DeskFloat from '../desk/DeskFloat';
 import DeskLauncher from '../desk/DeskLauncher';
 import DeskStage from '../desk/DeskStage';
 import DisplaySettings from '../desk/DisplaySettings';
-import { defaultDisplayPolicy, formatSize, resolveRemoteSize, type DisplayPolicy, type Size } from '../desk/display';
+import {
+  formatSize,
+  loadDisplayPolicy,
+  resolveRemoteSize,
+  saveDisplayPolicy,
+  type DisplayPolicy,
+  type Size,
+} from '../desk/display';
 import { formatDeskTitle, useDocumentTitle } from '../lib/title';
 import { openSessionDeskWindow, sessionDeskPath } from '../lib/sessionWindow';
 import { useSessionFiles } from '../lib/useSessionFiles';
@@ -62,7 +69,7 @@ export default function DeskPage() {
   const chooserToken = useRef('');
   const [notepadOpen, setNotepadOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
-  const [display, setDisplay] = useState<DisplayPolicy>(defaultDisplayPolicy);
+  const [display, setDisplay] = useState<DisplayPolicy>(loadDisplayPolicy);
   const [sizeTick, setSizeTick] = useState(0);
   const [pane, setPane] = useState<Size>({ w: 1280, h: 720 });
   const [tabTitle, setTabTitle] = useState('');
@@ -172,7 +179,7 @@ export default function DeskPage() {
       const created = await api.createWindow(session.id, { takeover: takeoverWindow || undefined });
       const windowId = created.window?.id;
       if (!windowId) throw new Error('窗口创建失败');
-      setDisplay(defaultDisplayPolicy());
+      setDisplay(loadDisplayPolicy());
       setSizeTick(0);
       setDisplayOpen(false);
       setActive({
@@ -397,6 +404,7 @@ export default function DeskPage() {
             pane={pane}
             onChange={(next) => {
               setDisplay(next);
+              saveDisplayPolicy(next);
               setSizeTick((n) => n + 1);
             }}
           />

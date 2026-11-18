@@ -52,8 +52,10 @@ function tlsObject(proxy: SingboxProxyInput, enabled: boolean) {
   if (sni) tls.server_name = sni;
   const alpn = alpnList(extra);
   if (alpn.length) tls.alpn = alpn;
+  // Without uTLS sing-box shows Go's ClientHello, which DPI singles out.
   const fingerprint =
-    extra.fingerprint || (extra.security === 'reality' ? 'chrome' : '');
+    extra.fingerprint ||
+    (extra.security === 'reality' || proxy.type === 'vless' || proxy.type === 'anytls' ? 'chrome' : '');
   if (fingerprint) {
     tls.utls = { enabled: true, fingerprint };
   }

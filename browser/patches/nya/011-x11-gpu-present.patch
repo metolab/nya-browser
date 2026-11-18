@@ -1,0 +1,1071 @@
+diff --git a/components/viz/service/display_embedder/skia_output_device_gl.cc b/components/viz/service/display_embedder/skia_output_device_gl.cc
+index 82835f1..7562cfc 100644
+--- a/components/viz/service/display_embedder/skia_output_device_gl.cc
++++ b/components/viz/service/display_embedder/skia_output_device_gl.cc
+@@ -6,9 +6,11 @@
+ 
+ #include <tuple>
+ #include <utility>
++#include <vector>
+ 
+ #include "base/debug/alias.h"
+ #include "base/functional/callback_helpers.h"
++#include "base/logging.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/notreached.h"
+ #include "base/time/time.h"
+@@ -18,6 +20,7 @@
+ #include "gpu/command_buffer/service/texture_manager.h"
+ #include "skia/ext/legacy_display_globals.h"
+ #include "third_party/skia/include/core/SkColorType.h"
++#include "third_party/skia/include/core/SkImageInfo.h"
+ #include "third_party/skia/include/core/SkSurface.h"
+ #include "third_party/skia/include/core/SkSurfaceProps.h"
+ #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
+@@ -200,8 +203,8 @@ bool SkiaOutputDeviceGL::Reshape(const ReshapeParams& params) {
+   }
+   SkSurfaceProps surface_props;
+ 
+-  GrGLFramebufferInfo framebuffer_info = {0};
+-  DCHECK_EQ(gl_surface_->GetBackingFramebufferObject(), 0u);
++  GrGLFramebufferInfo framebuffer_info = {};
++  framebuffer_info.fFBOID = gl_surface_->GetBackingFramebufferObject();
+ 
+   auto* gr_context = context_state_->gr_context();
+ 
+@@ -209,6 +212,8 @@ bool SkiaOutputDeviceGL::Reshape(const ReshapeParams& params) {
+       gr_context->defaultBackendFormat(color_type, GrRenderable::kYes);
+   DCHECK(backend_format.isValid()) << "color_type: " << color_type;
+   framebuffer_info.fFormat = GrBackendFormats::AsGLFormatEnum(backend_format);
++  if (framebuffer_info.fFBOID)
++    framebuffer_info.fFormat = GL_RGBA8;
+ 
+   auto render_target = GrBackendRenderTargets::MakeGL(
+       size.width(), size.height(), params.sample_count,
+@@ -255,6 +260,30 @@ void SkiaOutputDeviceGL::Present(const std::optional<gfx::Rect>& update_rect,
+     gl_surface_->SetVSyncEnabled(!multiple_surface_swaps);
+   }
+ 
++  // Ensure the compositor pbuffer is current for glReadPixels. Drawing
++  // already rebound it in BeginPaint; this is the readback side.
++  if (!context_state_->MakeCurrent(gl_surface_.get(), /*needs_gl=*/true)) {
++    LOG(ERROR) << "nya-present skia Present MakeCurrent failed";
++  }
++  if (GrDirectContext* gr = context_state_->gr_context()) {
++    gr->flushAndSubmit(GrSyncCpu::kYes);
++  }
++  if (sk_surface_) {
++    const SkImageInfo info = SkImageInfo::Make(
++        sk_surface_->width(), sk_surface_->height(), kBGRA_8888_SkColorType,
++        kPremul_SkAlphaType);
++    const size_t row_bytes = info.minRowBytes();
++    std::vector<uint8_t> cpu(info.computeMinByteSize());
++    const bool ok =
++        sk_surface_->readPixels(info, cpu.data(), row_bytes, 0, 0);
++    if (!ok) {
++      LOG(ERROR) << "nya-present skia readPixels failed size="
++                 << gfx::Size(info.width(), info.height()).ToString();
++    } else {
++      gl_surface_->SetPendingReadbackPixels(cpu);
++    }
++  }
++
+   StartSwapBuffers({});
+ 
+   gfx::Size surface_size =
+@@ -306,6 +335,19 @@ void SkiaOutputDeviceGL::DoFinishSwapBuffers(const gfx::Size& size,
+ 
+ SkSurface* SkiaOutputDeviceGL::BeginPaint(
+     std::vector<GrBackendSemaphore>* end_semaphores) {
++  // In-process GPU shares this GL context with the renderer. Renderer
++  // frames bind a different FBO/pbuffer; Skia then thinks the compositor
++  // target is still bound and the root pass misses the page (CDP still
++  // sees it on the renderer surface). Rebind and drop cached GL state.
++  if (!context_state_->MakeCurrent(gl_surface_.get(), /*needs_gl=*/true)) {
++    LOG(ERROR) << "nya-present BeginPaint MakeCurrent failed";
++    return nullptr;
++  }
++  context_state_->set_need_context_state_reset(true);
++  if (unsigned fbo = gl_surface_->GetBackingFramebufferObject())
++    glBindFramebufferEXT(GL_FRAMEBUFFER, fbo);
++  if (GrDirectContext* gr = context_state_->gr_context())
++    gr->resetContext();
+   DCHECK(sk_surface_);
+   return sk_surface_.get();
+ }
+diff --git a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
+index 635c2fa..92a571a 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
++++ b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
+@@ -18,6 +18,7 @@
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback.h"
++#include "base/logging.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/metrics/histogram_macros.h"
+@@ -2270,6 +2271,16 @@ void SkiaOutputSurfaceImplOnGpu::SwapBuffersInternal(
+   DCHECK(output_device_);
+ 
+   if (context_is_lost_) {
++    // Do not leave DisplayScheduler swap-throttled: max_pending_swaps is 1
++    // for the EGL-readback surface, so a lost context that skips the ack
++    // freezes the X pixmap forever (CDP screenshots still work).
++    LOG(ERROR) << "nya-present compositor-context-lost";
++    if (frame) {
++      gpu::SwapBuffersCompleteParams params;
++      params.swap_response.result = gfx::SwapResult::SWAP_FAILED;
++      DidSwapBuffersCompleteInternal(std::move(params), size_,
++                                     gfx::GpuFenceHandle());
++    }
+     return;
+   }
+ 
+diff --git a/gpu/command_buffer/service/gl_context_virtual.cc b/gpu/command_buffer/service/gl_context_virtual.cc
+index ed35d03..d56da3b 100644
+--- a/gpu/command_buffer/service/gl_context_virtual.cc
++++ b/gpu/command_buffer/service/gl_context_virtual.cc
+@@ -51,12 +51,13 @@ void GLContextVirtual::ReleaseCurrent(gl::GLSurface* surface) {
+ }
+ 
+ bool GLContextVirtual::IsCurrent(gl::GLSurface* surface) {
+-  // If it's a real surface it needs to be current.
+-  if (surface &&
+-      !surface->IsOffscreen())
++  // Offscreen pbuffers still have a distinct EGL surface. Skipping the
++  // surface check lets WebGL keep a different pbuffer current while the
++  // compositor believes it is current — SwapBuffers then stops after
++  // ChatGPT/WebGL, and the X pixmap freezes.
++  if (surface)
+     return shared_context_->IsCurrent(surface);
+ 
+-  // Otherwise, only insure the context itself is current.
+   return shared_context_->IsCurrent(nullptr);
+ }
+ 
+diff --git a/ui/base/x/x11_gl_egl_utility.cc b/ui/base/x/x11_gl_egl_utility.cc
+index 6c46b15..d059ec6 100644
+--- a/ui/base/x/x11_gl_egl_utility.cc
++++ b/ui/base/x/x11_gl_egl_utility.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ 
++#include "base/command_line.h"
+ #include "ui/base/x/x11_util.h"
+ #include "ui/gfx/x/visual_manager.h"
+ #include "ui/gl/gl_surface_egl.h"
+@@ -44,17 +45,32 @@ void GetPlatformExtraDisplayAttribs(EGLenum platform_type,
+                                     std::vector<EGLAttrib>* attributes) {
+   // ANGLE_NULL and SwiftShader backends don't use the visual,
+   // and may run without X11 where we can't get it anyway.
+-  if ((platform_type != EGL_PLATFORM_ANGLE_TYPE_NULL_ANGLE) &&
+-      !std::ranges::contains(
++  if ((platform_type == EGL_PLATFORM_ANGLE_TYPE_NULL_ANGLE) ||
++      std::ranges::contains(
+           *attributes, EGL_PLATFORM_ANGLE_DEVICE_TYPE_SWIFTSHADER_ANGLE)) {
+-    x11::VisualId visual_id;
+-    x11::Connection::Get()->GetOrCreateVisualManager().ChooseVisualForWindow(
+-        true, &visual_id, nullptr, nullptr, nullptr);
+-    attributes->push_back(EGL_X11_VISUAL_ID_ANGLE);
+-    attributes->push_back(static_cast<EGLAttrib>(visual_id));
+-    attributes->push_back(EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE);
+-    attributes->push_back(EGL_PLATFORM_X11_EXT);
++    return;
++  }
++
++  // Xvfb present is EGL pbuffer + PutImage. Binding ANGLE/NVIDIA to
++  // EGL_PLATFORM_X11 makes the GPU thread talk Xlib on the UI xcb
++  // connection. ChatGPT/WebGL then deadlocks present: viz keeps
++  // running (CDP screenshots work), the X pixmap freezes, VNC reconnect
++  // cannot recover.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "nya-x11-multi-display")) {
++    // No EGL_PLATFORM_X11 (binds NVIDIA to the UI xcb connection) and no
++    // EGL_PLATFORM_DEVICE (no pbuffer configs on Xvfb). ANGLE uses the
++    // default native platform with EGL_DEFAULT_DISPLAY.
++    return;
+   }
++
++  x11::VisualId visual_id;
++  x11::Connection::Get()->GetOrCreateVisualManager().ChooseVisualForWindow(
++      true, &visual_id, nullptr, nullptr, nullptr);
++  attributes->push_back(EGL_X11_VISUAL_ID_ANGLE);
++  attributes->push_back(static_cast<EGLAttrib>(visual_id));
++  attributes->push_back(EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE);
++  attributes->push_back(EGL_PLATFORM_X11_EXT);
+ }
+ 
+ void ChoosePlatformCustomAlphaAndBufferSize(EGLint* alpha_size,
+diff --git a/ui/base/x/x11_software_bitmap_presenter.cc b/ui/base/x/x11_software_bitmap_presenter.cc
+index ad971e5..d74d3c5 100644
+--- a/ui/base/x/x11_software_bitmap_presenter.cc
++++ b/ui/base/x/x11_software_bitmap_presenter.cc
+@@ -132,7 +132,8 @@ X11SoftwareBitmapPresenter::X11SoftwareBitmapPresenter(
+     x11::Connection& connection,
+     gfx::AcceleratedWidget widget,
+     bool enable_multibuffering)
+-    : widget_(static_cast<x11::Window>(widget)),
++    : widget_(static_cast<x11::Window>(
++          x11::Connection::WidgetXid(static_cast<uint32_t>(widget)))),
+       connection_(connection),
+       enable_multibuffering_(enable_multibuffering) {
+   DCHECK_NE(widget_, x11::Window::None);
+@@ -155,7 +156,8 @@ X11SoftwareBitmapPresenter::X11SoftwareBitmapPresenter(
+ 
+   // TODO(thomasanderson): Avoid going through the X11 server to plumb this
+   // property in.
+-  connection_->GetPropertyAs(widget_, x11::GetAtom("CHROMIUM_COMPOSITE_WINDOW"),
++  connection_->GetPropertyAs(widget_,
++                             connection_->GetAtom("CHROMIUM_COMPOSITE_WINDOW"),
+                              &composite_);
+ }
+ 
+@@ -240,9 +242,9 @@ void X11SoftwareBitmapPresenter::EndPaint(const gfx::Rect& damage_rect) {
+     };
+     connection_->shm().PutImage(put_image_request);
+     needs_swap_ = true;
+-    // Flush now to ensure the X server gets the request as early as
+-    // possible to reduce frame-to-frame latency.
+     connection_->Flush();
++    connection_->ReadResponses();
++    connection_->DispatchAll();
+     return;
+   }
+   if (surface_) {
+@@ -256,20 +258,18 @@ void X11SoftwareBitmapPresenter::EndPaint(const gfx::Rect& damage_rect) {
+   if (composite_ && CompositeBitmap(&connection_.get(), widget_, rect.x(),
+                                     rect.y(), rect.width(), rect.height(),
+                                     depth_, gc_, skia_pixmap.addr())) {
+-    // Flush now to ensure the X server gets the request as early as
+-    // possible to reduce frame-to-frame latency.
+-
+     connection_->Flush();
++    connection_->ReadResponses();
++    connection_->DispatchAll();
+     return;
+   }
+ 
+-  auto* connection = x11::Connection::Get();
+-  DrawPixmap(connection, visual_, widget_, gc_, skia_pixmap, rect.x(), rect.y(),
+-             rect.x(), rect.y(), rect.width(), rect.height());
++  DrawPixmap(&connection_.get(), visual_, widget_, gc_, skia_pixmap, rect.x(),
++             rect.y(), rect.x(), rect.y(), rect.width(), rect.height());
+ 
+-  // Flush now to ensure the X server gets the request as early as
+-  // possible to reduce frame-to-frame latency.
+   connection_->Flush();
++  connection_->ReadResponses();
++  connection_->DispatchAll();
+ }
+ 
+ void X11SoftwareBitmapPresenter::OnSwapBuffers(
+diff --git a/ui/gl/gl_surface.cc b/ui/gl/gl_surface.cc
+index 3be1120..87b72e6 100644
+--- a/ui/gl/gl_surface.cc
++++ b/ui/gl/gl_surface.cc
+@@ -57,6 +57,8 @@ unsigned int GLSurface::GetBackingFramebufferObject() {
+   return 0;
+ }
+ 
++void GLSurface::SetPendingReadbackPixels(base::span<const uint8_t> pixels) {}
++
+ void GLSurface::SwapBuffersAsync(SwapCompletionCallback completion_callback,
+                                  PresentationCallback presentation_callback,
+                                  gfx::FrameData data) {
+diff --git a/ui/gl/gl_surface.h b/ui/gl/gl_surface.h
+index e468f42..5b56d65 100644
+--- a/ui/gl/gl_surface.h
++++ b/ui/gl/gl_surface.h
+@@ -5,6 +5,7 @@
+ #ifndef UI_GL_GL_SURFACE_H_
+ #define UI_GL_GL_SURFACE_H_
+ 
++#include "base/containers/span.h"
+ #include "base/functional/callback.h"
+ #include "base/memory/ref_counted.h"
+ #include "base/memory/weak_ptr.h"
+@@ -108,6 +109,9 @@ class GL_EXPORT GLSurface : public base::RefCounted<GLSurface> {
+   // FBO. Otherwise returns 0.
+   virtual unsigned int GetBackingFramebufferObject();
+ 
++  // Optional CPU pixels for the next SwapBuffers (EGL readback present).
++  virtual void SetPendingReadbackPixels(base::span<const uint8_t> pixels);
++
+   // The SwapCompletionCallback is used to receive notification about the
+   // completion of the swap operation from |SwapBuffersAsync|,
+   // |PostSubBufferAsync|, |CommitOverlayPlanesAsync|, etc. If a null gpu fence
+diff --git a/ui/gl/gl_surface_egl_x11.cc b/ui/gl/gl_surface_egl_x11.cc
+index 3d0328d..8cd9d5f 100644
+--- a/ui/gl/gl_surface_egl_x11.cc
++++ b/ui/gl/gl_surface_egl_x11.cc
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <utility>
+ 
++#include "base/check.h"
+ #include "ui/base/x/x11_util.h"
+ #include "ui/base/x/x11_xrandr_interval_only_vsync_provider.h"
+ #include "ui/gfx/frame_data.h"
+@@ -19,13 +20,17 @@ namespace gl {
+ 
+ NativeViewGLSurfaceEGLX11::NativeViewGLSurfaceEGLX11(GLDisplayEGL* display,
+                                                      x11::Window window)
+-    : NativeViewGLSurfaceEGL(display, static_cast<uint32_t>(window), nullptr) {}
++    : NativeViewGLSurfaceEGL(
++          display,
++          x11::Connection::WidgetXid(static_cast<uint32_t>(window)),
++          nullptr),
++      encoded_widget_(static_cast<uint32_t>(window)) {}
+ 
+ bool NativeViewGLSurfaceEGLX11::Initialize(GLSurfaceFormat format) {
+   if (!NativeViewGLSurfaceEGL::Initialize(format))
+     return false;
+ 
+-  auto* connection = x11::Connection::Get();
++  auto* connection = GetXNativeConnection();
+   // Query all child windows and store them. ANGLE creates a child window when
+   // eglCreateWindowSurface is called on X11 and expose events from this window
+   // need to be received by this class.  Since ANGLE is using a separate
+@@ -47,7 +52,7 @@ bool NativeViewGLSurfaceEGLX11::Initialize(GLSurfaceFormat format) {
+ void NativeViewGLSurfaceEGLX11::Destroy() {
+   NativeViewGLSurfaceEGL::Destroy();
+   if (dispatcher_set_)
+-    x11::Connection::Get()->RemoveEventObserver(this);
++    GetXNativeConnection()->RemoveEventObserver(this);
+ }
+ 
+ gfx::SwapResult NativeViewGLSurfaceEGLX11::SwapBuffers(
+@@ -86,7 +91,9 @@ NativeViewGLSurfaceEGLX11::~NativeViewGLSurfaceEGLX11() {
+ }
+ 
+ x11::Connection* NativeViewGLSurfaceEGLX11::GetXNativeConnection() const {
+-  return x11::Connection::Get();
++  auto* conn = x11::Connection::ForWidget(encoded_widget_);
++  CHECK(conn) << "No X connection for encoded widget " << encoded_widget_;
++  return conn;
+ }
+ 
+ std::unique_ptr<gfx::VSyncProvider>
+@@ -105,9 +112,9 @@ void NativeViewGLSurfaceEGLX11::OnEvent(const x11::Event& x11_event) {
+   auto expose_copy = *expose;
+   auto window = static_cast<x11::Window>(window_);
+   expose_copy.window = window;
+-  x11::Connection::Get()->SendEvent(expose_copy, window,
+-                                    x11::EventMask::Exposure);
+-  x11::Connection::Get()->Flush();
++  auto* connection = GetXNativeConnection();
++  connection->SendEvent(expose_copy, window, x11::EventMask::Exposure);
++  connection->Flush();
+ }
+ 
+ }  // namespace gl
+diff --git a/ui/gl/gl_surface_egl_x11.h b/ui/gl/gl_surface_egl_x11.h
+index 0325e86..1830fe3 100644
+--- a/ui/gl/gl_surface_egl_x11.h
++++ b/ui/gl/gl_surface_egl_x11.h
+@@ -44,6 +44,8 @@ class GL_EXPORT NativeViewGLSurfaceEGLX11 : public NativeViewGLSurfaceEGL,
+ 
+   std::vector<x11::Window> children_;
+ 
++  uint32_t encoded_widget_ = 0;
++
+   // Indicates if the dispatcher has been set.
+   bool dispatcher_set_ = false;
+ 
+diff --git a/ui/ozone/common/gl_surface_egl_readback.cc b/ui/ozone/common/gl_surface_egl_readback.cc
+index c8d661c..b22874e 100644
+--- a/ui/ozone/common/gl_surface_egl_readback.cc
++++ b/ui/ozone/common/gl_surface_egl_readback.cc
+@@ -6,10 +6,14 @@
+ 
+ #include <utility>
+ 
++#include <cstring>
++
+ #include "base/compiler_specific.h"
+ #include "base/functional/bind.h"
++#include "base/logging.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "ui/gl/gl_bindings.h"
++#include "ui/gl/gl_context.h"
+ #include "ui/gl/gl_implementation.h"
+ #include "ui/ozone/common/egl_util.h"
+ 
+@@ -45,6 +49,13 @@ bool GLSurfaceEglReadback::Resize(const gfx::Size& size,
+   const size_t buffer_size = size.width() * size.height() * kBytesPerPixelBGRA;
+   pixels_ = base::HeapArray<uint8_t>::Uninit(buffer_size);
+ 
++  // Named FBO so Skia/glReadPixels do not depend on which EGL pbuffer is
++  // current. FBO 0 is per-surface; after ChatGPT/WebGL the compositor pbuffer
++  // is empty while CopyOutput still sees the page on another pbuffer.
++  // Resize can run without a current context; create the FBO on first use.
++  if (gl::GLContext::GetCurrent() && !EnsureReadbackFbo(size))
++    return false;
++
+   return true;
+ }
+ 
+@@ -53,8 +64,21 @@ gfx::SwapResult GLSurfaceEglReadback::SwapBuffers(PresentationCallback callback,
+   gfx::SwapResult swap_result = gfx::SwapResult::SWAP_FAILED;
+   gfx::PresentationFeedback feedback;
+ 
++  // Bind this pbuffer if GLSurface TLS says we are not current. Do not
++  // always MakeCurrent: that path left glReadPixels returning white.
++  gl::GLContext* context = gl::GLContext::GetCurrent();
++  if (context && !IsCurrent() && !context->MakeCurrent(this)) {
++    LOG(ERROR) << "nya-present swap MakeCurrent failed size="
++               << GetSize().ToString();
++    task_runner_->PostTask(FROM_HERE,
++                           base::BindOnce(std::move(callback), feedback));
++    return swap_result;
++  }
++
+   if (!pixels_.empty()) {
+-    ReadPixels(pixels_.as_span());
++    if (!use_pending_pixels_)
++      ReadPixels(pixels_.as_span());
++    use_pending_pixels_ = false;
+     if (UNSAFE_TODO(HandlePixels(pixels_.as_span().data()))) {
+       // Swap is successful, so return SWAP_ACK and provide the current time
+       // with presentation feedback.
+@@ -62,6 +86,8 @@ gfx::SwapResult GLSurfaceEglReadback::SwapBuffers(PresentationCallback callback,
+       feedback.timestamp = base::TimeTicks::Now();
+     }
+   } else {
++    LOG(ERROR) << "nya-present swap empty pixels size="
++               << GetSize().ToString();
+     swap_result = gfx::SwapResult::SWAP_ACK;
+     feedback.timestamp = base::TimeTicks::Now();
+   }
+@@ -75,6 +101,89 @@ gfx::SurfaceOrigin GLSurfaceEglReadback::GetOrigin() const {
+   return gfx::SurfaceOrigin::kTopLeft;
+ }
+ 
++unsigned int GLSurfaceEglReadback::GetBackingFramebufferObject() {
++  EnsureReadbackFbo(GetSize());
++  return readback_fbo_;
++}
++
++void GLSurfaceEglReadback::SetPendingReadbackPixels(
++    base::span<const uint8_t> pixels) {
++  if (pixels_.empty() || pixels.size() != pixels_.size()) {
++    LOG(ERROR) << "nya-present pending-pixels size mismatch have="
++               << pixels_.size() << " got=" << pixels.size();
++    use_pending_pixels_ = false;
++    return;
++  }
++  memcpy(pixels_.data(), pixels.data(), pixels.size());
++  use_pending_pixels_ = true;
++}
++
++void GLSurfaceEglReadback::Destroy() {
++  DestroyReadbackFbo();
++  PbufferGLSurfaceEGL::Destroy();
++}
++
++void GLSurfaceEglReadback::DestroyReadbackFbo() {
++  if (!readback_fbo_ && !readback_texture_)
++    return;
++  if (gl::GLContext::GetCurrent()) {
++    if (readback_fbo_)
++      glDeleteFramebuffersEXT(1, &readback_fbo_);
++    if (readback_texture_)
++      glDeleteTextures(1, &readback_texture_);
++  }
++  readback_fbo_ = 0;
++  readback_texture_ = 0;
++  readback_fbo_size_ = gfx::Size();
++}
++
++bool GLSurfaceEglReadback::EnsureReadbackFbo(const gfx::Size& size) {
++  if (readback_fbo_ && readback_fbo_size_ == size)
++    return true;
++  DestroyReadbackFbo();
++  if (size.IsEmpty())
++    return true;
++  if (!gl::GLContext::GetCurrent()) {
++    LOG(ERROR) << "nya-present readback-fbo without current GL context";
++    return false;
++  }
++
++  GLuint texture = 0;
++  GLuint fbo = 0;
++  glGenTextures(1, &texture);
++  glBindTexture(GL_TEXTURE_2D, texture);
++  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size.width(), size.height(), 0,
++               GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
++
++  glGenFramebuffersEXT(1, &fbo);
++  GLint prev_fbo = 0;
++  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
++  glBindFramebufferEXT(GL_FRAMEBUFFER, fbo);
++  glFramebufferTexture2DEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
++                            texture, 0);
++  const GLenum status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER);
++  glBindFramebufferEXT(GL_FRAMEBUFFER, prev_fbo);
++  glBindTexture(GL_TEXTURE_2D, 0);
++  if (status != GL_FRAMEBUFFER_COMPLETE) {
++    LOG(ERROR) << "nya-present readback-fbo incomplete status=" << status
++               << " size=" << size.ToString();
++    glDeleteFramebuffersEXT(1, &fbo);
++    glDeleteTextures(1, &texture);
++    return false;
++  }
++
++  readback_texture_ = texture;
++  readback_fbo_ = fbo;
++  readback_fbo_size_ = size;
++  LOG(ERROR) << "nya-present readback-fbo id=" << readback_fbo_
++             << " tex=" << readback_texture_ << " size=" << size.ToString();
++  return true;
++}
++
+ GLSurfaceEglReadback::~GLSurfaceEglReadback() {
+   Destroy();
+ }
+@@ -85,17 +194,19 @@ bool GLSurfaceEglReadback::HandlePixels(uint8_t* pixels) {
+ 
+ void GLSurfaceEglReadback::ReadPixels(base::span<uint8_t> buffer) {
+   const gfx::Size size = GetSize();
+-  GLint read_fbo = 0;
++  GLint prev_read_fbo = 0;
+   GLint pixel_pack_buffer = 0;
+-  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
++  GLint prev_read_buffer = 0;
++  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
+   glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pixel_pack_buffer);
++  glGetIntegerv(GL_READ_BUFFER, &prev_read_buffer);
+ 
+-  // Make sure pixels are read from fbo 0.
+-  if (read_fbo)
+-    glBindFramebufferEXT(GL_READ_FRAMEBUFFER, 0);
++  EnsureReadbackFbo(size);
++  const GLuint target_fbo = readback_fbo_;
++  glBindFramebufferEXT(GL_READ_FRAMEBUFFER, target_fbo);
++  if (target_fbo)
++    glReadBuffer(GL_COLOR_ATTACHMENT0);
+ 
+-  // Make sure pixels are stored into |pixels_| instead of buffer binding to
+-  // GL_PIXEL_PACK_BUFFER.
+   if (pixel_pack_buffer)
+     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+ 
+@@ -103,9 +214,14 @@ void GLSurfaceEglReadback::ReadPixels(base::span<uint8_t> buffer) {
+            base::checked_cast<size_t>(size.height()));
+   glReadPixels(0, 0, size.width(), size.height(), GL_BGRA_EXT, GL_UNSIGNED_BYTE,
+                buffer.data());
++  const GLenum err = glGetError();
++  if (err != GL_NO_ERROR) {
++    LOG(ERROR) << "nya-present glReadPixels err=" << static_cast<int>(err)
++               << " fbo=" << target_fbo << " size=" << size.ToString();
++  }
+ 
+-  if (read_fbo)
+-    glBindFramebufferEXT(GL_READ_FRAMEBUFFER, read_fbo);
++  glBindFramebufferEXT(GL_READ_FRAMEBUFFER, prev_read_fbo);
++  glReadBuffer(static_cast<GLenum>(prev_read_buffer));
+   if (pixel_pack_buffer)
+     glBindBuffer(GL_PIXEL_PACK_BUFFER, pixel_pack_buffer);
+ }
+diff --git a/ui/ozone/common/gl_surface_egl_readback.h b/ui/ozone/common/gl_surface_egl_readback.h
+index 46c0d66..d00acf9 100644
+--- a/ui/ozone/common/gl_surface_egl_readback.h
++++ b/ui/ozone/common/gl_surface_egl_readback.h
+@@ -8,6 +8,7 @@
+ #include "base/containers/heap_array.h"
+ #include "base/containers/span.h"
+ #include "base/memory/scoped_refptr.h"
++#include "ui/gfx/geometry/size.h"
+ #include "ui/gfx/native_ui_types.h"
+ #include "ui/gl/gl_surface_egl.h"
+ 
+@@ -35,6 +36,9 @@ class GLSurfaceEglReadback : public gl::PbufferGLSurfaceEGL {
+   gfx::SwapResult SwapBuffers(PresentationCallback callback,
+                               gfx::FrameData data) override;
+   gfx::SurfaceOrigin GetOrigin() const override;
++  unsigned int GetBackingFramebufferObject() override;
++  void Destroy() override;
++  void SetPendingReadbackPixels(base::span<const uint8_t> pixels) override;
+ 
+   // TODO(kylechar): Implement SupportsPostSubBuffer() and PostSubBuffer().
+ 
+@@ -52,8 +56,15 @@ class GLSurfaceEglReadback : public gl::PbufferGLSurfaceEGL {
+   void ReadPixels(base::span<uint8_t> buffer);
+ 
+  private:
++  void DestroyReadbackFbo();
++  bool EnsureReadbackFbo(const gfx::Size& size);
++
+   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+   base::HeapArray<uint8_t> pixels_;
++  unsigned int readback_fbo_ = 0;
++  unsigned int readback_texture_ = 0;
++  gfx::Size readback_fbo_size_;
++  bool use_pending_pixels_ = false;
+ };
+ 
+ }  // namespace ui
+diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
+index 493c44f..7b37532 100644
+--- a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
++++ b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.cc
+@@ -4,11 +4,27 @@
+ 
+ #include "ui/ozone/platform/x11/gl_surface_egl_readback_x11.h"
+ 
++#include <algorithm>
++#include <map>
++#include <memory>
++#include <set>
++#include <utility>
++#include <vector>
++
++#include "base/check.h"
++#include "base/functional/bind.h"
+ #include "base/logging.h"
++#include "base/no_destructor.h"
++#include "base/synchronization/lock.h"
++#include "base/task/single_thread_task_runner.h"
++#include "base/time/time.h"
+ #include "third_party/skia/include/core/SkImageInfo.h"
+ #include "third_party/skia/include/core/SkPixmap.h"
+ #include "ui/base/x/x11_util.h"
++#include "ui/gfx/geometry/size.h"
++#include "ui/gfx/x/connection.h"
+ #include "ui/gfx/x/xproto.h"
++#include "ui/ozone/platform/x11/x11_readback_present_cache.h"
+ 
+ namespace ui {
+ 
+@@ -16,51 +32,156 @@ namespace {
+ 
+ constexpr x11::GraphicsContext kNoGC = x11::GraphicsContext{};
+ 
++struct PendingFrame {
++  x11::Window window = x11::Window::None;
++  x11::GraphicsContext gc{};
++  x11::VisualId visual{};
++  gfx::Size size;
++  std::unique_ptr<std::vector<uint8_t>> buffer;
++};
++
++struct PresentQueue {
++  base::Lock lock;
++  std::map<gfx::AcceleratedWidget, PendingFrame> latest;
++  std::set<gfx::AcceleratedWidget> queued;
++};
++
++PresentQueue& GetPresentQueue() {
++  static base::NoDestructor<PresentQueue> queue;
++  return *queue;
+ }
+ 
++uint32_t CenterBgr(const std::vector<uint8_t>& buffer, const gfx::Size& size) {
++  if (size.width() <= 0 || size.height() <= 0 || buffer.size() < 4)
++    return 0;
++  const size_t stride = static_cast<size_t>(size.width()) * 4;
++  const size_t off = static_cast<size_t>(size.height() / 2) * stride +
++                     static_cast<size_t>(size.width() / 2) * 4;
++  if (off + 2 >= buffer.size())
++    return 0;
++  return buffer[off] | (buffer[off + 1] << 8) | (buffer[off + 2] << 16);
++}
++
++void PresentOnUiThread(gfx::AcceleratedWidget widget,
++                       x11::Window window,
++                       x11::GraphicsContext gc,
++                       x11::VisualId visual,
++                       gfx::Size size,
++                       std::unique_ptr<std::vector<uint8_t>> buffer) {
++  if (!X11ReadbackPresentCache::Contains(widget)) {
++    LOG(ERROR) << "nya-present drop: no readback cache widget="
++               << static_cast<uint32_t>(widget);
++    return;
++  }
++  auto* conn = x11::Connection::ForWidget(static_cast<uint32_t>(widget));
++  if (!conn) {
++    LOG(ERROR) << "nya-present drop: no X connection widget="
++               << static_cast<uint32_t>(widget);
++    return;
++  }
++  SkImageInfo image_info =
++      SkImageInfo::Make(size.width(), size.height(), kBGRA_8888_SkColorType,
++                        kPremul_SkAlphaType);
++  SkPixmap pixmap(image_info, buffer->data(), image_info.minRowBytes());
++  DrawPixmap(conn, visual, window, gc, pixmap, 0, 0, 0, 0, size.width(),
++             size.height());
++  const uint32_t cx = CenterBgr(*buffer, size);
++  static int present_count = 0;
++  static uint32_t last_cx = 0;
++  static base::TimeTicks last_log;
++  ++present_count;
++  const base::TimeTicks now = base::TimeTicks::Now();
++  const bool changed = cx != last_cx;
++  const bool heartbeat =
++      last_log.is_null() || (now - last_log >= base::Seconds(10));
++  if (changed || heartbeat) {
++    LOG(ERROR) << "nya-present n=" << present_count
++               << " widget=" << static_cast<uint32_t>(widget)
++               << " window=" << static_cast<uint32_t>(window)
++               << " visual=" << static_cast<uint32_t>(visual)
++               << " size=" << size.ToString() << " buf_c=" << cx
++               << " changed=" << (changed ? 1 : 0);
++    last_log = now;
++    last_cx = cx;
++  }
++}
++
++void DrainPresent(gfx::AcceleratedWidget widget) {
++  auto& queue = GetPresentQueue();
++  PendingFrame frame;
++  {
++    base::AutoLock lock(queue.lock);
++    auto it = queue.latest.find(widget);
++    if (it == queue.latest.end() || !it->second.buffer) {
++      queue.queued.erase(widget);
++      return;
++    }
++    frame = std::move(it->second);
++    queue.latest.erase(it);
++  }
++  PresentOnUiThread(widget, frame.window, frame.gc, frame.visual, frame.size,
++                    std::move(frame.buffer));
++  {
++    base::AutoLock lock(queue.lock);
++    if (queue.latest.contains(widget) && queue.latest[widget].buffer) {
++      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE, base::BindOnce(&DrainPresent, widget));
++      return;
++    }
++    queue.queued.erase(widget);
++  }
++}
++
++}  // namespace
++
+ GLSurfaceEglReadbackX11::GLSurfaceEglReadbackX11(gl::GLDisplayEGL* display,
+                                                  gfx::AcceleratedWidget window)
+     : GLSurfaceEglReadback(display),
+-      window_(static_cast<x11::Window>(window)),
+-      connection_(x11::Connection::Get()) {}
++      widget_(window),
++      window_(static_cast<x11::Window>(
++          x11::Connection::WidgetXid(static_cast<uint32_t>(window)))) {}
+ 
+ bool GLSurfaceEglReadbackX11::Initialize(gl::GLSurfaceFormat format) {
+-  if (!GLSurfaceEglReadback::Initialize(format))
++  if (window_graphics_context_ == kNoGC &&
++      !X11ReadbackPresentCache::TryClaimEglView(widget_)) {
++    LOG(ERROR) << "Refusing second EGL readback view for widget "
++               << static_cast<uint32_t>(widget_);
+     return false;
++  }
+ 
+-  // We don't need to reinitialize |window_graphics_context_|.
+-  if (window_graphics_context_ != kNoGC)
+-    return true;
+-
+-  window_graphics_context_ = connection_->GenerateId<x11::GraphicsContext>();
+-  auto gc_future = connection_->CreateGC({window_graphics_context_, window_});
+-
+-  if (auto attributes = connection_->GetWindowAttributes({window_}).Sync()) {
+-    visual_ = attributes->visual;
+-  } else {
+-    DLOG(ERROR) << "Failed to get attributes for window "
+-                << static_cast<uint32_t>(window_);
+-    Destroy();
++  if (!GLSurfaceEglReadback::Initialize(format)) {
++    X11ReadbackPresentCache::ReleaseEglView(widget_);
+     return false;
+   }
+ 
+-  if (gc_future.Sync().error) {
+-    DLOG(ERROR) << "XCreateGC failed";
++  if (window_graphics_context_ != kNoGC)
++    return true;
++
++  X11ReadbackPresentTarget target;
++  if (!X11ReadbackPresentCache::Lookup(widget_, &target) ||
++      target.gc == kNoGC || !target.ui_runner) {
++    LOG(ERROR) << "No UI-thread readback present target for widget "
++               << static_cast<uint32_t>(widget_);
+     Destroy();
+     return false;
+   }
+ 
++  window_graphics_context_ = target.gc;
++  visual_ = target.visual;
++  ui_runner_ = target.ui_runner;
+   return true;
+ }
+ 
+ void GLSurfaceEglReadbackX11::Destroy() {
+-  if (window_graphics_context_ != kNoGC) {
+-    connection_->FreeGC({window_graphics_context_});
+-    window_graphics_context_ = kNoGC;
++  {
++    auto& queue = GetPresentQueue();
++    base::AutoLock lock(queue.lock);
++    queue.latest.erase(widget_);
++    queue.queued.erase(widget_);
+   }
+-
+-  connection_->Sync();
+-
++  X11ReadbackPresentCache::ReleaseEglView(widget_);
++  window_graphics_context_ = kNoGC;
++  ui_runner_.reset();
+   GLSurfaceEglReadback::Destroy();
+ }
+ 
+@@ -69,16 +190,46 @@ GLSurfaceEglReadbackX11::~GLSurfaceEglReadbackX11() {
+ }
+ 
+ bool GLSurfaceEglReadbackX11::HandlePixels(uint8_t* pixels) {
+-  SkImageInfo image_info =
+-      SkImageInfo::Make(GetSize().width(), GetSize().height(),
+-                        kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+-  SkPixmap pixmap(image_info, pixels, image_info.minRowBytes());
++  if (!ui_runner_ || window_graphics_context_ == kNoGC) {
++    LOG(ERROR) << "nya-present HandlePixels missing UI target widget="
++               << static_cast<uint32_t>(widget_);
++    return false;
++  }
+ 
+-  // Copy pixels into pixmap and then update the XWindow.
+   const gfx::Size size = GetSize();
+-  DrawPixmap(connection_, visual_, window_, window_graphics_context_, pixmap, 0,
+-             0, 0, 0, size.width(), size.height());
++  if (size.IsEmpty()) {
++    LOG(ERROR) << "nya-present HandlePixels empty size widget="
++               << static_cast<uint32_t>(widget_);
++    return false;
++  }
+ 
++  SkImageInfo image_info =
++      SkImageInfo::Make(size.width(), size.height(), kBGRA_8888_SkColorType,
++                        kPremul_SkAlphaType);
++  auto buffer = std::make_unique<std::vector<uint8_t>>(
++      static_cast<size_t>(image_info.computeMinByteSize()));
++  std::copy(pixels, pixels + buffer->size(), buffer->begin());
++
++  // Keep only the latest unread frame per widget so ChatGPT-rate
++  // glReadPixels cannot bury the UI thread in 6MB PutImage tasks.
++  bool post = false;
++  {
++    auto& queue = GetPresentQueue();
++    base::AutoLock lock(queue.lock);
++    PendingFrame& slot = queue.latest[widget_];
++    slot.window = window_;
++    slot.gc = window_graphics_context_;
++    slot.visual = visual_;
++    slot.size = size;
++    slot.buffer = std::move(buffer);
++    if (!queue.queued.contains(widget_)) {
++      queue.queued.insert(widget_);
++      post = true;
++    }
++  }
++  if (post) {
++    ui_runner_->PostTask(FROM_HERE, base::BindOnce(&DrainPresent, widget_));
++  }
+   return true;
+ }
+ 
+diff --git a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.h b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.h
+index f593da6..c29d367 100644
+--- a/ui/ozone/platform/x11/gl_surface_egl_readback_x11.h
++++ b/ui/ozone/platform/x11/gl_surface_egl_readback_x11.h
+@@ -5,10 +5,15 @@
+ #ifndef UI_OZONE_PLATFORM_X11_GL_SURFACE_EGL_READBACK_X11_H_
+ #define UI_OZONE_PLATFORM_X11_GL_SURFACE_EGL_READBACK_X11_H_
+ 
+-#include "base/memory/raw_ptr.h"
++#include "base/memory/scoped_refptr.h"
++#include "ui/gfx/native_ui_types.h"
+ #include "ui/gfx/x/xproto.h"
+ #include "ui/ozone/common/gl_surface_egl_readback.h"
+ 
++namespace base {
++class SingleThreadTaskRunner;
++}
++
+ namespace ui {
+ 
+ // GLSurface implementation that copies pixels from readback to an XWindow.
+@@ -30,8 +35,9 @@ class GLSurfaceEglReadbackX11 : public GLSurfaceEglReadback {
+   // gl::GLSurfaceEglReadback:
+   bool HandlePixels(uint8_t* pixels) override;
+ 
++  const gfx::AcceleratedWidget widget_;
+   const x11::Window window_;
+-  const raw_ptr<x11::Connection> connection_;
++  scoped_refptr<base::SingleThreadTaskRunner> ui_runner_;
+   x11::GraphicsContext window_graphics_context_{};
+   x11::VisualId visual_{};
+ };
+diff --git a/ui/ozone/platform/x11/x11_canvas_surface.cc b/ui/ozone/platform/x11/x11_canvas_surface.cc
+index b15abad..49d1dfb 100644
+--- a/ui/ozone/platform/x11/x11_canvas_surface.cc
++++ b/ui/ozone/platform/x11/x11_canvas_surface.cc
+@@ -4,18 +4,39 @@
+ 
+ #include "ui/ozone/platform/x11/x11_canvas_surface.h"
+ 
++#include "base/check.h"
+ #include "base/functional/bind.h"
+ #include "third_party/skia/include/core/SkCanvas.h"
+ #include "third_party/skia/include/core/SkImageInfo.h"
+-#include "ui/base/x/x11_display_util.h"
+ #include "ui/base/x/x11_xrandr_interval_only_vsync_provider.h"
+ #include "ui/gfx/vsync_provider.h"
+ #include "ui/gfx/x/connection.h"
+ 
+ namespace ui {
+ 
++namespace {
++
++x11::Connection& ConnectionForCanvas(gfx::AcceleratedWidget widget) {
++  auto* conn = x11::Connection::ForWidget(static_cast<uint32_t>(widget));
++  // Extra displays must never present on the process DISPLAY: XIDs collide
++  // (clipboard vs browser were both 0xe00000) and that paints to the wrong
++  // server, then X IO errors take down Chrome.
++  CHECK(conn) << "No X connection for widget "
++              << static_cast<uint32_t>(widget);
++  return *conn;
++}
++
++}  // namespace
++
+ X11CanvasSurface::X11CanvasSurface(gfx::AcceleratedWidget widget)
+-    : x11_software_bitmap_presenter_(*x11::Connection::Get(), widget, true) {}
++    : x11_software_bitmap_presenter_(
++          ConnectionForCanvas(widget),
++          widget,
++          // Never wait for MIT-SHM completion. The compositor thread has no
++          // watcher for those events; two pending frames stall forever
++          // (frozen window, white menus, leftover pointer grab).
++          /*enable_multibuffering=*/false) {
++}
+ 
+ X11CanvasSurface::~X11CanvasSurface() = default;
+ 
+diff --git a/ui/ozone/platform/x11/x11_surface_factory.cc b/ui/ozone/platform/x11/x11_surface_factory.cc
+index a0eaf03..3f4098c 100644
+--- a/ui/ozone/platform/x11/x11_surface_factory.cc
++++ b/ui/ozone/platform/x11/x11_surface_factory.cc
+@@ -6,12 +6,15 @@
+ 
+ #include <memory>
+ 
++#include "base/command_line.h"
++#include "base/task/current_thread.h"
+ #include "components/viz/common/resources/shared_image_format_utils.h"
+ #include "gpu/vulkan/buildflags.h"
+ #include "ui/events/platform/x11/x11_event_source.h"
+ #include "ui/gfx/linux/gbm_buffer.h"
+ #include "ui/gfx/linux/gbm_support_x11.h"
+ #include "ui/gfx/linux/native_pixmap_dmabuf.h"
++#include "ui/gfx/x/connection.h"
+ #include "ui/gl/gl_bindings.h"
+ #include "ui/gl/gl_surface_egl.h"
+ #include "ui/gl/gl_surface_egl_x11_gles2.h"
+@@ -62,13 +65,6 @@ class GLOzoneEGLX11 : public GLOzoneEGL {
+ 
+   ~GLOzoneEGLX11() override = default;
+ 
+-  // GLOzone:
+-  bool InitializeStaticGLBindings(
+-      const gl::GLImplementationParts& implementation) override {
+-    is_swiftshader_ = gl::IsSoftwareGLImplementation(implementation);
+-    return GLOzoneEGL::InitializeStaticGLBindings(implementation);
+-  }
+-
+   bool CanImportNativePixmap(viz::SharedImageFormat format) override {
+     if (GetNativePixmapSupportType() == NativePixmapSupportType::kNone) {
+       return false;
+@@ -89,26 +85,14 @@ class GLOzoneEGLX11 : public GLOzoneEGL {
+   scoped_refptr<gl::GLSurface> CreateViewGLSurface(
+       gl::GLDisplay* display,
+       gfx::AcceleratedWidget window) override {
+-    if (is_swiftshader_) {
+-      return gl::InitializeGLSurface(
+-          base::MakeRefCounted<GLSurfaceEglReadbackX11>(
+-              display->GetAs<gl::GLDisplayEGL>(), window));
+-    } else {
+-      switch (gl::GetGLImplementation()) {
+-        case gl::kGLImplementationEGLGLES2:
+-          DCHECK(window != gfx::kNullAcceleratedWidget);
+-          return gl::InitializeGLSurface(new gl::NativeViewGLSurfaceEGLX11GLES2(
+-              display->GetAs<gl::GLDisplayEGL>(),
+-              static_cast<x11::Window>(window)));
+-        case gl::kGLImplementationEGLANGLE:
+-          DCHECK(window != gfx::kNullAcceleratedWidget);
+-          return gl::InitializeGLSurface(new gl::NativeViewGLSurfaceEGLX11(
+-              display->GetAs<gl::GLDisplayEGL>(),
+-              static_cast<x11::Window>(window)));
+-        default:
+-          NOTREACHED();
+-      }
+-    }
++    // Every nya display is Xvfb. NVIDIA/ANGLE cannot eglCreateWindowSurface
++    // there ("No suitable EGL configs found"), Chrome then disables GPU
++    // compositing, and the MIT-SHM software presenter stalls after two
++    // frames: frozen page, white menus, leftover pointer grab.
++    // Composite on EGL (GPU or SwiftShader) and PutImage onto the X window.
++    return gl::InitializeGLSurface(
++        base::MakeRefCounted<GLSurfaceEglReadbackX11>(
++            display->GetAs<gl::GLDisplayEGL>(), window));
+   }
+ 
+   scoped_refptr<gl::GLSurface> CreateOffscreenGLSurface(
+@@ -127,8 +111,17 @@ class GLOzoneEGLX11 : public GLOzoneEGL {
+  protected:
+   // GLOzoneEGL:
+   gl::EGLDisplayPlatform GetNativeDisplay() override {
+-    return gl::EGLDisplayPlatform(reinterpret_cast<EGLNativeDisplayType>(
+-        x11::Connection::Get()->GetXlibDisplay().display()));
++    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++            "nya-x11-multi-display")) {
++      return gl::EGLDisplayPlatform(reinterpret_cast<EGLNativeDisplayType>(
++          x11::Connection::Get()->GetXlibDisplay().display()));
++    }
++    // Xvfb present is pbuffer + PutImage. Do not pass the UI Xlib Display
++    // (NVIDIA would share that connection with UI-thread xcb). Do not use
++    // EGL_PLATFORM_DEVICE either: ANGLE then has no pbuffer configs
++    // ("No suitable EGL configs found") and Chrome falls back to MIT-SHM,
++    // which stalls. EGL_DEFAULT_DISPLAY talks to NVIDIA without X11.
++    return gl::EGLDisplayPlatform(EGL_DEFAULT_DISPLAY);
+   }
+ 
+   bool LoadGLES2Bindings(
+@@ -158,8 +151,6 @@ class GLOzoneEGLX11 : public GLOzoneEGL {
+         return nullptr;
+     }
+   }
+-
+-  bool is_swiftshader_ = false;
+ };
+ 
+ }  // namespace
+@@ -206,6 +197,14 @@ std::unique_ptr<SurfaceOzoneCanvas> X11SurfaceFactory::CreateCanvasForWidget(
+     connection->platform_event_source =
+         std::make_unique<X11EventSource>(connection);
+   }
++  if (base::CurrentUIThread::IsSet()) {
++    if (auto* es = X11EventSource::GetInstance()) {
++      if (auto* extra =
++              x11::Connection::ForWidget(static_cast<uint32_t>(widget))) {
++        es->WatchConnection(extra);
++      }
++    }
++  }
+   return std::make_unique<X11CanvasSurface>(widget);
+ }
+ 

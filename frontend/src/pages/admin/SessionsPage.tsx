@@ -2,11 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { ProxyRecord, Session, SessionGroup, UserPublic } from '@nya/shared';
 import {
-  DEFAULT_CHROME_LANGUAGE,
   DEFAULT_GPU_PROFILE,
   DEFAULT_IDLE_TIMEOUT_MINUTES,
-  DEFAULT_TIMEZONE,
-  NATIVE_MEDIA_LABEL,
   normalizeGeo,
 } from '@nya/shared';
 import type { SessionFormValues } from '../../components/SessionFormDialog';
@@ -53,12 +50,6 @@ function cloneSessionName(name: string) {
   return `${name.slice(0, SESSION_NAME_MAX - suffix.length)}${suffix}`;
 }
 
-function mediaLabel(value: string) {
-  const raw = value.trim();
-  if (!raw || raw === NATIVE_MEDIA_LABEL) return '';
-  return raw;
-}
-
 function sessionFingerprintPayload(data: SessionFormValues) {
   const lat = data.geoLatitude.trim() === '' ? null : Number(data.geoLatitude);
   const lng = data.geoLongitude.trim() === '' ? null : Number(data.geoLongitude);
@@ -73,15 +64,10 @@ function sessionFingerprintPayload(data: SessionFormValues) {
     chromeLanguage: data.chromeLanguage,
     gpuProfile: data.gpuProfile,
     webrtcMode: data.webrtcMode,
-    fontProfile: data.fontProfile,
+    os: data.os,
+    windowsRelease: data.windowsRelease,
     hardwareConcurrency: data.hardwareConcurrency,
     deviceMemory: data.deviceMemory,
-    deviceName: data.deviceName.trim(),
-    mediaDevices: {
-      audioInput: mediaLabel(data.mediaAudioInput),
-      audioOutput: mediaLabel(data.mediaAudioOutput),
-      videoInput: mediaLabel(data.mediaVideoInput),
-    },
     geo: normalizeGeo({
       permission: data.geoPermission,
       latitude: Number.isFinite(lat as number) ? lat : null,
@@ -255,16 +241,14 @@ export default function SessionsPage() {
         initialName={cloneFrom ? cloneSessionName(cloneFrom.name) : ''}
         initialGroupId={cloneFrom?.groupId ?? createGroupId}
         initialProxyId={cloneFrom?.proxyId}
-        initialTimezone={cloneFrom?.timezone || DEFAULT_TIMEZONE}
-        initialChromeLanguage={cloneFrom?.chromeLanguage || DEFAULT_CHROME_LANGUAGE}
+        initialTimezone={cloneFrom?.timezone}
+        initialChromeLanguage={cloneFrom?.chromeLanguage}
         initialGpuProfile={cloneFrom?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
         initialWebrtcMode={cloneFrom?.fingerprint?.webrtcMode}
-        initialFontProfile={cloneFrom?.fingerprint?.fontProfile}
+        initialOs={cloneFrom?.fingerprint?.os}
+        initialWindowsRelease={cloneFrom?.fingerprint?.windowsRelease}
         initialHardwareConcurrency={cloneFrom?.fingerprint?.hardwareConcurrency}
         initialDeviceMemory={cloneFrom?.fingerprint?.deviceMemory}
-        initialMediaAudioInput={cloneFrom?.fingerprint?.mediaDevices?.audioInput || NATIVE_MEDIA_LABEL}
-        initialMediaAudioOutput={cloneFrom?.fingerprint?.mediaDevices?.audioOutput || NATIVE_MEDIA_LABEL}
-        initialMediaVideoInput={cloneFrom?.fingerprint?.mediaDevices?.videoInput || NATIVE_MEDIA_LABEL}
         initialGeoPermission={cloneFrom?.fingerprint?.geo?.permission}
         initialGeoLatitude={cloneFrom?.fingerprint?.geo?.latitude}
         initialGeoLongitude={cloneFrom?.fingerprint?.geo?.longitude}
@@ -321,17 +305,14 @@ export default function SessionsPage() {
         initialNotepad={edit?.notepad}
         initialGroupId={edit?.groupId}
         initialProxyId={edit?.proxyId}
-        initialTimezone={edit?.timezone || DEFAULT_TIMEZONE}
-        initialChromeLanguage={edit?.chromeLanguage || DEFAULT_CHROME_LANGUAGE}
+        initialTimezone={edit?.timezone}
+        initialChromeLanguage={edit?.chromeLanguage}
         initialGpuProfile={edit?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
         initialWebrtcMode={edit?.fingerprint?.webrtcMode}
-        initialFontProfile={edit?.fingerprint?.fontProfile}
+        initialOs={edit?.fingerprint?.os}
+        initialWindowsRelease={edit?.fingerprint?.windowsRelease}
         initialHardwareConcurrency={edit?.fingerprint?.hardwareConcurrency}
         initialDeviceMemory={edit?.fingerprint?.deviceMemory}
-        initialDeviceName={edit?.fingerprint?.deviceName}
-        initialMediaAudioInput={edit?.fingerprint?.mediaDevices?.audioInput || NATIVE_MEDIA_LABEL}
-        initialMediaAudioOutput={edit?.fingerprint?.mediaDevices?.audioOutput || NATIVE_MEDIA_LABEL}
-        initialMediaVideoInput={edit?.fingerprint?.mediaDevices?.videoInput || NATIVE_MEDIA_LABEL}
         initialGeoPermission={edit?.fingerprint?.geo?.permission}
         initialGeoLatitude={edit?.fingerprint?.geo?.latitude}
         initialGeoLongitude={edit?.fingerprint?.geo?.longitude}

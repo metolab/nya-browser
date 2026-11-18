@@ -123,7 +123,25 @@ RUN set -eux; \
     && rm -rf /var/lib/apt/lists/*
 
 COPY config/fonts.conf /etc/fonts/conf.d/99-nya.conf
-RUN fc-cache -f
+COPY config/fonts-windows-aliased.conf /etc/nya/fonts-windows-aliased.conf
+RUN fc-cache -f && FONTCONFIG_FILE=/etc/nya/fonts-windows-aliased.conf fc-cache -f
+
+# Real Windows fonts when third_party/assets has them (licensed, kept in the
+# private nya-browser-assets repository; see scripts/fetch-assets.sh).
+# Only Windows-emulated sessions see them, via FONTCONFIG_FILE.
+COPY config/fonts-windows.conf /etc/nya/fonts-windows.conf
+RUN --mount=type=bind,source=third_party,target=/tmp/nya-third-party \
+    set -eu; \
+    src=/tmp/nya-third-party/assets/windows-fonts; \
+    if ls "$src"/*.tt[fc] >/dev/null 2>&1; then \
+      mkdir -p /opt/nya/winfonts; \
+      find "$src" -maxdepth 1 -type f \( -iname '*.ttf' -o -iname '*.ttc' -o -iname '*.otf' \) -exec cp {} /opt/nya/winfonts/ \; ; \
+      chmod 0644 /opt/nya/winfonts/*; \
+      FONTCONFIG_FILE=/etc/nya/fonts-windows.conf fc-cache -f; \
+      echo "windows fonts: $(ls /opt/nya/winfonts | wc -l)"; \
+    else \
+      echo "windows fonts: none"; \
+    fi
 
 # Sessions run with LC_ALL=<chrome language>.UTF-8; a missing locale drops glibc
 # to ASCII and Chrome crashes pasting non-ASCII file paths.

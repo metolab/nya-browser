@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Nya 指纹探针</title>
+    <style>
+      body { font: 14px/1.6 sans-serif; margin: 24px; max-width: 860px; }
+      code, pre { background: #f3f3f3; padding: 2px 6px; border-radius: 4px; }
+      pre { padding: 10px; white-space: pre-wrap; word-break: break-all; }
+      .box { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+      #status { font-weight: bold; }
+      button { padding: 6px 14px; }
+    </style>
+    <script src="/collect-common.js"></script>
+    <script src="/collect-main.js"></script>
+  </head>
+  <body>
+    <h2>Nya 指纹探针</h2>
+    <div class="box" style="background:#fff7d6;border-color:#e6c200">
+      请保持浏览器窗口<b>最大化</b>、缩放 100%，不要打开书签栏和侧边栏。页面会自动刷新并重新上传。
+    </div>
+    <div class="box">
+      <div>状态：<span id="status">准备中…</span></div>
+      <div id="summary"></div>
+      <div id="watch" style="color:#666"></div>
+    </div>
+
+    <div class="box" id="upload-box" hidden>
+      <h3>第一步：上传采集报告</h3>
+      <p>采集完成后会自动上传。标签可以改（例如 <code>win11-rtx3060</code>），改后点“上传报告”再传一次，下次刷新也会沿用。</p>
+      <input id="label" placeholder="标签，例如 win11-rtx3060" size="32" />
+      <button id="upload">上传报告</button>
+      <span id="upload-result"></span>
+    </div>
+
+    <div class="box" id="fonts-box" hidden>
+      <h3>第二步：上传 Windows 字体（只需做一次）</h3>
+      <p>在这台 Windows 上打开 PowerShell，执行下面的命令，把系统字体打包到桌面：</p>
+      <pre>$d = "$env:TEMP\winfonts"; robocopy "$env:WINDIR\Fonts" $d *.ttf *.ttc *.otf /R:0 /W:0 /NFL /NDL /NJH /NJS | Out-Null; Compress-Archive -Path "$d\*" -DestinationPath "$env:USERPROFILE\Desktop\winfonts.zip" -Force</pre>
+      <p>完成后在下面选择桌面上的 <code>winfonts.zip</code> 上传（文件较大，请等待进度完成）。</p>
+      <input type="file" id="fonts-file" accept=".zip" />
+      <button id="fonts-upload">上传字体</button>
+      <span id="fonts-result"></span>
+    </div>
+
+    <script src="/probe.js"></script>
+    <script>
+      (() => {
+      const query = new URLSearchParams(location.search);
+      const interactive = query.get('source') === 'real' || query.get('ui') === '1';
+      const labelEl = document.getElementById('label');
+      labelEl.value = query.get('label') || localStorage.getItem('nyaProbeLabel') || '';
+      labelEl.addEventListener('change', () => localStorage.setItem('nyaProbeLabel', labelEl.value.trim()));
+      let busyUpload = false;
+      window.nyaProbeDone = (report) => {
+        const id = report.contexts.main.identity || {};
+        const he = id.highEntropy || {};
+        const gl = report.contexts.main.webgl || {};
+        document.getElementById('summary').textContent =
+          '平台：' + (he.platform || id.platform) + ' ' + (he.platformVersion || '') +
+          '；显卡：' + (gl.unmaskedRenderer || '无') +
+          '；安全上下文：' + id.isSecureContext;
+        if (!labelEl.value && he.platformVersion) {
+          const major = Number(String(he.platformVersion).split('.')[0]);
+          labelEl.value = (he.platform === 'Windows' ? (major >= 13 ? 'win11' : 'win10') : String(he.platform || 'os').toLowerCase());
+        }
+        if (interactive) {
+          document.getElementById('upload-box').hidden = false;
+          document.getElementById('fonts-box').hidden = false;
+          if (query.get('source') === 'real') uploadReport();
+        }
+      };
+      async function uploadReport() {
+        const out = document.getElementById('upload-result');
+        const report = window.__nyaProbe && window.__nyaProbe.report;
+        if (!report) return (out.textContent = '报告尚未生成');
+        report.meta.label = labelEl.value.trim();
+        out.textContent = '上传中…';
+        busyUpload = true;
+        try {
+          const res = await fetch('/api/report?label=' + encodeURIComponent(report.meta.label), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(report),
+          });
+          const body = await res.json().catch(() => ({}));
+          out.textContent = res.ok ? '已自动上传：' + body.file : '上传失败：' + res.status;
+        } catch (err) {
+          out.textContent = '上传失败：' + err;
+        } finally {
+          busyUpload = false;
+        }
+      }
+      document.getElementById('upload').onclick = uploadReport;
+      document.getElementById('fonts-upload').onclick = async () => {
+        const out = document.getElementById('fonts-result');
+        const file = document.getElementById('fonts-file').files[0];
+        if (!file) return (out.textContent = '请先选择 winfonts.zip');
+        out.textContent = '上传中（' + Math.round(file.size / 1048576) + ' MB）…';
+        busyUpload = true;
+        try {
+          const res = await fetch('/api/fonts?label=' + encodeURIComponent(labelEl.value.trim() || 'windows'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/zip' },
+            body: file,
+          });
+          const body = await res.json().catch(() => ({}));
+          out.textContent = res.ok ? '已上传：' + body.file + '（' + Math.round(body.bytes / 1048576) + ' MB）' : '上传失败：' + res.status;
+        } catch (err) {
+          out.textContent = '上传失败：' + err;
+        } finally {
+          busyUpload = false;
+        }
+      };
+
+      // Reload when the probe files change or a re-collect is requested on the server.
+      if (interactive) {
+        let loadedVersion = null;
+        const poll = async () => {
+          try {
+            const res = await fetch('/api/version', { cache: 'no-store' });
+            const { version } = await res.json();
+            if (loadedVersion === null) loadedVersion = version;
+            const fontPicked = document.getElementById('fonts-file').files.length > 0;
+            if (version !== loadedVersion && !busyUpload && !fontPicked) location.reload();
+          } catch {
+            /* server restarting */
+          }
+          document.getElementById('watch').textContent = '页面保持打开即可，内容更新后会自动刷新并重新采集（' + new Date().toLocaleTimeString() + '）';
+        };
+        poll();
+        setInterval(poll, 5000);
+      }
+      })();
+    </script>
+  </body>
+</html>

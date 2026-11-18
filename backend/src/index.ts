@@ -95,7 +95,7 @@ server.on('upgrade', (req, socket, head) => {
       socket.destroy();
       return;
     }
-    let vncTarget = runtime;
+    let vncTarget: VncTarget = runtime;
     if (subId) {
       const found = getSubRuntime(sessionId, subId);
       if (!found) {
@@ -128,11 +128,10 @@ function vncDebugEnabled() {
   return raw === '1' || raw === 'true' || raw === 'on';
 }
 
-function noteVncInput(
-  runtime: { id?: string; display?: number },
-  buf: Buffer,
-) {
-  if (!runtime.id || runtime.display == null || buf.length < 2) return;
+type VncTarget = { id: string; display: number; vncSock: string };
+
+function noteVncInput(runtime: VncTarget, buf: Buffer) {
+  if (buf.length < 2) return;
   const type = buf[0];
   const down = buf[1];
   if ((type !== 4 && type !== 5) || down === 0) return;
@@ -141,12 +140,11 @@ function noteVncInput(
 
 function bridgeVnc(
   ws: import('ws').WebSocket,
-  runtime: { id?: string; display?: number; vncSock?: string; vncPort?: number },
+  runtime: VncTarget,
   sessionId: string,
 ) {
-  const tcp = runtime.vncSock
-    ? net.connect({ path: runtime.vncSock })
-    : net.connect({ host: '127.0.0.1', port: runtime.vncPort });
+  // x11vnc listens only on the session's unix socket.
+  const tcp = net.connect({ path: runtime.vncSock });
   let closed = false;
   const HIGH_WATER = 1024 * 1024;
   const LOW_WATER = 256 * 1024;

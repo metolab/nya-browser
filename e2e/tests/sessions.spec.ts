@@ -19,10 +19,7 @@ test('session crud description proxy homeUrl assignments', async () => {
       timezone: 'UTC',
       gpuProfile: 'rtx-2080',
       webrtcMode: 'replace',
-      deviceName: 'DESKTOP-E2E01',
-      mediaDevices: { videoInput: 'USB Camera' },
       geo: { permission: 'allow', latitude: 31.23, longitude: 121.47, accuracy: 80 },
-      fontProfile: 'win11',
       homeUrl: 'https://example.com/',
       idleTimeoutMinutes: 5,
     },
@@ -37,14 +34,18 @@ test('session crud description proxy homeUrl assignments', async () => {
   expect(session.timezone).toBe('UTC');
   expect(session.fingerprint.gpuProfile).toBe('rtx-2080');
   expect(session.fingerprint.webrtcMode).toBe('replace');
-  expect(session.fingerprint.deviceName).toBe('DESKTOP-E2E01');
-  expect(session.fingerprint.mediaDevices.videoInput).toBe('USB Camera');
-  expect(session.fingerprint.mediaDevices.audioInput).toBe('');
-  expect(session.fingerprint.mediaDevices.audioOutput).toBe('');
   expect(session.fingerprint.geo.permission).toBe('allow');
   expect(session.fingerprint.geo.latitude).toBe(31.23);
-  expect(session.fingerprint.fontProfile).toBe('win11');
+  expect(session.fingerprint).not.toHaveProperty('fontProfile');
   expect(session.idleTimeoutMinutes).toBe(5);
+
+  const bare = (await (await admin.post('/api/sessions', { data: { name: `bare${stamp}` } })).json()).session;
+  expect(bare.fingerprint.os).toBe('windows');
+  expect(bare.fingerprint.windowsRelease).toBe('win11');
+  expect(bare.fingerprint.webrtcMode).toBe('offline');
+  expect(bare.timezone).toBe('auto');
+  expect(bare.homeUrl).toBe('');
+  await admin.delete(`/api/sessions/${bare.id}`);
 
   const user = (
     await (
@@ -63,11 +64,10 @@ test('session crud description proxy homeUrl assignments', async () => {
   expect(list[0].kind).toBe('session');
 
   const nested = await admin.patch(`/api/sessions/${session.id}`, {
-    data: { fingerprint: { webrtcMode: 'offline', fontProfile: 'win10' } },
+    data: { fingerprint: { webrtcMode: 'offline' } },
   });
   const nestedSession = (await nested.json()).session;
   expect(nestedSession.fingerprint.webrtcMode).toBe('offline');
-  expect(nestedSession.fingerprint.fontProfile).toBe('win10');
   expect(nestedSession.fingerprint.gpuProfile).toBe('rtx-2080');
   expect(nestedSession.fingerprint.seed).toBe(session.fingerprint.seed);
 

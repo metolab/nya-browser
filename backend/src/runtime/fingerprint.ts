@@ -1,20 +1,20 @@
 import crypto from 'crypto';
 import {
-  coerceFontProfile,
   coerceGpuProfile,
+  coerceOs,
+  coerceWindowsRelease,
   coerceWebrtcMode,
   COMMON_HARDWARE_PROFILES,
+  DEFAULT_OS,
   DEFAULT_WEBRTC_MODE,
   isCpuCores,
   isDeviceMemory,
-  normalizeDeviceName,
   normalizeGeo,
-  normalizeMediaDevices,
   type FingerprintConfig,
-  type FontProfile,
   type GeoConfig,
-  type MediaDevicePreset,
+  type OsType,
   type WebrtcMode,
+  type WindowsRelease,
 } from '@nya/shared';
 
 function seedToUint32(seed: string) {
@@ -26,10 +26,9 @@ function seedToUint32(seed: string) {
 type FingerprintExtras = {
   gpuProfile?: unknown;
   webrtcMode?: unknown;
-  deviceName?: unknown;
-  mediaDevices?: unknown;
   geo?: unknown;
-  fontProfile?: unknown;
+  os?: unknown;
+  windowsRelease?: unknown;
   hardwareConcurrency?: unknown;
   deviceMemory?: unknown;
 };
@@ -46,17 +45,23 @@ export function fingerprintFromSeed(seed: string, extras?: FingerprintExtras): F
     deviceMemory: isDeviceMemory(extras?.deviceMemory) ? extras.deviceMemory : hardware.memory,
     gpuProfile: coerceGpuProfile(extras?.gpuProfile),
     webrtcMode: coerceWebrtcMode(extras?.webrtcMode),
-    deviceName: normalizeDeviceName(extras?.deviceName, normalizedSeed),
-    mediaDevices: normalizeMediaDevices(extras?.mediaDevices, normalizedSeed),
     geo: normalizeGeo(extras?.geo),
-    fontProfile: coerceFontProfile(extras?.fontProfile),
+    os: coerceOs(extras?.os),
+    windowsRelease: coerceWindowsRelease(extras?.windowsRelease),
   };
 }
 
+function randomSeed() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+/** A new session: fields the caller leaves out take the new-session defaults. */
 export function createFingerprint(gpuProfile?: unknown, extras?: FingerprintExtras): FingerprintConfig {
-  return fingerprintFromSeed(crypto.randomBytes(32).toString('hex'), {
+  return fingerprintFromSeed(randomSeed(), {
     ...extras,
     gpuProfile: gpuProfile ?? extras?.gpuProfile,
+    webrtcMode: extras?.webrtcMode ?? DEFAULT_WEBRTC_MODE,
+    os: extras?.os ?? DEFAULT_OS,
   });
 }
 
@@ -67,11 +72,8 @@ export function fingerprintsEqual(a: FingerprintConfig, b: FingerprintConfig) {
     a.deviceMemory === b.deviceMemory &&
     a.gpuProfile === b.gpuProfile &&
     a.webrtcMode === b.webrtcMode &&
-    a.deviceName === b.deviceName &&
-    a.fontProfile === b.fontProfile &&
-    a.mediaDevices.audioInput === b.mediaDevices.audioInput &&
-    a.mediaDevices.audioOutput === b.mediaDevices.audioOutput &&
-    a.mediaDevices.videoInput === b.mediaDevices.videoInput &&
+    a.os === b.os &&
+    a.windowsRelease === b.windowsRelease &&
     a.geo.permission === b.geo.permission &&
     a.geo.latitude === b.geo.latitude &&
     a.geo.longitude === b.geo.longitude &&
@@ -86,11 +88,8 @@ export function fingerprintLaunchChanged(a: FingerprintConfig, b: FingerprintCon
     a.deviceMemory !== b.deviceMemory ||
     a.gpuProfile !== b.gpuProfile ||
     a.webrtcMode !== b.webrtcMode ||
-    a.deviceName !== b.deviceName ||
-    a.fontProfile !== b.fontProfile ||
-    a.mediaDevices.audioInput !== b.mediaDevices.audioInput ||
-    a.mediaDevices.audioOutput !== b.mediaDevices.audioOutput ||
-    a.mediaDevices.videoInput !== b.mediaDevices.videoInput ||
+    a.os !== b.os ||
+    a.windowsRelease !== b.windowsRelease ||
     a.geo.permission !== b.geo.permission ||
     a.geo.latitude !== b.geo.latitude ||
     a.geo.longitude !== b.geo.longitude ||
@@ -106,7 +105,7 @@ export function normalizeFingerprint(input: unknown): FingerprintConfig {
   if (typeof obj.seed === 'string' && /^[0-9a-f]{64}$/i.test(obj.seed)) {
     return fingerprintFromSeed(obj.seed, obj);
   }
-  return createFingerprint(obj.gpuProfile, obj);
+  return fingerprintFromSeed(randomSeed(), obj);
 }
 
 export function mergeFingerprintPatch(
@@ -114,10 +113,9 @@ export function mergeFingerprintPatch(
   patch: {
     gpuProfile?: unknown;
     webrtcMode?: WebrtcMode;
-    deviceName?: string;
-    mediaDevices?: Partial<MediaDevicePreset>;
     geo?: Partial<GeoConfig>;
-    fontProfile?: FontProfile;
+    os?: OsType;
+    windowsRelease?: WindowsRelease;
     hardwareConcurrency?: number;
     deviceMemory?: number;
   },
@@ -126,10 +124,9 @@ export function mergeFingerprintPatch(
     ...current,
     gpuProfile: patch.gpuProfile ?? current.gpuProfile,
     webrtcMode: patch.webrtcMode ?? current.webrtcMode,
-    deviceName: patch.deviceName ?? current.deviceName,
-    mediaDevices: { ...current.mediaDevices, ...(patch.mediaDevices || {}) },
     geo: { ...current.geo, ...(patch.geo || {}) },
-    fontProfile: patch.fontProfile ?? current.fontProfile,
+    os: patch.os ?? current.os,
+    windowsRelease: patch.windowsRelease ?? current.windowsRelease,
     hardwareConcurrency: patch.hardwareConcurrency ?? current.hardwareConcurrency,
     deviceMemory: patch.deviceMemory ?? current.deviceMemory,
   });

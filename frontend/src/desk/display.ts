@@ -49,9 +49,10 @@ export const SIZE_PRESETS: { label: string; w: number; h: number }[] = [
   { label: '2560×1440', w: 2560, h: 1440 },
 ];
 
+/** A common desktop size, scaled to the pane locally; resizing with the pane would expose the pane size. */
 export function defaultDisplayPolicy(): DisplayPolicy {
   return {
-    mode: 'follow',
+    mode: 'fixed',
     scale: 1,
     width: 1920,
     height: 1080,
@@ -77,7 +78,7 @@ export function snapEvenSize(s: Size): Size {
 
 export function normalizeDisplayPolicy(input?: Partial<DisplayPolicy> | null): DisplayPolicy {
   const d = defaultDisplayPolicy();
-  const mode: DisplayMode = input?.mode === 'fixed' ? 'fixed' : 'follow';
+  const mode: DisplayMode = input?.mode === 'follow' || input?.mode === 'fixed' ? input.mode : d.mode;
   let minW = clamp(Math.round(num(input?.minWidth, d.minWidth)), FB_LIMITS.minW, FB_LIMITS.maxW);
   let maxW = clamp(Math.round(num(input?.maxWidth, d.maxWidth)), FB_LIMITS.minW, FB_LIMITS.maxW);
   let minH = clamp(Math.round(num(input?.minHeight, d.minHeight)), FB_LIMITS.minH, FB_LIMITS.maxH);
@@ -133,6 +134,26 @@ export function resolveRemoteSize(pane: Size, policy: DisplayPolicy): Size {
   }
   const scale = Math.max(SCALE_LIMITS.min, p.scale || 1);
   return clampFollow({ w: pane.w / scale, h: pane.h / scale }, p);
+}
+
+const POLICY_KEY = 'nyaDisplayPolicy';
+
+/** The policy the user last chose on this browser, else the default. */
+export function loadDisplayPolicy(): DisplayPolicy {
+  try {
+    const raw = window.localStorage.getItem(POLICY_KEY);
+    return normalizeDisplayPolicy(raw ? (JSON.parse(raw) as Partial<DisplayPolicy>) : null);
+  } catch {
+    return defaultDisplayPolicy();
+  }
+}
+
+export function saveDisplayPolicy(policy: DisplayPolicy) {
+  try {
+    window.localStorage.setItem(POLICY_KEY, JSON.stringify(normalizeDisplayPolicy(policy)));
+  } catch {
+    // Storage may be unavailable (private mode); the choice then lasts for the page.
+  }
 }
 
 export function windowDisplay(display?: DisplayPolicy | null): DisplayPolicy {

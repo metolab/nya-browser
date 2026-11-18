@@ -8,8 +8,10 @@ export const WEBRTC_MODES = [
 
 export type WebrtcMode = (typeof WEBRTC_MODES)[number];
 
-/** Matches the old `--disable-features=WebRTC` default: no RTCPeerConnection. */
-export const DEFAULT_WEBRTC_MODE: WebrtcMode = 'disabled';
+/** New sessions: the API exists as on any Chrome, but no candidate ever leaves the machine. */
+export const DEFAULT_WEBRTC_MODE: WebrtcMode = 'offline';
+/** Stored records without a mode predate the setting and ran with WebRTC disabled. */
+export const LEGACY_WEBRTC_MODE: WebrtcMode = 'disabled';
 
 export const WEBRTC_MODE_LABELS: Record<WebrtcMode, string> = {
   offline: '离线（API 在，实际不可用）',
@@ -27,7 +29,7 @@ export function coerceWebrtcMode(input: unknown): WebrtcMode {
   const raw = String(input || '')
     .trim()
     .toLowerCase();
-  return isWebrtcMode(raw) ? raw : DEFAULT_WEBRTC_MODE;
+  return isWebrtcMode(raw) ? raw : LEGACY_WEBRTC_MODE;
 }
 
 export function webrtcNeedsPublicIp(mode: WebrtcMode) {

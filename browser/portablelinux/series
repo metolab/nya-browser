@@ -1,0 +1,8 @@
+ungoogled-chromium/portablelinux/use-oauth2-client-switches-as-default.patch
+nya-portable/fix-compiling-on-arm64.patch
+ungoogled-chromium/portablelinux/chromium-138-drop-nodejs-version-check.patch
+ungoogled-chromium/portablelinux/chromium-153-revert-hermetic-python.patch
+ungoogled-chromium/portablelinux/chromium-155-use-system-esbuild.patch
+nya-portable/chromium-157-typescript.patch
+nya-portable/chromium-157-crubit.patch
+nya-portable/chromium-156-isolatedDeclarations.patch

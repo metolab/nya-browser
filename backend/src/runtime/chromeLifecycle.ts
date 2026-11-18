@@ -173,10 +173,12 @@ function applyGeolocation(
     });
   }
   if (geo.permission === 'allow' && geoHasCoordinates(geo) && origin) {
+    // Not Browser.grantPermissions: that denies every other permission of the origin.
     send(state, {
-      method: 'Browser.grantPermissions',
+      method: 'Browser.setPermission',
       params: {
-        permissions: ['geolocation'],
+        permission: { name: 'geolocation' },
+        setting: 'granted',
         origin,
       },
     });

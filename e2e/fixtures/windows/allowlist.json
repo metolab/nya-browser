@@ -1,0 +1,79 @@
+{
+  "note": "Known differences between the real-machine baseline (Chrome 157, Windows 11, GTX 1080 Ti) and Nya windows mode. Every entry carries the reason it is accepted.",
+  "fonts": {
+    "missing": {
+      "Arial Narrow": "Ships with Microsoft Office, not with Windows."
+    }
+  },
+  "fontMetrics": {
+    "Malgun Gothic/symbols": "Symbol glyphs fall back to Segoe UI Symbol; DirectWrite and FreeType hint its bounds differently."
+  },
+  "mediaQueries": {
+    "(any-pointer: coarse)": "The baseline machine has a touchscreen; Nya models a mouse-only desktop."
+  },
+  "misc": {
+    "maxTouchPoints": "The baseline machine has a touchscreen; Nya models a mouse-only desktop."
+  },
+  "hostMedia": {
+    "reason": "Hardware video capabilities come from the host GPU (Media Foundation / NVDEC on Windows, --nya-os-hw-video on Nya). They are compared exactly when the host GPU matches the baseline and skipped (MED-HW) otherwise.",
+    "patterns": [
+      "^codecs:.*(hev1|hvc1)",
+      "^decoding:(file|media-source):(hev1|hvc1)",
+      "^decoding:webrtc-(en|de)code:video/[^.]+\\.powerEfficient$",
+      "^decoding:webrtc-(en|de)code:video/H265\\.",
+      "^rtc:video/H265",
+      "^rtc:video/H264;.*profile-level-id=64",
+      "^env:rtcOrder\\.",
+      "^all:sdp\\.video$",
+      "^all:webcodecs\\.(decode|encode):(avc1|hev1|vp09)[^:]*:(no-preference|prefer-hardware)$"
+    ]
+  },
+  "voices": {
+    "remotePattern": "^(Microsoft .* Online \\(Natural\\)|Google\\s)",
+    "reason": "Network voices depend on the browser vendor and connectivity."
+  },
+  "audio": {
+    "offlineHash": "Audio output is farbled per session seed.",
+    "context.state": "An AudioContext starts running only after user activation (autoplay policy); the baseline page had been clicked."
+  },
+  "devices": {
+    "mediaDevices.devices": "The baseline machine has no camera; Nya models one webcam. Masking is checked by DEV-02."
+  },
+  "identity": {
+    "hardwareConcurrency": "Per-session fingerprint value; checked by HW-01.",
+    "deviceMemory": "Per-session fingerprint value; checked by HW-02."
+  },
+  "contexts": {
+    "serviceWorker": "The baseline browser refused to register the service worker over the probe's self-signed certificate."
+  },
+  "headers": {
+    "host": "Probe server address differs per run.",
+    "referer": "Probe server address differs per run.",
+    "cache-control": "Depends on how the page was loaded (reload vs. typed navigation).",
+    "sec-fetch-site": "Depends on how the page was loaded (reload vs. typed navigation).",
+    "sec-fetch-user": "Depends on how the page was loaded (reload vs. typed navigation).",
+    "device-memory": "Per-session fingerprint value; checked by HW-02.",
+    "sec-ch-device-memory": "Per-session fingerprint value; checked by HW-02.",
+    "sec-ch-viewport-width": "The baseline window was restored, Nya is maximized; checked against innerWidth instead."
+  },
+  "api": {
+    "onlyBaseline": {},
+    "onlySample": {},
+    "hostGpu": [
+      "GPUResourceTable",
+      "GPUSubgroupMatrixConfig"
+    ]
+  },
+  "webgl": {
+    "extensions": {
+      "WEBGL_draw_buffers": "ANGLE's EGL backend on Linux is GLES-only and does not expose EXT_draw_buffers to WebGL 1 contexts (D3D11 does); exposing it means replacing the GPU backend.",
+      "OVR_multiview2": "ANGLE's EGL backend on Linux binds OpenGL ES only, and ANGLE gates this extension on desktop-GL driver features; exposing it means replacing the GPU backend.",
+      "WEBGL_provoking_vertex": "ANGLE's EGL backend on Linux binds OpenGL ES only, and ANGLE gates this extension on desktop-GL driver features; exposing it means replacing the GPU backend."
+    }
+  },
+  "webgpu": {
+    "features": {},
+    "limits": {},
+    "wgsl": {}
+  }
+}

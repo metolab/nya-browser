@@ -1,0 +1,105 @@
+--- a/build/toolchain/linux/BUILD.gn
++++ b/build/toolchain/linux/BUILD.gn
+@@ -182,6 +182,13 @@
+   }
+ }
+ 
++clang_v8_toolchain("clang_arm64_v8_x64") {
++  toolchain_args = {
++    current_cpu = "arm64"
++    v8_current_cpu = "x64"
++  }
++}
++
+ gcc_toolchain("x64") {
+   cc = "gcc"
+   cxx = "g++"
+--- a/tools/rust/build_rust.py
++++ b/tools/rust/build_rust.py
+@@ -66,7 +66,7 @@
+     DownloadDebianSysroot,
+     FetchUrl,
+     GetLibXml2Dirs,
+-    GitCherryPick,
++    GetHostSysrootPlatform,
+     GitRevert,
+     LLVM_DIR,
+     IsGitAncestorToHead,
+@@ -251,7 +251,7 @@
+         )
+     else:
+         ssl_url = (
+-            f'{CIPD_DOWNLOAD_URL}/{OPENSSL_CIPD_LINUX_AMD_PATH}'
++            f'{CIPD_DOWNLOAD_URL}/{OPENSSL_CIPD_LINUX_AMD_PATH.replace("amd64", GetHostSysrootPlatform()}'
+             f'/+/version:2@{OPENSSL_CIPD_LINUX_AMD_VERSION}'
+         )
+ 
+--- a/tools/rust/cargo-config.toml.template
++++ b/tools/rust/cargo-config.toml.template
+@@ -21,3 +21,8 @@
+ # Use the same sysroot for host artifacts as target artifacts. Target rustflags
+ # are configured via environment variables.
+ rustflags = ["-Clink-arg=--sysroot=$DEBIAN_SYSROOT"]
++
++[host.aarch64-unknown-linux-gnu]
++# Use the same sysroot for host artifacts as target artifacts. Target rustflags
++# are configured via environment variables.
++rustflags = ["-Clink-arg=--sysroot=$DEBIAN_SYSROOT"]
+--- a/tools/rust/config.toml.template
++++ b/tools/rust/config.toml.template
+@@ -95,3 +95,12 @@
+ linker = "$LLVM_BIN/clang"
+ jemalloc = true
+ 
++[target.aarch64-unknown-linux-gnu]
++llvm-config = "$LLVM_BIN/llvm-config"
++# TODO(danakj): We don't ship this in the clang toolchain package.
++# ranlib = "$LLVM_BIN/llvm-ranlib"
++ar = "$LLVM_BIN/llvm-ar"
++cc = "$LLVM_BIN/clang"
++cxx = "$LLVM_BIN/clang++"
++linker = "$LLVM_BIN/clang"
++
+--- a/tools/rust/build_bindgen.py
++++ b/tools/rust/build_bindgen.py
+@@ -41,6 +41,7 @@
+     CheckoutGitRepo,
+     DownloadAndUnpack,
+     LLVM_BUILD_TOOLS_DIR,
++    GetHostSysrootPlatform,
+ )
+ from update import RmTree
+ 
+@@ -74,7 +75,7 @@
+     assert sys.platform.startswith('linux')
+     ncursesw_dir = os.path.join(LLVM_BUILD_TOOLS_DIR, 'ncursesw')
+     ncursesw_url = (
+-        f'{CIPD_DOWNLOAD_URL}/{NCURSESW_CIPD_LINUX_AMD_PATH}'
++        f'{CIPD_DOWNLOAD_URL}/{NCURSESW_CIPD_LINUX_AMD_PATH.replace("amd64", GetHostSysrootPlatform())}'
+         f'/+/version:2@{NCURSESW_CIPD_LINUX_AMD_VERSION}'
+     )
+ 
+--- a/tools/clang/scripts/build.py
++++ b/tools/clang/scripts/build.py
+@@ -710,6 +710,21 @@
+   )
+ 
+ 
++def GetHostSysrootPlatform():
++  assert sys.platform == 'linux', \
++    "This patch only applies to Linux, where platform.machine() is predictable"
++
++  arch = platform.machine()
++  return {
++    "aarch64": "arm64",
++    "aarch64_be": "arm64",
++    "armv7l": "arm",
++    "armv8b": "arm64",
++    "armv8l": "arm64",
++    "x86_64": "amd64",
++  }.get(arch, arch)
++
++
+ def VerifyVersionOfBuiltClangMatchesVERSION():
+   """Checks that `clang --version` outputs RELEASE_VERSION. If this
+   fails, update.RELEASE_VERSION is out-of-date and needs to be updated (possibly

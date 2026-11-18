@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { ProxyExtra, ProxyRecord } from '@nya/shared';
+import type { ProxyExtra, ProxyRecord, ProxyType } from '@nya/shared';
 import {
+  DEFAULT_PROXY_PORTS,
   emptyProxyExtra,
   parseProxyUri,
+  proxyNeedsSecret,
   regionFromLoc,
   SS_METHODS,
   TLS_FINGERPRINTS,
@@ -109,12 +111,20 @@ export default function ProxiesPage() {
     setName('');
     setType('http');
     setHost('');
-    setPort('1080');
+    setPort(String(DEFAULT_PROXY_PORTS.http));
     setUsername('');
     setPassword('');
     setViaProxyId(NONE_KEY);
     setExtra(emptyProxyExtra());
     setOpen(true);
+  };
+
+  const changeType = (next: ProxyType) => {
+    // Keep a port the user typed; swap only the previous type's suggestion.
+    if (!port || port === String(DEFAULT_PROXY_PORTS[type])) {
+      setPort(String(DEFAULT_PROXY_PORTS[next]));
+    }
+    setType(next);
   };
 
   const startEdit = (p: ProxyRecord) => {
@@ -294,7 +304,7 @@ export default function ProxiesPage() {
             </div>
             <div className="grid gap-2">
               <Label>类型</Label>
-              <Select value={type} onValueChange={(v: string) => setType(v as ProxyRecord['type'])}>
+              <Select value={type} onValueChange={(v: string) => changeType(v as ProxyType)}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -361,7 +371,7 @@ export default function ProxiesPage() {
                 type={type === 'vless' ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                required={!editing}
+                required={!editing && proxyNeedsSecret(type)}
               />
               {editing ? <p className="text-xs text-muted-foreground">留空则不修改</p> : null}
             </div>

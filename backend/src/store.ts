@@ -3,14 +3,17 @@ import path from 'path';
 import { nanoid } from 'nanoid';
 import { and, asc, eq } from 'drizzle-orm';
 import {
+  AUTO_LOCALE,
   DEFAULT_HOME_URL,
   IDLE_TIMEOUT_MINUTES_MAX,
   emptyProxy,
   emptyProxyExtra,
+  isAutoLocale,
   isProxyType,
   normalizeChromeLanguage,
   normalizeProxyExtra,
   normalizeTimezone,
+  resolveSessionLocale,
   type FingerprintConfig,
   type AccessGrant,
   type AccessKind,
@@ -99,9 +102,20 @@ export function ensureSessionDirs(id: string) {
   ensureFilesDir(id);
 }
 
+/** Stored timezone: `auto` (also for empty input) or a valid IANA name. */
+function sessionTimezone(input: unknown) {
+  return !String(input ?? '').trim() || isAutoLocale(input) ? AUTO_LOCALE : normalizeTimezone(input);
+}
+
+/** Stored Chrome language: `auto` (also for empty input) or a supported code. */
+function sessionChromeLanguage(input: unknown) {
+  return !String(input ?? '').trim() || isAutoLocale(input) ? AUTO_LOCALE : normalizeChromeLanguage(input);
+}
+
 export function normalizeHomeUrl(input: unknown) {
   const raw = String(input ?? '').trim();
-  if (!raw || raw === 'about:blank') return DEFAULT_HOME_URL;
+  if (!raw || /^chrome:\/\/new-?tab(-page)?\/?$/i.test(raw)) return DEFAULT_HOME_URL;
+  if (raw === 'about:blank') return raw;
   const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw) ? raw : `https://${raw}`;
   let parsed: URL;
   try {
@@ -157,7 +171,7 @@ export function normalizeViaId(value: unknown): string | null {
   return s || null;
 }
 
-export function assertProxyChain(selfId: string | null, viaProxyId: string | null) {
+export function assertProxyChain(selfId: string | null, viaProxyId: string | null | undefined) {
   const via = normalizeViaId(viaProxyId);
   if (!via) return;
   if (selfId && via === selfId) throw new Error('A proxy cannot chain through itself');
@@ -416,8 +430,8 @@ function hydrateSession(row: typeof sessionsTable.$inferSelect): SessionRecord {
     proxyId: row.proxyId,
     proxy: proxyToConfig(proxy),
     fingerprint: parseFingerprint(row.fingerprint),
-    timezone: normalizeTimezone(row.timezone),
-    chromeLanguage: normalizeChromeLanguage(row.chromeLanguage),
+    timezone: sessionTimezone(row.timezone),
+    chromeLanguage: sessionChromeLanguage(row.chromeLanguage),
     homeUrl: normalizeHomeUrl(row.homeUrl),
     idleTimeoutMinutes: normalizeIdleTimeoutMinutes(row.idleTimeoutMinutes),
     createdAt: row.createdAt,
@@ -444,10 +458,9 @@ export function createSession(input: {
   chromeLanguage?: string;
   gpuProfile?: string;
   webrtcMode?: FingerprintConfig['webrtcMode'];
-  deviceName?: string;
-  mediaDevices?: Partial<FingerprintConfig['mediaDevices']>;
   geo?: Partial<FingerprintConfig['geo']>;
-  fontProfile?: FingerprintConfig['fontProfile'];
+  os?: FingerprintConfig['os'];
+  windowsRelease?: FingerprintConfig['windowsRelease'];
   hardwareConcurrency?: number;
   deviceMemory?: number;
   homeUrl?: string;
@@ -474,16 +487,15 @@ export function createSession(input: {
           ...input.fingerprint,
           gpuProfile: input.gpuProfile ?? input.fingerprint.gpuProfile,
           webrtcMode: input.webrtcMode ?? input.fingerprint.webrtcMode,
-          deviceName: input.deviceName ?? input.fingerprint.deviceName,
-          mediaDevices: input.mediaDevices ?? input.fingerprint.mediaDevices,
           geo: input.geo ?? input.fingerprint.geo,
-          fontProfile: input.fontProfile ?? input.fingerprint.fontProfile,
+          os: input.os ?? input.fingerprint.os,
+          windowsRelease: input.windowsRelease ?? input.fingerprint.windowsRelease,
           hardwareConcurrency: input.hardwareConcurrency ?? input.fingerprint.hardwareConcurrency,
           deviceMemory: input.deviceMemory ?? input.fingerprint.deviceMemory,
         })
       : createFingerprint(input.gpuProfile, input),
-    timezone: normalizeTimezone(input.timezone),
-    chromeLanguage: normalizeChromeLanguage(input.chromeLanguage),
+    timezone: sessionTimezone(input.timezone),
+    chromeLanguage: sessionChromeLanguage(input.chromeLanguage),
     homeUrl: normalizeHomeUrl(input.homeUrl),
     idleTimeoutMinutes: normalizeIdleTimeoutMinutes(input.idleTimeoutMinutes),
     createdAt: now,
@@ -522,10 +534,9 @@ export function updateSession(
     chromeLanguage: string;
     gpuProfile: string;
     webrtcMode: FingerprintConfig['webrtcMode'];
-    deviceName: string;
-    mediaDevices: Partial<FingerprintConfig['mediaDevices']>;
     geo: Partial<FingerprintConfig['geo']>;
-    fontProfile: FingerprintConfig['fontProfile'];
+    os: FingerprintConfig['os'];
+    windowsRelease: FingerprintConfig['windowsRelease'];
     hardwareConcurrency: number;
     deviceMemory: number;
     homeUrl: string;
@@ -548,10 +559,10 @@ export function updateSession(
     groupId: patch.groupId !== undefined ? patch.groupId : current.groupId,
     proxyId: patch.proxyId !== undefined ? patch.proxyId : current.proxyId,
     timezone:
-      patch.timezone !== undefined ? normalizeTimezone(patch.timezone) : current.timezone,
+      patch.timezone !== undefined ? sessionTimezone(patch.timezone) : current.timezone,
     chromeLanguage:
       patch.chromeLanguage !== undefined
-        ? normalizeChromeLanguage(patch.chromeLanguage)
+        ? sessionChromeLanguage(patch.chromeLanguage)
         : current.chromeLanguage,
     homeUrl: patch.homeUrl !== undefined ? normalizeHomeUrl(patch.homeUrl) : current.homeUrl,
     idleTimeoutMinutes:
@@ -563,10 +574,9 @@ export function updateSession(
         ? normalizeFingerprint(patch.fingerprint)
         : patch.gpuProfile !== undefined ||
             patch.webrtcMode !== undefined ||
-            patch.deviceName !== undefined ||
-            patch.mediaDevices !== undefined ||
             patch.geo !== undefined ||
-            patch.fontProfile !== undefined ||
+            patch.os !== undefined ||
+            patch.windowsRelease !== undefined ||
             patch.hardwareConcurrency !== undefined ||
             patch.deviceMemory !== undefined
           ? mergeFingerprintPatch(current.fingerprint, patch)
@@ -577,6 +587,9 @@ export function updateSession(
   db.update(sessionsTable).set(next).where(eq(sessionsTable.id, id)).run();
   return getSession(id);
 }
+
+/** Fields older releases stored; a record carrying one is rewritten without it. */
+const LEGACY_FINGERPRINT_KEYS = ['fontProfile', 'deviceName', 'mediaDevices'];
 
 export function ensureSessionFingerprint(id: string) {
   const row = db.select().from(sessionsTable).where(eq(sessionsTable.id, id)).get();
@@ -589,22 +602,16 @@ export function ensureSessionFingerprint(id: string) {
   }
   const fp = normalizeFingerprint(parsed);
   const obj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-  const media =
-    obj.mediaDevices && typeof obj.mediaDevices === 'object'
-      ? (obj.mediaDevices as Record<string, unknown>)
-      : {};
   const geo = obj.geo && typeof obj.geo === 'object' ? (obj.geo as Record<string, unknown>) : {};
   const complete =
     typeof obj.seed === 'string' &&
     typeof obj.gpuProfile === 'string' &&
     typeof obj.webrtcMode === 'string' &&
-    typeof obj.deviceName === 'string' &&
-    typeof obj.fontProfile === 'string' &&
+    !LEGACY_FINGERPRINT_KEYS.some((key) => key in obj) &&
+    typeof obj.os === 'string' &&
+    typeof obj.windowsRelease === 'string' &&
     obj.hardwareConcurrency === fp.hardwareConcurrency &&
     obj.deviceMemory === fp.deviceMemory &&
-    'audioInput' in media &&
-    'audioOutput' in media &&
-    'videoInput' in media &&
     'permission' in geo &&
     'latitude' in geo &&
     'longitude' in geo &&
@@ -621,22 +628,18 @@ export function regenerateSessionFingerprint(id: string) {
   return updateSession(id, {
     fingerprint: createFingerprint(fp.gpuProfile, {
       webrtcMode: fp.webrtcMode,
-      deviceName: fp.deviceName,
-      mediaDevices: fp.mediaDevices,
       geo: fp.geo,
-      fontProfile: fp.fontProfile,
+      os: fp.os,
+      windowsRelease: fp.windowsRelease,
       hardwareConcurrency: fp.hardwareConcurrency,
       deviceMemory: fp.deviceMemory,
     }),
   });
 }
 
-export function ensureSessionTimezone(id: string) {
-  const current = getSession(id);
-  if (!current) return null;
-  const tz = normalizeTimezone(current.timezone);
-  if (current.timezone === tz) return tz;
-  return updateSession(id, { timezone: tz })?.timezone || tz;
+/** The timezone and Chrome language a session launches with (`auto` follows its proxy's last test). */
+export function sessionLocaleSettings(session: Pick<SessionRecord, 'timezone' | 'chromeLanguage' | 'proxyId'>) {
+  return resolveSessionLocale(session, getProxy(session.proxyId || null)?.lastTest);
 }
 
 export function deleteSession(id: string) {

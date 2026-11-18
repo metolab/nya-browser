@@ -8,6 +8,7 @@ node_modules
 **/*.tsbuildinfo
 
 data
+third_party/assets/.git
 e2e/test-results
 e2e/playwright-report
 e2e/tests
@@ -17,7 +18,9 @@ e2e/playwright.config.ts
 browser/.portablelinux
 browser/dist
 browser/patches
+browser/portablelinux
 browser/scripts
+browser/src
 browser/Dockerfile.build
 browser/args.gn
 

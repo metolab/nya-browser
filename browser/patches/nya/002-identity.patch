@@ -1,0 +1,195 @@
+diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
+index 091ced4..8f72310 100644
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -26,6 +26,7 @@
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
+ #include "components/embedder_support/switches.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ #include "components/version_info/version_info.h"
+ #include "net/http/http_util.h"
+ #include "third_party/blink/public/common/features.h"
+@@ -54,6 +55,21 @@ namespace embedder_support {
+ 
+ namespace {
+ 
++// Emulated OS identity from the Nya backend; empty when not set or invalid.
++std::string NyaOsSwitch(const char* name) {
++  const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch(name)) {
++    return std::string();
++  }
++  std::string value = cmd->GetSwitchValueASCII(name);
++  if (value.empty() || value.size() > 64 ||
++      !net::HttpUtil::IsValidHeaderValue(value) ||
++      value.find_first_of("\"()\\") != std::string::npos) {
++    return std::string();
++  }
++  return value;
++}
++
+ #if BUILDFLAG(IS_WIN)
+ 
+ // The registry key where the UniversalApiContract version value can be read
+@@ -162,6 +178,13 @@ const blink::UserAgentBrandList GetUserAgentBrandList(
+ #if !BUILDFLAG(CHROMIUM_BRANDING)
+   brand = version_info::GetProductName();
+ #endif
++  const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
++  if (cmd && cmd->HasSwitch(::switches::kNyaUaBrand)) {
++    std::string nya_brand = cmd->GetSwitchValueASCII(::switches::kNyaUaBrand);
++    if (!nya_brand.empty() && net::HttpUtil::IsValidHeaderValue(nya_brand)) {
++      brand = std::move(nya_brand);
++    }
++  }
+ 
+   std::string brand_version =
+       output_version_type == blink::UserAgentBrandVersionType::kFullVersion
+@@ -278,6 +301,10 @@ std::string GetUserAgentPlatform() {
+ }
+ 
+ std::string GetUnifiedPlatform() {
++  if (std::string nya = NyaOsSwitch(::switches::kNyaOsUaPlatform);
++      !nya.empty()) {
++    return nya;
++  }
+ #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
+   // This constant is only used on Android (desktop) and Linux.
+   constexpr char kUnifiedPlatformChromeOSX64[] = "X11; CrOS x86_64 14541.0.0";
+@@ -458,7 +485,8 @@ std::string GetUserAgentInternal() {
+   }
+ #endif
+ 
+-  return ShouldSendUserAgentUnifiedPlatform()
++  return ShouldSendUserAgentUnifiedPlatform() ||
++                 !NyaOsSwitch(::switches::kNyaOsUaPlatform).empty()
+              ? BuildUnifiedPlatformUserAgentFromProduct(product)
+              : BuildUserAgentFromProduct(product);
+ }
+@@ -572,6 +600,10 @@ bool GetMobileBitForUAMetadata() {
+ }
+ 
+ std::string GetPlatformVersion() {
++  if (std::string nya = NyaOsSwitch(::switches::kNyaOsChPlatformVersion);
++      !nya.empty()) {
++    return nya;
++  }
+ #if BUILDFLAG(IS_ANDROID)
+   // For Android XR or desktop form factors, report a non-empty platform
+   // version when kAndroidDesktopUAPlatform is enabled to follow the spec:
+@@ -603,6 +635,10 @@ std::string GetPlatformVersion() {
+ }
+ 
+ std::string GetPlatformForUAMetadata() {
++  if (std::string nya = NyaOsSwitch(::switches::kNyaOsChPlatform);
++      !nya.empty()) {
++    return nya;
++  }
+ #if BUILDFLAG(IS_ANDROID)
+   if (base::android::device_info::is_desktop() ||
+       base::android::device_info::is_xr()) {
+diff --git a/third_party/blink/common/device_memory/approximated_device_memory.cc b/third_party/blink/common/device_memory/approximated_device_memory.cc
+index 7fd53eb..03a3852 100644
+--- a/third_party/blink/common/device_memory/approximated_device_memory.cc
++++ b/third_party/blink/common/device_memory/approximated_device_memory.cc
+@@ -6,12 +6,34 @@
+ 
+ #include "base/byte_size.h"
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/system/sys_info.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ #include "third_party/blink/public/common/features.h"
+ 
+ namespace blink {
+ 
++namespace {
++
++// Same bounds as nya::DeviceMemory() so headers and navigator agree.
++float NyaDeviceMemoryOverride() {
++  const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch(switches::kNyaDeviceMemory)) {
++    return 0.0f;
++  }
++  double value = 0;
++  if (!base::StringToDouble(
++          cmd->GetSwitchValueASCII(switches::kNyaDeviceMemory), &value) ||
++      value <= 0 || value > 32) {
++    return 0.0f;
++  }
++  return static_cast<float>(value);
++}
++
++}  // namespace
++
+ // static
+ float ApproximatedDeviceMemory::approximated_device_memory_gb_ = 0.0;
+ int64_t ApproximatedDeviceMemory::physical_memory_mb_ = 0;
+@@ -23,6 +45,9 @@ void ApproximatedDeviceMemory::Initialize() {
+   DCHECK_EQ(0, physical_memory_mb_);
+   physical_memory_mb_ = ::base::SysInfo::AmountOfTotalPhysicalMemory().InMiB();
+   CalculateAndSetApproximatedDeviceMemory();
++  if (const float override_gb = NyaDeviceMemoryOverride(); override_gb > 0) {
++    approximated_device_memory_gb_ = override_gb;
++  }
+ }
+ 
+ // static
+diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+index d1f2628..30392df 100644
+--- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
++++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+@@ -9,6 +9,7 @@
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+@@ -67,6 +68,10 @@ String NavigatorBase::userAgent() const {
+ }
+ 
+ String NavigatorBase::platform() const {
++  if (const std::string& nya_platform = nya::NavigatorPlatform();
++      !nya_platform.empty()) {
++    return String::FromUtf8(nya_platform);
++  }
+ #if BUILDFLAG(IS_ANDROID)
+   // We need to check the ReduceUserAgentMinorVersion feature flag for
+   // Android WebView, which does not currently ship a reduced User-Agent.
+@@ -85,6 +90,9 @@ void NavigatorBase::Trace(Visitor* visitor) const {
+ }
+ 
+ unsigned int NavigatorBase::hardwareConcurrency() const {
++  if (auto override = nya::HardwareConcurrency()) {
++    return *override;
++  }
+   if (base::FeatureList::IsEnabled(blink::features::kReducedSystemInfo))
+     return 2;
+   unsigned int hardware_concurrency =
+diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+index 05fa33e..45f33d4 100644
+--- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
++++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_device_memory.h"
+ 
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/public/common/device_memory/approximated_device_memory.h"
+ #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+@@ -12,6 +13,9 @@
+ namespace blink {
+ 
+ float NavigatorDeviceMemory::deviceMemory() const {
++  if (auto override = nya::DeviceMemory()) {
++    return *override;
++  }
+   return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
+ }
+ 

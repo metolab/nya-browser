@@ -7,7 +7,7 @@ const { WebSocket } = require('ws');
 const API = process.env.NYA_API || 'http://127.0.0.1:8080';
 const USER = process.env.INIT_ADMIN_USER || 'admin';
 const PASSWORD = process.env.INIT_ADMIN_PASSWORD || 'gputest-1080ti';
-const PROFILE = process.env.NYA_FONT_PROFILE || 'win10';
+const RELEASE = process.env.NYA_WINDOWS_RELEASE || 'win10';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -126,7 +126,8 @@ async function main() {
     body: {
       name: `fp-font-${Date.now()}`,
       gpuProfile: 'rtx-2080',
-      fontProfile: PROFILE,
+      os: 'windows',
+      windowsRelease: RELEASE,
       webrtcMode: 'offline',
       homeUrl: 'https://example.com/',
     },
@@ -224,7 +225,6 @@ async function main() {
     /* ignore */
   }
 
-  const spoofing = PROFILE !== 'native';
   const checks = {
     arialMetrics: value?.arial?.installed === true,
     calibriMetrics: value?.calibri?.installed === true,
@@ -232,14 +232,14 @@ async function main() {
     impactMetrics: value?.impact?.installed === true,
     notoHidden: value?.noto?.installed === false,
     dejavuHidden: value?.dejavu?.installed === false,
-    arialCheck: spoofing ? value?.arial?.check === true : true,
-    notoCheck: spoofing ? value?.noto?.check === false : true,
-    localFonts: !spoofing || value?.localFonts?.ok === true,
-    localHasArial: !spoofing || value?.localFonts?.hasArial === true,
-    localNoLinux: !spoofing || value?.localFonts?.hasNoto === false,
+    arialCheck: value?.arial?.check === true,
+    notoCheck: value?.noto?.check === false,
+    localFonts: value?.localFonts?.ok === true,
+    localHasArial: value?.localFonts?.hasArial === true,
+    localNoLinux: value?.localFonts?.hasNoto === false,
   };
   const report = {
-    stored: session.fingerprint.fontProfile,
+    stored: { os: session.fingerprint.os, windowsRelease: session.fingerprint.windowsRelease },
     page: value,
     checks,
   };

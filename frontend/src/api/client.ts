@@ -93,11 +93,10 @@ export const api = {
     chromeLanguage?: string;
     gpuProfile?: string;
     webrtcMode?: string;
-    fontProfile?: string;
+    os?: string;
+    windowsRelease?: string;
     hardwareConcurrency?: number;
     deviceMemory?: number;
-    deviceName?: string;
-    mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
     geo?: {
       permission?: string;
       latitude?: number | null;
@@ -107,11 +106,10 @@ export const api = {
     fingerprint?: {
       gpuProfile?: string;
       webrtcMode?: string;
-      fontProfile?: string;
+      os?: string;
+      windowsRelease?: string;
       hardwareConcurrency?: number;
       deviceMemory?: number;
-      deviceName?: string;
-      mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
       geo?: {
         permission?: string;
         latitude?: number | null;
@@ -138,11 +136,10 @@ export const api = {
       chromeLanguage: string;
       gpuProfile: string;
       webrtcMode: string;
-      fontProfile: string;
+      os: string;
+      windowsRelease: string;
       hardwareConcurrency: number;
       deviceMemory: number;
-      deviceName: string;
-      mediaDevices: { audioInput?: string; audioOutput?: string; videoInput?: string };
       geo: {
         permission?: string;
         latitude?: number | null;
@@ -152,11 +149,10 @@ export const api = {
       fingerprint: {
         gpuProfile?: string;
         webrtcMode?: string;
-        fontProfile?: string;
+        os?: string;
+        windowsRelease?: string;
         hardwareConcurrency?: number;
         deviceMemory?: number;
-        deviceName?: string;
-        mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
         geo?: {
           permission?: string;
           latitude?: number | null;

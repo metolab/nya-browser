@@ -1,0 +1,662 @@
+diff --git a/chrome/browser/chrome_browser_main_extra_parts_linux.cc b/chrome/browser/chrome_browser_main_extra_parts_linux.cc
+index 0885414..0551430 100644
+--- a/chrome/browser/chrome_browser_main_extra_parts_linux.cc
++++ b/chrome/browser/chrome_browser_main_extra_parts_linux.cc
+@@ -10,6 +10,7 @@
+ #include "base/environment.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "build/build_config.h"
++#include "chrome/browser/ui/nya/nya_multi_display.h"
+ #include "ui/linux/display_server_utils.h"
+ 
+ namespace {
+@@ -55,5 +56,6 @@ ChromeBrowserMainExtraPartsLinux::~ChromeBrowserMainExtraPartsLinux() = default;
+ 
+ void ChromeBrowserMainExtraPartsLinux::PostBrowserStart() {
+   RecordDisplayServerProtocolSupport();
++  nya::StartMultiDisplayController();
+   ChromeBrowserMainExtraPartsOzone::PostBrowserStart();
+ }
+diff --git a/chrome/browser/defaults.cc b/chrome/browser/defaults.cc
+index d7f6b37..300962d 100644
+--- a/chrome/browser/defaults.cc
++++ b/chrome/browser/defaults.cc
+@@ -8,13 +8,8 @@
+ 
+ namespace browser_defaults {
+ 
+-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
+ const bool kBrowserAliveWithNoWindows = true;
+ const bool kShowExitMenuItem = false;
+-#else
+-const bool kBrowserAliveWithNoWindows = false;
+-const bool kShowExitMenuItem = true;
+-#endif
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+ const bool kShowUpgradeMenuItem = false;
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+index 77745e4..45219d6 100644
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -1827,7 +1827,7 @@ void BrowserCommandController::InitCommandState() {
+       browser_->GetType() !=
+           BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+   UpdateTabRestoreCommandState();
+-  command_updater_->UpdateCommandEnabled(IDC_EXIT, true);
++  command_updater_->UpdateCommandEnabled(IDC_EXIT, false);
+   command_updater_->UpdateCommandEnabled(IDC_NAME_WINDOW, true);
+   command_updater_->UpdateCommandEnabled(IDC_TOGGLE_VERTICAL_TABS, true);
+   command_updater_->UpdateCommandEnabled(IDC_VERTICAL_TABS_SEND_FEEDBACK, true);
+diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
+index ac2ba9e..36ae54b 100644
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -2070,8 +2070,7 @@ void CloseOtherTabs(BrowserWindowInterface* browser) {
+ }
+ 
+ void Exit() {
+-  base::RecordAction(UserMetricsAction("Exit"));
+-  chrome::AttemptUserExit();
++  // Nya: session lifetime is owned by the host. Ignore in-browser Exit.
+ }
+ 
+ void BookmarkCurrentTab(BrowserWindowInterface* browser) {
+diff --git a/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc b/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc
+index 3b394ef..1b5c622 100644
+--- a/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc
++++ b/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc
+@@ -48,6 +48,7 @@ BrowserWindowCreateParams BrowserWindowCreateParams::Clone() const {
+ #endif
+ #if BUILDFLAG(IS_LINUX)
+   clone.startup_id = startup_id;
++  clone.nya_x11_display = nya_x11_display;
+ #endif
+ #if BUILDFLAG(IS_OZONE)
+   clone.restore_id = restore_id;
+diff --git a/chrome/browser/ui/browser_window/public/create_browser_window.h b/chrome/browser/ui/browser_window/public/create_browser_window.h
+index 6ecba96..c78e8d7 100644
+--- a/chrome/browser/ui/browser_window/public/create_browser_window.h
++++ b/chrome/browser/ui/browser_window/public/create_browser_window.h
+@@ -185,6 +185,9 @@ struct BrowserWindowCreateParams {
+   // using this ID. In response, the desktop will stop playing the "waiting
+   // for startup" animation (if any).
+   std::string startup_id;
++
++  // X11 display this browser window should be created on (e.g. ":201").
++  std::string nya_x11_display;
+ #endif
+ 
+ #if BUILDFLAG(IS_OZONE)
+diff --git a/chrome/browser/ui/views/chrome_views_delegate_linux.cc b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+index c5808a0..6aa70b0 100644
+--- a/chrome/browser/ui/views/chrome_views_delegate_linux.cc
++++ b/chrome/browser/ui/views/chrome_views_delegate_linux.cc
+@@ -6,12 +6,15 @@
+ 
+ #include "base/environment.h"
+ #include "base/feature_list.h"
++#include "base/logging.h"
+ #include "base/nix/xdg_util.h"
+ #include "build/branding_buildflags.h"
+ #include "chrome/browser/ui/views/native_widget_factory.h"
++#include "chrome/browser/ui/nya/nya_one_compositor.h"
+ #include "chrome/common/channel_info.h"
+ #include "chrome/grit/chrome_unscaled_resources.h"
+ #include "components/version_info/channel.h"
++#include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/base/resource/resource_bundle.h"
+ #include "ui/base/ui_base_features.h"
+ #include "ui/linux/linux_ui.h"
+@@ -62,6 +65,24 @@ int GetWindowIconResourceId() {
+ 
+ NativeWidgetType GetNativeWidgetTypeForInitParams(
+     const views::Widget::InitParams& params) {
++  // One EGL-readback compositor per X display. Menus/bubbles/window.open
++  // stay NativeWidgetAura on that compositor. Extra type_normal Browser
++  // windows are a second X11 window with GPU readback present.
++  if (nya::OneCompositorEnabled()) {
++    if (nya::IsExtraDesktopBrowser(params)) {
++      return NativeWidgetType::kDesktopNativeWidgetAura;
++    }
++    if (nya::ShouldHostInExistingCompositor(params) || params.parent ||
++        params.context || params.child) {
++      return NativeWidgetType::kNativeWidgetAura;
++    }
++    if (params.type == views::Widget::InitParams::TYPE_WINDOW ||
++        params.type == views::Widget::InitParams::TYPE_WINDOW_FRAMELESS) {
++      return NativeWidgetType::kDesktopNativeWidgetAura;
++    }
++    return NativeWidgetType::kNativeWidgetAura;
++  }
++
+   // If this is a security surface, always use a toplevel window,
+   // otherwise it's possible for things like menus to obscure the view.
+   if (params.z_order &&
+@@ -98,6 +119,38 @@ NativeWidgetType GetNativeWidgetTypeForInitParams(
+ views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
+     views::Widget::InitParams* params,
+     views::internal::NativeWidgetDelegate* delegate) {
++  if (nya::OneCompositorEnabled()) {
++    if (nya::IsExtraDesktopBrowser(*params)) {
++      // Extra type_normal window: real X11 so tint2/Openbox see it. GPU
++      // readback present so WebContents can paint.
++      params->parent = nullptr;
++      params->context = nullptr;
++      params->child = false;
++      params->show_state = ui::mojom::WindowShowState::kNormal;
++      params->use_accelerated_widget_override = true;
++      LOG(ERROR) << "nya-widget extra-browser desktop gpu display="
++                 << params->x11_display
++                 << " bounds=" << params->bounds.ToString();
++    } else if (gfx::NativeView host = nya::FindDesktopHost(*params)) {
++      if (!params->parent) {
++        params->parent = host;
++      }
++      if (!params->context) {
++        params->context = host;
++      }
++      // TYPE_BUBBLE/POPUP map to WINDOW_TYPE_POPUP, which
++      // DesktopScreenPositionClient already places in screen coordinates even
++      // as children. TYPE_MENU/TOOLTIP do not: forcing child=true parents them
++      // to the bookmark bubble and treats screen bounds as bubble-relative, so
++      // the folder combobox opens off-screen. Keep those top-level transients
++      // on the browser compositor (still NativeWidgetAura, no extra X window).
++      if (params->type != views::Widget::InitParams::TYPE_MENU &&
++          params->type != views::Widget::InitParams::TYPE_TOOLTIP) {
++        params->child = true;
++      }
++      params->use_accelerated_widget_override = false;
++    }
++  }
+   return ::CreateNativeWidget(GetNativeWidgetTypeForInitParams(*params), params,
+                               delegate);
+ }
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc b/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
+index 8a4dd75..72d8f09 100644
+--- a/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
++++ b/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
+@@ -21,7 +21,7 @@
+ #include "chrome/browser/ui/views/frame/browser_frame_view_layout_linux_native.h"
+ #include "chrome/browser/ui/views/frame/browser_frame_view_linux.h"
+ #include "chrome/browser/ui/views/frame/browser_frame_view_linux_native.h"
+-#include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
++#include "chrome/browser/ui/views/frame/browser_native_widget.h"
+ #include "chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+ #include "ui/linux/linux_ui.h"
+@@ -55,14 +55,14 @@ std::unique_ptr<OpaqueBrowserFrameView> CreateOpaqueBrowserFrameViewLinux(
+     auto nav_button_provider =
+         linux_ui_theme->CreateNavButtonProvider(ui::FrameType::kBrowser);
+     if (nav_button_provider) {
+-      auto* native_widget = static_cast<BrowserNativeWidgetAuraLinux*>(
+-          widget->browser_native_widget());
++      auto* native_widget = widget->browser_native_widget();
+       auto* layout = new BrowserFrameViewLayoutLinuxNative(
+           nav_button_provider.get(),
+           base::BindRepeating(
+-              [](BrowserNativeWidgetAuraLinux* native_widget,
++              [](BrowserNativeWidget* native_widget,
+                  ui::LinuxUiTheme* linux_ui_theme, bool tiled, bool maximized) {
+                 const bool solid_frame =
++                    !native_widget ||
+                     !native_widget->ShouldDrawRestoredFrameShadow();
+                 return linux_ui_theme->GetWindowFrameProvider(
+                     ui::FrameType::kBrowser, solid_frame, tiled, maximized);
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_linux.cc b/chrome/browser/ui/views/frame/browser_frame_view_linux.cc
+index 474b835..5ce2cdf 100644
+--- a/chrome/browser/ui/views/frame/browser_frame_view_linux.cc
++++ b/chrome/browser/ui/views/frame/browser_frame_view_linux.cc
+@@ -6,7 +6,7 @@
+ 
+ #include "base/notreached.h"
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+-#include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
++#include "chrome/browser/ui/views/frame/browser_native_widget.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "ui/base/hit_test.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -90,9 +90,8 @@ void BrowserFrameViewLinux::GetWindowMask(const gfx::Size& size,
+ }
+ 
+ bool BrowserFrameViewLinux::ShouldDrawRestoredFrameShadow() const {
+-  return static_cast<BrowserNativeWidgetAuraLinux*>(
+-             browser_widget()->browser_native_widget())
+-      ->ShouldDrawRestoredFrameShadow();
++  BrowserNativeWidget* native = browser_widget()->browser_native_widget();
++  return native && native->ShouldDrawRestoredFrameShadow();
+ }
+ 
+ void BrowserFrameViewLinux::OnWindowButtonOrderingChange() {
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget.h b/chrome/browser/ui/views/frame/browser_native_widget.h
+index 4a4a0c0..e2c589c 100644
+--- a/chrome/browser/ui/views/frame/browser_native_widget.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget.h
+@@ -72,6 +72,12 @@ class BrowserNativeWidget {
+   // Called when the tab drag kind for this frame changes.
+   virtual void TabDraggingKindChanged(TabDragKind tab_drag_kind) {}
+ 
++#if BUILDFLAG(IS_LINUX)
++  // Client-side restored frame shadow needs a DesktopWindowTreeHost.
++  // In-compositor child Browser windows (Nya extra windows) have none.
++  virtual bool ShouldDrawRestoredFrameShadow() const { return false; }
++#endif
++
+ #if BUILDFLAG(IS_MAC)
+   // Causes the screen reader to announce |text| against the remote window. If
+   // the current user is not using a screen reader or if there is no remote
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
+index f8737ba..9a28b27 100644
+--- a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
++++ b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.cc
+@@ -5,18 +5,27 @@
+ #include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
+ 
+ #include "base/functional/bind.h"
++#include "base/logging.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/shell_integration_linux.h"
+ #include "chrome/browser/ui/browser_init_state.h"
++#include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/nya/nya_browser_native_widget.h"
++#include "chrome/browser/ui/nya/nya_one_compositor.h"
+ #include "chrome/browser/ui/views/frame/browser_desktop_window_tree_host_linux.h"
+ #include "chrome/browser/ui/views/frame/browser_native_widget_factory.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/common/pref_names.h"
++#include "ui/aura/window.h"
++#include "ui/base/mojom/window_show_state.mojom.h"
++#include "ui/gfx/geometry/rect.h"
+ #include "ui/ozone/public/ozone_platform.h"
+ #include "ui/views/widget/widget.h"
+ 
++#include <algorithm>
++
+ BrowserNativeWidgetAuraLinux::BrowserNativeWidgetAuraLinux(
+     BrowserWidget* browser_widget,
+     BrowserView* browser_view)
+@@ -61,6 +70,8 @@ views::Widget::InitParams BrowserNativeWidgetAuraLinux::GetWidgetParams(
+                                 BrowserWindowInterface::Type::TYPE_NORMAL
+                             ? std::string(kX11WindowRoleBrowser)
+                             : std::string(kX11WindowRolePopup);
++  params.x11_display =
++      BrowserInitState::From(&browser)->create_params().nya_x11_display;
+   params.remove_standard_frame = UseCustomFrame();
+   params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+ 
+@@ -74,6 +85,26 @@ views::Widget::InitParams BrowserNativeWidgetAuraLinux::GetWidgetParams(
+     params.wayland_app_id = params.wm_class_class;
+   }
+ 
++  if (nya::OneCompositorEnabled()) {
++    gfx::NativeView host = nya::FindDesktopHost(params.x11_display);
++    if (host) {
++      params.force_software_compositing = false;
++      params.show_state = ui::mojom::WindowShowState::kNormal;
++      gfx::Rect hb = host->GetBoundsInScreen();
++      if (!hb.IsEmpty()) {
++        const int w = std::max(640, hb.width() * 3 / 4);
++        const int h = std::max(480, hb.height() * 3 / 4);
++        const int fit_w = std::min(w, std::max(400, hb.width() - 72));
++        const int fit_h = std::min(h, std::max(300, hb.height() - 72));
++        params.bounds = gfx::Rect(hb.x() + (hb.width() - fit_w) / 2,
++                                  hb.y() + (hb.height() - fit_h) / 2, fit_w,
++                                  fit_h);
++      }
++      LOG(ERROR) << "nya-widget extra-browser GetWidgetParams gpu bounds="
++                 << params.bounds.ToString();
++    }
++  }
++
+   return params;
+ }
+ 
+@@ -103,6 +134,9 @@ bool BrowserNativeWidgetAuraLinux::UseCustomFrame() const {
+ 
+ void BrowserNativeWidgetAuraLinux::TabDraggingKindChanged(
+     TabDragKind tab_drag_kind) {
++  if (!host_) {
++    return;
++  }
+   host_->TabDraggingKindChanged(tab_drag_kind);
+ }
+ 
+@@ -112,7 +146,32 @@ void BrowserNativeWidgetAuraLinux::ClientDestroyedWidget() {
+ }
+ 
+ bool BrowserNativeWidgetAuraLinux::ShouldDrawRestoredFrameShadow() const {
+-  return host_->SupportsClientFrameShadow() && UseCustomFrame();
++  return host_ && host_->SupportsClientFrameShadow() && UseCustomFrame();
++}
++
++bool BrowserNativeWidgetAuraLinux::ShouldRestorePreviousBrowserWidgetState()
++    const {
++  if (nya::OneCompositorEnabled() && browser_view() &&
++      browser_view()->browser() &&
++      nya::FindDesktopHost(
++          BrowserInitState::From(browser_view()->browser())
++              ->create_params()
++              .nya_x11_display)) {
++    return false;
++  }
++  return BrowserNativeWidgetAura::ShouldRestorePreviousBrowserWidgetState();
++}
++
++bool BrowserNativeWidgetAuraLinux::ShouldSaveWindowPlacement() const {
++  if (nya::OneCompositorEnabled() && browser_view() &&
++      browser_view()->browser() &&
++      nya::FindDesktopHost(
++          BrowserInitState::From(browser_view()->browser())
++              ->create_params()
++              .nya_x11_display)) {
++    return false;
++  }
++  return BrowserNativeWidgetAura::ShouldSaveWindowPlacement();
+ }
+ 
+ void BrowserNativeWidgetAuraLinux::OnUseCustomChromeFrameChanged() {
+@@ -125,11 +184,30 @@ void BrowserNativeWidgetAuraLinux::OnUseCustomChromeFrameChanged() {
+       UseCustomFrame() ? views::Widget::FrameType::kForceCustom
+                        : views::Widget::FrameType::kForceNative);
+   browser_widget()->FrameTypeChanged();
+-  host_->UpdateFrameHints();
++  if (host_) {
++    host_->UpdateFrameHints();
++  }
+ }
+ 
+ BrowserNativeWidget* BrowserNativeWidgetFactory::Create(
+     BrowserWidget* browser_widget,
+     BrowserView* browser_view) {
++  if (nya::OneCompositorEnabled() && browser_view && browser_view->browser()) {
++    const std::string& display =
++        BrowserInitState::From(browser_view->browser())
++            ->create_params()
++            .nya_x11_display;
++    if (nya::FindDesktopHost(display)) {
++      if (browser_view->browser()->GetType() ==
++          BrowserWindowInterface::TYPE_NORMAL) {
++        // Ctrl+N / Chrome 新窗口: real X11 Desktop widget with GPU
++        // readback so tint2 sees it and WebContents paints.
++        return new BrowserNativeWidgetAuraLinux(browser_widget, browser_view);
++      }
++      // window.open / DevTools / PiP: NativeWidgetAura on the session
++      // compositor (014). A second EGL pbuffer is not created.
++      return new nya::BrowserNativeWidgetChild(browser_widget, browser_view);
++    }
++  }
+   return new BrowserNativeWidgetAuraLinux(browser_widget, browser_view);
+ }
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
+index 6487dbb..51023ac 100644
+--- a/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h
+@@ -26,7 +26,12 @@ class BrowserNativeWidgetAuraLinux : public BrowserNativeWidgetAura {
+   void OnHostClosed() override;
+   bool UseCustomFrame() const override;
+ 
+-  bool ShouldDrawRestoredFrameShadow() const;
++  bool ShouldDrawRestoredFrameShadow() const override;
++
++  // Extra type_normal windows on a display that already has the GPU
++  // compositor must not inherit --start-maximized / saved placement.
++  bool ShouldRestorePreviousBrowserWidgetState() const override;
++  bool ShouldSaveWindowPlacement() const override;
+ 
+   void set_host(BrowserDesktopWindowTreeHostLinux* host) { host_ = host; }
+ 
+diff --git a/chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.cc b/chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.cc
+index af6377d..b423a6d 100644
+--- a/chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.cc
++++ b/chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.cc
+@@ -8,7 +8,7 @@
+ #include "chrome/browser/themes/theme_service_factory.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+-#include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
++#include "chrome/browser/ui/views/frame/browser_native_widget.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "third_party/skia/include/core/SkRRect.h"
+ #include "ui/gfx/canvas.h"
+@@ -40,9 +40,9 @@ PictureInPictureBrowserFrameViewLinux::PictureInPictureBrowserFrameViewLinux(
+   auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(profile);
+   auto* theme_service_factory = ThemeServiceFactory::GetForProfile(profile);
+   if (linux_ui_theme && theme_service_factory->UsingSystemTheme()) {
+-    bool solid_frame = !static_cast<BrowserNativeWidgetAuraLinux*>(
+-                            widget->browser_native_widget())
+-                            ->ShouldDrawRestoredFrameShadow();
++    BrowserNativeWidget* native = widget->browser_native_widget();
++    bool solid_frame =
++        !native || !native->ShouldDrawRestoredFrameShadow();
+ 
+     // This may return null, but that's handled below.
+     window_frame_provider_ = linux_ui_theme->GetWindowFrameProvider(
+@@ -160,9 +160,8 @@ void PictureInPictureBrowserFrameViewLinux::OnPaint(gfx::Canvas* canvas) {
+ }
+ 
+ bool PictureInPictureBrowserFrameViewLinux::ShouldDrawFrameShadow() const {
+-  return static_cast<BrowserNativeWidgetAuraLinux*>(
+-             browser_widget()->browser_native_widget())
+-      ->ShouldDrawRestoredFrameShadow();
++  BrowserNativeWidget* native = browser_widget()->browser_native_widget();
++  return native && native->ShouldDrawRestoredFrameShadow();
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+diff --git a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
+index ecdbbbb..4f0b48f 100644
+--- a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
++++ b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
+@@ -9,6 +9,7 @@
+ #include <utility>
+ 
+ #include "base/auto_reset.h"
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/memory/raw_ptr.h"
+@@ -260,6 +261,17 @@ class DesktopNativeWidgetAuraWindowParentingClient
+     bool is_menu = window->GetType() == aura::client::WINDOW_TYPE_MENU;
+ 
+     if (is_fullscreen || is_menu) {
++#if BUILDFLAG(IS_LINUX)
++      // CreateParentWindow always yields a second AcceleratedWidget (the
++      // 200×200 TYPE_WINDOW dummy). On Xvfb + in-process GPU that second
++      // EGL compositor stalls present. Keep fullscreen/menu widgets in this
++      // host's compositor — the session window is already the exclusive X
++      // surface.
++      if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++              "nya-x11-multi-display")) {
++        return root_window_;
++      }
++#endif
+       ui::ZOrderLevel root_z_order = ui::ZOrderLevel::kNormal;
+       internal::NativeWidgetPrivate* native_widget =
+           DesktopNativeWidgetAura::ForWindow(root_window_);
+diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc
+index 3b6e7c0..6f300e4 100644
+--- a/ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc
++++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_linux.cc
+@@ -510,6 +510,7 @@ void DesktopWindowTreeHostLinux::AddAdditionalInitProperties(
+   properties->wm_class_name = params.wm_class_name;
+   properties->wm_class_class = params.wm_class_class;
+   properties->wm_role_name = params.wm_role_name;
++  properties->x11_display = params.x11_display;
+ 
+   properties->wayland_app_id = params.wayland_app_id;
+   properties->startup_id = params.startup_id;
+diff --git a/ui/views/widget/sublevel_manager.cc b/ui/views/widget/sublevel_manager.cc
+index 99bc5f9..0b3879a 100644
+--- a/ui/views/widget/sublevel_manager.cc
++++ b/ui/views/widget/sublevel_manager.cc
+@@ -7,6 +7,8 @@
+ #include <algorithm>
+ 
+ #include "build/build_config.h"
++#include "base/logging.h"
++#include "base/strings/stringprintf.h"
+ #include "ui/views/widget/native_widget_private.h"
+ #include "ui/views/widget/widget.h"
+ 
+@@ -35,6 +37,17 @@ bool ShouldStackAboveParent(views::Widget* widget) {
+ #endif
+ }
+ 
++std::string DescribeWidget(const views::Widget* widget) {
++  if (!widget) {
++    return "null";
++  }
++  return base::StringPrintf("%p name=%s toplevel=%d parent=%p",
++                            static_cast<const void*>(widget),
++                            widget->GetName().c_str(),
++                            widget->is_top_level() ? 1 : 0,
++                            static_cast<const void*>(widget->parent()));
++}
++
+ }  // namespace
+ 
+ namespace views {
+@@ -89,14 +102,41 @@ void SublevelManager::EnsureOwnerTreeSublevel() {
+ }
+ 
+ void SublevelManager::OnWidgetChildAdded(Widget* owner, Widget* child) {
+-  CHECK_EQ(owner, owner_);
+-  CHECK(!std::ranges::contains(children_, child));
+-  CHECK_EQ(child->parent(), owner_);
++  // Nya hosts extra UI on one GPU compositor. CreateNativeWidget may attach
++  // params.parent after Widget::parent_ was bound, so Init both reparents
++  // (OnChildAdded) and then notifies again at the end of Init. A CHECK here
++  // kills the whole browser because --in-process-gpu shares the process.
++  if (owner != owner_) {
++    LOG(ERROR) << "nya-widget child-added owner mismatch observer="
++               << DescribeWidget(owner_) << " notify=" << DescribeWidget(owner)
++               << " child=" << DescribeWidget(child);
++    return;
++  }
++  if (!child) {
++    LOG(ERROR) << "nya-widget child-added null child owner="
++               << DescribeWidget(owner_);
++    return;
++  }
++  if (std::ranges::contains(children_, child)) {
++    LOG(ERROR) << "nya-widget child-added duplicate owner="
++               << DescribeWidget(owner_) << " child=" << DescribeWidget(child);
++    return;
++  }
++  if (child->parent() != owner_) {
++    LOG(ERROR) << "nya-widget child-added parent mismatch owner="
++               << DescribeWidget(owner_) << " child=" << DescribeWidget(child);
++    return;
++  }
+   children_.push_back(child);
+ }
+ 
+ void SublevelManager::OnWidgetChildRemoved(Widget* owner, Widget* child) {
+-  CHECK_EQ(owner, owner_);
++  if (owner != owner_) {
++    LOG(ERROR) << "nya-widget child-removed owner mismatch observer="
++               << DescribeWidget(owner_) << " notify=" << DescribeWidget(owner)
++               << " child=" << DescribeWidget(child);
++    return;
++  }
+   // During shutdown a child might get untracked more than once by the same
+   // parent. We don't want to DCHECK on that.
+   std::erase(children_, child);
+diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
+index dd051b9..c278d09 100644
+--- a/ui/views/widget/widget.cc
++++ b/ui/views/widget/widget.cc
+@@ -515,6 +515,13 @@ void Widget::Init(InitParams params) {
+     parent_ = GetWidgetForNativeView(params.parent)->GetWeakPtr();
+   }
+ 
++#if BUILDFLAG(IS_LINUX)
++  if (params.x11_display.empty() && parent_) {
++    params.x11_display = parent_->x11_display();
++  }
++  x11_display_ = params.x11_display;
++#endif
++
+   // Subscribe to parent's paint-as-active change and theme changes.
+   if (parent_) {
+     parent_paint_as_active_subscription_ =
+@@ -538,8 +545,10 @@ void Widget::Init(InitParams params) {
+ 
+   // ViewsDelegate::OnBeforeWidgetInit() may change `params.delegate` either by
+   // setting it to null or assigning a different value to it, so handle both
+-  // cases.
++  // cases. It may also set `params.child` (Nya in-window popups), so recompute
++  // `is_top_level_` afterwards.
+   ViewsDelegate::GetInstance()->OnBeforeWidgetInit(&params, this);
++  is_top_level_ = !params.child;
+ 
+   if (params.delegate) {
+     widget_delegate_ = params.delegate->AttachWidgetAndGetHandle(this);
+@@ -567,6 +576,29 @@ void Widget::Init(InitParams params) {
+ 
+   internal::NativeWidgetPrivate* native_widget_raw_ptr =
+       CreateNativeWidget(params, this)->AsNativeWidgetPrivate();
++  // CreateNativeWidget (Nya) may set params.child after OnBeforeWidgetInit.
++  // It may also set params.parent so extra UI shares the session compositor.
++  // Bind parent_ *before* InitNativeWidget: otherwise native reparent notifies
++  // OnChildAdded, then Init's trailing parent_->OnChildAdded fires again and
++  // SublevelManager CHECK-crashes the in-process GPU browser.
++  is_top_level_ = !params.child;
++  if (params.parent) {
++    if (Widget* hosted_parent = GetWidgetForNativeView(params.parent)) {
++      if (parent_.get() != hosted_parent) {
++        parent_ = hosted_parent->GetWeakPtr();
++        parent_paint_as_active_subscription_ =
++            parent_->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
++                &Widget::OnParentShouldPaintAsActiveChanged,
++                base::Unretained(this)));
++#if BUILDFLAG(IS_LINUX)
++        if (x11_display_.empty()) {
++          x11_display_ = parent_->x11_display();
++          params.x11_display = x11_display_;
++        }
++#endif
++      }
++    }
++  }
+   native_widget_ = native_widget_raw_ptr->GetWeakPtr();
+   if (params.ownership == InitParams::WIDGET_OWNS_NATIVE_WIDGET) {
+     owned_native_widget_ = base::WrapUnique(native_widget_raw_ptr);
+diff --git a/ui/views/widget/widget.h b/ui/views/widget/widget.h
+index 2de787c..0a05fdb 100644
+--- a/ui/views/widget/widget.h
++++ b/ui/views/widget/widget.h
+@@ -506,6 +506,9 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
+     std::string wm_class_name;
+     std::string wm_class_class;
+ 
++    // X11 display this widget should be created on (e.g. ":201"). Empty = primary.
++    std::string x11_display;
++
+     // Only used by Wayland, for root level windows.
+     std::string wayland_app_id;
+     // The startup ID (or XDG activation token) used to associate the window
+@@ -1323,6 +1326,10 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
+   // with it. TYPE_CONTROL and TYPE_TOOLTIP is not considered top level.
+   bool is_top_level() const { return is_top_level_; }
+ 
++#if BUILDFLAG(IS_LINUX)
++  const std::string& x11_display() const { return x11_display_; }
++#endif
++
+   // True if the window size will follow the content preferred size.
+   bool is_autosized() const { return is_autosized_; }
+ 
+@@ -1818,6 +1825,10 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
+   // See |is_top_level()| accessor.
+   bool is_top_level_ = false;
+ 
++#if BUILDFLAG(IS_LINUX)
++  std::string x11_display_;
++#endif
++
+   // Tracks whether native widget has been initialized.
+   bool native_widget_initialized_ = false;
+ 

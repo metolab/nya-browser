@@ -27,6 +27,7 @@ data/
 
 # chromium build tree (cloned upstream + unpacked source)
 browser/.portablelinux/
+browser/.portablelinux-*/
 
 # chromium packed binaries (uploaded to GitHub Releases)
 browser/dist/*
@@ -50,3 +51,10 @@ blob-report/
 *.swp
 .DS_Store
 Thumbs.db
+
+e2e/results/
+# private nya-browser-assets checkout (scripts/fetch-assets.sh)
+third_party/assets/
+
+# local-only agent rules (production deploy)
+.cursor/rules/production-deploy.mdc

@@ -1,7 +1,6 @@
 import type { GeoConfig } from './geo.js';
-import type { MediaDevicePreset } from './mediaDevices.js';
 import { emptyProxyExtra, type ProxyExtra, type ProxyType, type ProxyTypeOrNone } from './proxy.js';
-import type { FontProfile } from './fontProfiles.js';
+import type { OsType, WindowsRelease } from './osProfiles.js';
 import type { WebrtcMode } from './webrtc.js';
 
 export type Role = 'admin' | 'user';
@@ -12,10 +11,9 @@ export interface FingerprintConfig {
   deviceMemory: number;
   gpuProfile: string;
   webrtcMode: WebrtcMode;
-  deviceName: string;
-  mediaDevices: MediaDevicePreset;
   geo: GeoConfig;
-  fontProfile: FontProfile;
+  os: OsType;
+  windowsRelease: WindowsRelease;
 }
 
 export interface ProxyConfig {
@@ -117,7 +115,6 @@ export interface GpuUsage {
 export interface RuntimeInfo {
   running?: boolean;
   display?: number;
-  vncPort?: number;
   hasProxy?: boolean;
   startedAt?: string;
   cdpPort?: number | null;
@@ -136,8 +133,12 @@ export interface Session {
   proxyId: string | null;
   proxy: ProxyConfig;
   fingerprint?: FingerprintConfig;
+  /** An IANA name, or `auto` to follow the proxy exit country. */
   timezone: string;
+  /** A Chrome UI language, or `auto` to follow the proxy exit country. */
   chromeLanguage: string;
+  /** What the session launches with, `auto` resolved. */
+  locale: { timezone: string; language: string };
   homeUrl: string;
   idleTimeoutMinutes: number;
   createdAt: string;
@@ -289,7 +290,9 @@ export interface LiveSession {
   cdpClients: number;
 }
 
-export const DEFAULT_HOME_URL = 'https://www.google.com/';
+/** An empty home URL opens Chrome's new tab page, as a fresh Chrome install does. */
+export const DEFAULT_HOME_URL = '';
+export const NEW_TAB_URL = 'chrome://newtab/';
 
 export const emptyProxy = (): ProxyConfig => ({
   type: 'none',

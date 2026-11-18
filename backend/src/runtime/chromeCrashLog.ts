@@ -1,15 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 import { chromeProfileDir, getSession, sessionDir } from '../store.js';
+import type { SessionRuntime } from './session/types.js';
 
 const INTERESTING =
   /FATAL|Check failed|NOTREACHED|SIGTRAP|nya-widget|INFO:CONSOLE|Received signal|chrome-watch|glReadPixels|MakeCurrent failed|compositor-context-lost/i;
 
-function tailInteresting(file, maxLines = 40) {
+function tailInteresting(file: string, maxLines = 40) {
   if (!fs.existsSync(file)) return [];
   const raw = fs.readFileSync(file, 'utf8');
   const lines = raw.split(/\r?\n/);
-  const kept = [];
+  const kept: string[] = [];
   for (let i = lines.length - 1; i >= 0 && kept.length < maxLines; i--) {
     const line = lines[i];
     if (!line) continue;
@@ -21,7 +22,7 @@ function tailInteresting(file, maxLines = 40) {
   return kept.reverse();
 }
 
-function listDumps(dir) {
+function listDumps(dir: string) {
   if (!fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir)
@@ -34,7 +35,7 @@ function listDumps(dir) {
     .sort((a, b) => a.mtime.localeCompare(b.mtime));
 }
 
-function parseDumpRip(file) {
+function parseDumpRip(file: string) {
   try {
     const buf = fs.readFileSync(file);
     if (buf.length < 32 || buf.toString('ascii', 0, 4) !== 'MDMP') return null;
@@ -69,7 +70,7 @@ function parseDumpRip(file) {
   }
 }
 
-export function logChromeCrash(runtime, code, signal) {
+export function logChromeCrash(runtime: SessionRuntime, code: number | null, signal: NodeJS.Signals | null) {
   const session = getSession(runtime.id);
   const uptimeMs = runtime.chromeStartedAt ? Date.now() - runtime.chromeStartedAt : 0;
   const home = sessionDir(runtime.id);
@@ -87,7 +88,7 @@ export function logChromeCrash(runtime, code, signal) {
   console.error(
     `[chrome-crash] session=${runtime.id} name=${session?.name || '?'} ` +
       `display=:${runtime.display} signal=${signal} code=${code} ` +
-      `uptime_ms=${uptimeMs} gpu=${runtime.chromeHasInProcessGpu ? 'in-process' : 'out-of-process'} ` +
+      `uptime_ms=${uptimeMs} ` +
       `geom=${runtime.lastGeom ? `${runtime.lastGeom.w}x${runtime.lastGeom.h}` : '?'} ` +
       `dumps=${dumps.length}` +
       (newest ? ` last_dump=${newest.name} rip=${rip?.rip || '?'} chrome+${rip?.chromeOffset || '?'}` : ''),

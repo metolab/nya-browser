@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
+import { promisify } from 'util';
 import { DATA_DIR } from '../../config.js';
 import { listSessions, sessionDir } from '../../store.js';
 import {
@@ -32,46 +33,59 @@ let snapshot: { at: string; host: HostMetrics; sessions: SessionUsage[] } = {
   sessions: [],
 };
 
-function diskUsage(dir: string) {
-  try {
-    const out = execFileSync('df', ['-B1', dir], { encoding: 'utf8' });
-    const line = out.trim().split('\n')[1];
-    const cols = line.split(/\s+/);
-    const total = Number(cols[1]);
-    const used = Number(cols[2]);
-    const free = Number(cols[3]);
-    return { path: dir, totalBytes: total, usedBytes: used, freeBytes: free };
-  } catch {
-    return { path: dir, totalBytes: 0, usedBytes: 0, freeBytes: 0 };
-  }
+const execFileAsync = promisify(execFile);
+
+// du, df and nvidia-smi can take seconds; they refresh caches in the background
+// so a sample never blocks the event loop. A sample reads the last values.
+const inflight = new Set<string>();
+function refreshInBackground(key: string, task: () => Promise<void>) {
+  if (inflight.has(key)) return;
+  inflight.add(key);
+  task()
+    .catch(() => undefined)
+    .finally(() => inflight.delete(key));
 }
 
-function dirSize(dir: string) {
+let lastVolume = { at: 0, total: 0, free: 0 };
+function volumeUsage(dir: string) {
+  if (!lastVolume.at || Date.now() - lastVolume.at >= 15000) {
+    refreshInBackground('df', async () => {
+      const { stdout } = await execFileAsync('df', ['-B1', dir], { encoding: 'utf8', timeout: 5000 });
+      const cols = stdout.trim().split('\n')[1].split(/\s+/);
+      lastVolume = { at: Date.now(), total: Number(cols[1]) || 0, free: Number(cols[3]) || 0 };
+    });
+  }
+  return lastVolume;
+}
+
+async function dirSize(dir: string) {
   try {
-    const out = execFileSync('du', ['-sb', dir], { encoding: 'utf8', timeout: 15000 });
-    return Number(out.trim().split(/\s+/)[0]) || 0;
+    const { stdout } = await execFileAsync('du', ['-sb', dir], { encoding: 'utf8', timeout: 15000 });
+    return Number(stdout.trim().split(/\s+/)[0]) || 0;
   } catch {
     return 0;
   }
 }
 
 function dataDirBytes() {
-  const now = Date.now();
-  if (lastDataDir.at && now - lastDataDir.at < 15000) return lastDataDir.bytes;
-  lastDataDir = { at: now, bytes: dirSize(DATA_DIR) };
+  if (!lastDataDir.at || Date.now() - lastDataDir.at >= 15000) {
+    refreshInBackground('du:data', async () => {
+      lastDataDir = { at: Date.now(), bytes: await dirSize(DATA_DIR) };
+    });
+  }
   return lastDataDir.bytes;
 }
 
 function sessionDiskBytes(id: string, running: boolean) {
-  const now = Date.now();
   const prev = lastSessionDisk.get(id);
   const ttl = running ? 15000 : 60000;
-  if (prev && now - prev.at < ttl) return prev.bytes;
+  if (prev && Date.now() - prev.at < ttl) return prev.bytes;
   if (!running && diskRefreshBudget <= 0) return prev?.bytes || 0;
   if (!running) diskRefreshBudget -= 1;
-  const bytes = dirSize(sessionDir(id));
-  lastSessionDisk.set(id, { at: now, bytes });
-  return bytes;
+  refreshInBackground(`du:${id}`, async () => {
+    lastSessionDisk.set(id, { at: Date.now(), bytes: await dirSize(sessionDir(id)) });
+  });
+  return prev?.bytes || 0;
 }
 
 function pruneSessionDisk(live: Set<string>) {
@@ -259,8 +273,12 @@ function logGpu(msg: string) {
 }
 
 function sampleGpu() {
+  if (!lastGpu.at || Date.now() - lastGpu.at >= 5000) refreshInBackground('gpu', refreshGpu);
+  return lastGpu;
+}
+
+async function refreshGpu() {
   const now = Date.now();
-  if (lastGpu.at && now - lastGpu.at < 5000) return lastGpu;
   const present = nvidiaPresent();
   const smi = resolveNvidiaSmi();
   let byPid = new Map<number, { memBytes: number; utilPercent: number }>();
@@ -273,11 +291,11 @@ function sampleGpu() {
         : 'GPU unavailable: no /dev/nvidia* and no nvidia-smi',
     );
     lastGpu = { at: now, available: present, byPid };
-    return lastGpu;
+    return;
   }
 
   try {
-    const xml = execFileSync(smi, ['-q', '-x'], {
+    const { stdout: xml } = await execFileAsync(smi, ['-q', '-x'], {
       encoding: 'utf8',
       timeout: 5000,
       maxBuffer: 8 * 1024 * 1024,
@@ -288,7 +306,7 @@ function sampleGpu() {
   }
 
   try {
-    const out = execFileSync(smi, ['pmon', '-c', '1', '-s', 'um'], {
+    const { stdout: out } = await execFileAsync(smi, ['pmon', '-c', '1', '-s', 'um'], {
       encoding: 'utf8',
       timeout: 4000,
     });
@@ -299,7 +317,7 @@ function sampleGpu() {
 
   if (!byPid.size) {
     try {
-      const out = execFileSync(
+      const { stdout: out } = await execFileAsync(
         smi,
         ['--query-compute-apps=pid,used_gpu_memory', '--format=csv,noheader,nounits'],
         { encoding: 'utf8', timeout: 4000 },
@@ -319,8 +337,7 @@ function sampleGpu() {
   } else {
     logGpu(`GPU sample ok (${byPid.size} process${byPid.size === 1 ? '' : 'es'})`);
   }
-  lastGpu = { at: now, available, byPid };
-  return lastGpu;
+  lastGpu = { at: Date.now(), available, byPid };
 }
 
 function pidHasNvidia(pid: number) {
@@ -466,7 +483,7 @@ function runtimeRootPids(sessionId: string): number[] {
     pids.tint2,
     pids.singbox,
     ...(pids.subs || []).flatMap((sub) => [sub.xvfb, sub.openbox, sub.x11vnc, sub.tint2]),
-  ].filter((pid): pid is number => Number.isInteger(pid) && pid > 0);
+  ].filter((pid): pid is number => pid != null && Number.isInteger(pid) && pid > 0);
 }
 
 function collectProjectPids(): number[] {
@@ -490,7 +507,7 @@ function readHost(): HostMetrics {
   const ncpu = Math.max(1, os.cpus().length);
   const cpuPercent = Math.max(0, Math.min(100, usage.cpuPercent / ncpu));
   const totalMem = os.totalmem();
-  const volume = diskUsage(DATA_DIR);
+  const volume = volumeUsage(DATA_DIR);
   const usedDisk = dataDirBytes();
   return {
     loadavg: os.loadavg(),
@@ -502,9 +519,9 @@ function readHost(): HostMetrics {
     },
     disk: {
       path: DATA_DIR,
-      totalBytes: volume.totalBytes,
+      totalBytes: volume.total,
       usedBytes: usedDisk,
-      freeBytes: volume.freeBytes,
+      freeBytes: volume.free,
     },
     uptimeSeconds: os.uptime(),
   };

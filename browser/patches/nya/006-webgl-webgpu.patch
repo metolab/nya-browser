@@ -1,0 +1,497 @@
+diff --git a/gpu/command_buffer/service/webgpu_decoder_impl.cc b/gpu/command_buffer/service/webgpu_decoder_impl.cc
+index 16ca021..32d681a 100644
+--- a/gpu/command_buffer/service/webgpu_decoder_impl.cc
++++ b/gpu/command_buffer/service/webgpu_decoder_impl.cc
+@@ -13,6 +13,7 @@
+ 
+ #include "base/auto_reset.h"
+ #include "base/bits.h"
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/feature_list.h"
+ #include "base/logging.h"
+@@ -1793,6 +1794,15 @@ wgpu::Adapter WebGPUDecoderImpl::CreatePreferredAdapter(
+         adapter_info.adapterType == wgpu::AdapterType::CPU &&
+         adapter_info.vendorID == 0x1AE0 && adapter_info.deviceID == 0xC0DE;
+ 
++    // Nya Windows emulation: like D3D12, only hand out the CPU adapter when
++    // the page asks for the fallback adapter or no GPU is usable.
++    if (adapter_info.adapterType == wgpu::AdapterType::CPU &&
++        !adapter_options.forceFallbackAdapter &&
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            "nya-os") == "windows") {
++      return false;
++    }
++
+     // The adapter must be able to import external textures, or it must be a
+     // SwiftShader adapter. For SwiftShader, we will perform a manual
+     // upload/readback to/from shared images.
+diff --git a/gpu/ipc/service/gpu_init.cc b/gpu/ipc/service/gpu_init.cc
+index 742a7f0..f4e5d76 100644
+--- a/gpu/ipc/service/gpu_init.cc
++++ b/gpu/ipc/service/gpu_init.cc
+@@ -793,7 +793,13 @@ bool GpuInitLegacy::InitializeAndStartSandbox(
+ 
+ #if BUILDFLAG(USE_WEBGPU_ON_VULKAN_VIA_GL_INTEROP)
+ #if BUILDFLAG(IS_OZONE)
+-  if (!ui::OzonePlatform::GetInstance()
++  // Nya Windows emulation exposes the real GPU to WebGPU (like D3D12 on
++  // Windows); X11 otherwise only offers the SwiftShader fallback adapter.
++  const bool nya_windows_webgpu =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("nya-os") ==
++      "windows";
++  if (!nya_windows_webgpu &&
++      !ui::OzonePlatform::GetInstance()
+            ->GetPlatformProperties()
+            .webgpu_on_vulkan_via_gl_interop) {
+     gpu_feature_info_
+@@ -1294,6 +1300,28 @@ void GpuInitLegacy::InitializeInProcess(base::CommandLine* command_line,
+     LOG(FATAL) << "All gr_context_type fallbacks exhausted";
+   }
+   DisableInProcessGpuVulkan(&gpu_feature_info_, &gpu_preferences_);
++#if BUILDFLAG(USE_WEBGPU_ON_VULKAN_VIA_GL_INTEROP)
++  // Nya Windows emulation: set up the WebGPU-on-Vulkan GL interop that only
++  // the sandboxed GPU process gets, so WebGPU sees the real GPU.
++  if (command_line->GetSwitchValueASCII("nya-os") == "windows" &&
++      gpu_preferences_.gr_context_type == GrContextType::kGL &&
++      gpu_feature_info_
++              .status_values[GPU_FEATURE_TYPE_WEBGPU_ON_VK_VIA_GL_INTEROP] ==
++          kGpuFeatureStatusEnabled) {
++    if (gpu_preferences_.use_vulkan == VulkanImplementationName::kNone) {
++      gpu_preferences_.use_vulkan = VulkanImplementationName::kNative;
++    }
++    gpu_preferences_.enable_webgpu_on_vk_via_gl_interop = true;
++    if (!InitializeVulkan()) {
++      LOG(ERROR) << "nya: WebGPU Vulkan interop unavailable";
++      gpu_preferences_.use_vulkan = VulkanImplementationName::kNone;
++      gpu_preferences_.enable_webgpu_on_vk_via_gl_interop = false;
++      gpu_feature_info_
++          .status_values[GPU_FEATURE_TYPE_WEBGPU_ON_VK_VIA_GL_INTEROP] =
++          kGpuFeatureStatusDisabled;
++    }
++  }
++#endif  // BUILDFLAG(USE_WEBGPU_ON_VULKAN_VIA_GL_INTEROP)
+ #endif  // BUILDFLAG(IS_ANDROID)
+ 
+   InitializeDawnProcs();
+diff --git a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+index 9eb36fe..65208b3 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+@@ -659,6 +659,14 @@ ScriptValue WebGL2RenderingContextBase::getInternalformatParameter(
+       auto values = base::HeapArray<GLint>::WithSize(length);
+       ContextGL()->GetInternalformativ(target, internalformat, GL_SAMPLES,
+                                        length, values.data());
++      // D3D11 lists single-sampled storage too.
++      if (values.as_span().back() != 1 && EmulatesWindowsD3D11()) {
++        Vector<GLint> with_single;
++        with_single.Append(values.begin(), values.end());
++        with_single.push_back(1);
++        return WebGLAny(script_state,
++                        DOMInt32Array::Create(base::span(with_single)));
++      }
+       return WebGLAny(script_state, DOMInt32Array::Create(values));
+     }
+     default:
+@@ -5055,10 +5063,8 @@ ScriptValue WebGL2RenderingContextBase::getParameter(ScriptState* script_state,
+ ScriptValue WebGL2RenderingContextBase::GetInt64Parameter(
+     ScriptState* script_state,
+     GLenum pname) {
+-  GLint64 value = 0;
+-  if (!isContextLost())
+-    ContextGL()->GetInteger64v(pname, &value);
+-  return WebGLAny(script_state, value);
++  // The base class applies the Nya Windows D3D11 limits.
++  return WebGLRenderingContextBase::GetInt64Parameter(script_state, pname);
+ }
+ 
+ bool WebGL2RenderingContextBase::ValidateCapability(const char* function_name,
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+index e9348c2..aece7fb 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -24,6 +24,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <inttypes.h>
+ 
+@@ -3845,6 +3846,78 @@ bool WebGLRenderingContextBase::ExtensionTracker::MatchesName(
+   return false;
+ }
+ 
++namespace {
++
++// Nya Windows emulation: values ANGLE's D3D11 backend reports on NVIDIA
++// GeForce instead of the Linux GL driver's.
++bool NyaWindowsD3D11(gpu::gles2::GLES2Interface* gl) {
++  if (!nya::EmulatesWindows() || !gl) {
++    return false;
++  }
++  const char* renderer =
++      reinterpret_cast<const char*>(gl->GetString(GL_RENDERER));
++  return renderer && nya::EmulatesWindowsGpu(renderer);
++}
++
++std::optional<GLint> NyaWindowsIntParameter(GLenum pname) {
++  switch (pname) {
++    case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
++      return 32;
++    case GL_MAX_CUBE_MAP_TEXTURE_SIZE:
++    case GL_MAX_RENDERBUFFER_SIZE:
++    case GL_MAX_TEXTURE_SIZE:
++      return 16384;
++    case GL_MAX_TEXTURE_IMAGE_UNITS:
++    case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS:
++      return 16;
++    case GL_MAX_VARYING_VECTORS:
++      return 30;
++    case GL_MAX_VERTEX_UNIFORM_VECTORS:
++      return 4095;
++    case GL_MAX_3D_TEXTURE_SIZE:
++      return 2048;
++    case GL_MAX_COMBINED_UNIFORM_BLOCKS:
++    case GL_MAX_UNIFORM_BUFFER_BINDINGS:
++      return 24;
++    case GL_MAX_FRAGMENT_UNIFORM_BLOCKS:
++    case GL_MAX_VERTEX_UNIFORM_BLOCKS:
++      return 12;
++    case GL_MAX_FRAGMENT_INPUT_COMPONENTS:
++    case GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS:
++    case GL_MAX_VARYING_COMPONENTS:
++    case GL_MAX_VERTEX_OUTPUT_COMPONENTS:
++      return 120;
++    case GL_MAX_VERTEX_UNIFORM_COMPONENTS:
++      return 16380;
++    case GL_MAX_ELEMENTS_INDICES:
++    case GL_MAX_ELEMENTS_VERTICES:
++      return 2147483647;
++    default:
++      return std::nullopt;
++  }
++}
++
++bool NyaWindowsHiddenExtension(const char* name) {
++  // ETC/ASTC are mobile formats the D3D11 backend does not expose.
++  static constexpr const char* kHidden[] = {
++      "WEBGL_compressed_texture_astc",
++      "WEBGL_compressed_texture_etc",
++      "WEBGL_compressed_texture_etc1",
++  };
++  for (const char* hidden : kHidden) {
++    if (!strcmp(name, hidden)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++}  // namespace
++
++bool WebGLRenderingContextBase::EmulatesWindowsD3D11() {
++  return NyaWindowsD3D11(ContextGL());
++}
++
+ bool WebGLRenderingContextBase::ExtensionSupportedAndAllowed(
+     const ExtensionTracker* tracker) {
+   if (tracker->Draft() &&
+@@ -3857,6 +3930,10 @@ bool WebGLRenderingContextBase::ExtensionSupportedAndAllowed(
+     return false;
+   if (disabled_extensions_.Contains(String(tracker->ExtensionName())))
+     return false;
++  if (NyaWindowsHiddenExtension(tracker->ExtensionName()) &&
++      NyaWindowsD3D11(ContextGL())) {
++    return false;
++  }
+   return true;
+ }
+ 
+@@ -4221,8 +4298,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+         if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
+           return WebGLAny(script_state, String(blink::features::kSpoofWebGLRendererParam.Get()));
+-        return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_RENDERER)));
++        const char* renderer = reinterpret_cast<const char*>(
++            ContextGL()->GetString(GL_RENDERER));
++        return WebGLAny(
++            script_state,
++            String(nya::MaybeSpoofUnmaskedRenderer(renderer ? renderer : "")
++                       .c_str()));
+       }
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
+@@ -4232,8 +4313,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+         if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
+           return WebGLAny(script_state, String(blink::features::kSpoofWebGLVendorParam.Get()));
+-        return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_VENDOR)));
++        const char* vendor =
++            reinterpret_cast<const char*>(ContextGL()->GetString(GL_VENDOR));
++        return WebGLAny(
++            script_state,
++            String(nya::MaybeSpoofUnmaskedVendor(vendor ? vendor : "")
++                       .c_str()));
+       }
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
+@@ -4533,6 +4618,13 @@ WebGLShaderPrecisionFormat* WebGLRenderingContextBase::getShaderPrecisionFormat(
+   GLint precision = 0;
+   ContextGL()->GetShaderPrecisionFormat(shader_type, precision_type, range,
+                                         &precision);
++  if ((precision_type == GL_LOW_FLOAT || precision_type == GL_MEDIUM_FLOAT) &&
++      NyaWindowsD3D11(ContextGL())) {
++    // D3D11 has no reduced float precision.
++    range[0] = 127;
++    range[1] = 127;
++    precision = 23;
++  }
+   return MakeGarbageCollected<WebGLShaderPrecisionFormat>(range[0], range[1],
+                                                           precision);
+ }
+@@ -5380,6 +5472,9 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
+     }
+     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
+   }
++  if (data && buffer_size.IsValid()) {
++    nya::FarbleBytes(data, static_cast<size_t>(buffer_size.ValueOrDie()));
++  }
+ }
+ 
+ void WebGLRenderingContextBase::RenderbufferStorageImpl(
+@@ -7964,6 +8059,9 @@ ScriptValue WebGLRenderingContextBase::GetFloatParameter(
+   GLfloat value = 0;
+   if (!isContextLost()) {
+     ContextGL()->GetFloatv(pname, &value);
++    if (pname == GL_MAX_TEXTURE_LOD_BIAS && NyaWindowsD3D11(ContextGL())) {
++      value = 2;
++    }
+   }
+   return WebGLAny(script_state, value);
+ }
+@@ -7986,6 +8084,10 @@ ScriptValue WebGLRenderingContextBase::GetIntParameter(
+       default:
+         break;
+     }
++    if (std::optional<GLint> nya_value = NyaWindowsIntParameter(pname);
++        nya_value && NyaWindowsD3D11(ContextGL())) {
++      value = *nya_value;
++    }
+   }
+   return WebGLAny(script_state, value);
+ }
+@@ -7994,8 +8096,16 @@ ScriptValue WebGLRenderingContextBase::GetInt64Parameter(
+     ScriptState* script_state,
+     GLenum pname) {
+   GLint64 value = 0;
+-  if (!isContextLost())
++  if (!isContextLost()) {
+     ContextGL()->GetInteger64v(pname, &value);
++    if (NyaWindowsD3D11(ContextGL())) {
++      if (pname == GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS) {
++        value = 200704;
++      } else if (pname == GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS) {
++        value = 212988;
++      }
++    }
++  }
+   return WebGLAny(script_state, value);
+ }
+ 
+@@ -8012,8 +8122,18 @@ ScriptValue WebGLRenderingContextBase::GetWebGLFloatArrayParameter(
+     ScriptState* script_state,
+     GLenum pname) {
+   std::array<GLfloat, 4> value = {0};
+-  if (!isContextLost())
++  if (!isContextLost()) {
+     ContextGL()->GetFloatv(pname, value.data());
++    if (NyaWindowsD3D11(ContextGL())) {
++      if (pname == GL_ALIASED_LINE_WIDTH_RANGE) {
++        value[0] = 1;
++        value[1] = 1;
++      } else if (pname == GL_ALIASED_POINT_SIZE_RANGE) {
++        value[0] = 1;
++        value[1] = 1024;
++      }
++    }
++  }
+   unsigned length = 0;
+   switch (pname) {
+     case GL_ALIASED_POINT_SIZE_RANGE:
+@@ -8036,8 +8156,13 @@ ScriptValue WebGLRenderingContextBase::GetWebGLIntArrayParameter(
+     ScriptState* script_state,
+     GLenum pname) {
+   std::array<GLint, 4> value = {0};
+-  if (!isContextLost())
++  if (!isContextLost()) {
+     ContextGL()->GetIntegerv(pname, value.data());
++    if (pname == GL_MAX_VIEWPORT_DIMS && NyaWindowsD3D11(ContextGL())) {
++      value[0] = 32767;
++      value[1] = 32767;
++    }
++  }
+   unsigned length = 0;
+   switch (pname) {
+     case GL_MAX_VIEWPORT_DIMS:
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h
+index add96cf..16bddbe 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h
+@@ -1075,6 +1075,8 @@ class MODULES_EXPORT WebGLRenderingContextBase
+   }
+ 
+   bool ExtensionSupportedAndAllowed(const ExtensionTracker*);
++  // Windows emulation on NVIDIA: report ANGLE D3D11 values.
++  bool EmulatesWindowsD3D11();
+   WebGLExtension* EnableExtensionIfSupported(
+       const String& name,
+       ExecutionContext* execution_context);
+diff --git a/third_party/blink/renderer/modules/webgpu/gpu.cc b/third_party/blink/renderer/modules/webgpu/gpu.cc
+index 74daeb1..741d05a 100644
+--- a/third_party/blink/renderer/modules/webgpu/gpu.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu.cc
+@@ -43,6 +43,7 @@
+ #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+ #include "third_party/blink/renderer/platform/heap/thread_state.h"
+ #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+ 
+@@ -397,6 +398,11 @@ ScriptPromise<IDLNullable<GPUAdapter>> GPU::requestAdapter(
+ }
+ 
+ V8GPUTextureFormat GPU::getPreferredCanvasFormat() {
++  // Windows reports BGRA. Canvases accept it everywhere; on Linux a BGRA
++  // canvas is copied into the RGBA swap texture.
++  if (nya::EmulatesWindows()) {
++    return FromDawnEnum(wgpu::TextureFormat::BGRA8Unorm);
++  }
+   return FromDawnEnum(GetPreferredCanvasFormat());
+ }
+ 
+diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+index 5d35a35..2b9a21b 100644
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
+ 
++#include <algorithm>
++#include <string_view>
++
+ #include "services/metrics/public/cpp/ukm_builders.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
+@@ -15,6 +18,7 @@
+ #include "third_party/blink/renderer/modules/webgpu/dawn_enum_conversions.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter_info.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_device.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_device_lost_info.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_memory_heap_info.h"
+@@ -31,7 +35,13 @@ namespace blink {
+ 
+ namespace {
+ 
+-GPUSupportedFeatures* MakeFeatureNameSet(wgpu::Adapter adapter) {
++// Nya Windows emulation: Vulkan-only features the D3D12 backend never exposes.
++bool NyaHiddenOnWindows(wgpu::FeatureName f) {
++  return f == wgpu::FeatureName::MultiDrawIndirect;
++}
++
++GPUSupportedFeatures* MakeFeatureNameSet(wgpu::Adapter adapter,
++                                         bool windows_d3d12) {
+   GPUSupportedFeatures* features = MakeGarbageCollected<GPUSupportedFeatures>();
+   DCHECK(features->FeatureNameSet().empty());
+ 
+@@ -41,12 +51,20 @@ GPUSupportedFeatures* MakeFeatureNameSet(wgpu::Adapter adapter) {
+   const auto features_span = UNSAFE_BUFFERS(base::span<const wgpu::FeatureName>(
+       supported_features.features, supported_features.featureCount));
+   for (const auto& f : features_span) {
++    if (windows_d3d12 && NyaHiddenOnWindows(f)) {
++      continue;
++    }
+     auto feature_name_enum_optional =
+         GPUSupportedFeatures::ToV8FeatureNameEnum(f);
+     if (feature_name_enum_optional) {
+-      features->AddFeatureName(
+-          V8GPUFeatureName(feature_name_enum_optional.value()));
++      V8GPUFeatureName name(feature_name_enum_optional.value());
++      // Stable Chrome exposes experimental features only with unsafe APIs.
++      if (windows_d3d12 && std::string_view(name.AsCStr())
++                               .starts_with("chromium-experimental-")) {
++        continue;
+       }
++      features->AddFeatureName(name);
++    }
+   }
+   return features;
+ }
+@@ -113,11 +131,34 @@ GPUAdapter::GPUAdapter(
+   subgroup_min_size_ = info.subgroupMinSize;
+   subgroup_max_size_ = info.subgroupMaxSize;
+   power_preference_ = powerProperties.powerPreference;
++  if (auto spoof = nya::MaybeSpoofWebGpu(vendor_.Utf8(), description_.Utf8())) {
++    if (!spoof->vendor.empty()) {
++      vendor_ = String::FromUtf8(spoof->vendor);
++    }
++    if (!spoof->architecture.empty()) {
++      architecture_ = String::FromUtf8(spoof->architecture);
++    }
++    if (!spoof->device.empty()) {
++      device_ = String::FromUtf8(spoof->device);
++    }
++    if (!spoof->description.empty()) {
++      description_ = String::FromUtf8(spoof->description);
++    }
++  }
+ 
+-  features_ = MakeFeatureNameSet(GetHandle());
++  const bool windows_d3d12 =
++      nya::EmulatesWindows() && adapter_type_ != wgpu::AdapterType::CPU;
++  features_ = MakeFeatureNameSet(GetHandle(), windows_d3d12);
+ 
+   GPUSupportedLimits::ComboLimits limits;
+   GetHandle().GetLimits(limits.GetLinked());
++  if (windows_d3d12) {
++    // D3D12 caps: 2 GiB resources and 32 KiB of groupshared memory.
++    limits.maxBufferSize =
++        std::min<uint64_t>(limits.maxBufferSize, uint64_t{1} << 31);
++    limits.maxComputeWorkgroupStorageSize =
++        std::min<uint32_t>(limits.maxComputeWorkgroupStorageSize, 32768);
++  }
+   limits_ = MakeGarbageCollected<GPUSupportedLimits>(limits);
+ 
+   info_ = CreateAdapterInfoForAdapter();
+diff --git a/third_party/blink/renderer/platform/graphics/gpu/dawn_control_client_holder.cc b/third_party/blink/renderer/platform/graphics/gpu/dawn_control_client_holder.cc
+index 86c8829..6f944ad 100644
+--- a/third_party/blink/renderer/platform/graphics/gpu/dawn_control_client_holder.cc
++++ b/third_party/blink/renderer/platform/graphics/gpu/dawn_control_client_holder.cc
+@@ -16,6 +16,7 @@
+ #include "third_party/blink/renderer/platform/graphics/gpu/dawn_command_serializers.h"
+ #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_mailbox_texture.h"
+ #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_shared_image_cache.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
+ #include "third_party/blink/renderer/platform/wtf/functional.h"
+@@ -193,9 +194,12 @@ std::vector<wgpu::WGSLLanguageFeatureName> GatherWGSLLanguageFeatures() {
+   dawn::wire::WireClient client{{.serializer = &noop_serializer}};
+ 
+   // Control which WGSL features are exposed based on flags.
++  // Nya Windows emulation reports the WGSL set of stable Chrome, which never
++  // runs with --enable-unsafe-webgpu.
+   wgpu::DawnWireWGSLControl wgsl_control = {{
+       .enableUnsafe = base::CommandLine::ForCurrentProcess()->HasSwitch(
+-          switches::kEnableUnsafeWebGPU),
++                          switches::kEnableUnsafeWebGPU) &&
++                      !nya::EmulatesWindows(),
+       // This can be changed to true for manual testing with the
+       // chromium_testing_* WGSL features.
+       .enableTesting = false,

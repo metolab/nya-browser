@@ -1,0 +1,406 @@
+diff --git a/chrome/browser/extensions/component_loader.cc b/chrome/browser/extensions/component_loader.cc
+index b7bb61e..974c54c 100644
+--- a/chrome/browser/extensions/component_loader.cc
++++ b/chrome/browser/extensions/component_loader.cc
+@@ -786,9 +786,9 @@ void ComponentLoader::AddDefaultComponentExtensionsWithBackgroundPages(
+   AddContextualTasksExtension();
+ 
+ // http://crbug.com/41070702
+-#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
++#if !BUILDFLAG(IS_CHROMEOS)
+   AddNetworkSpeechSynthesisExtension();
+-#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
++#endif  // !BUILDFLAG(IS_CHROMEOS)
+ }
+ 
+ void ComponentLoader::
+diff --git a/chrome/browser/resources/network_speech_synthesis/mv3/service_worker.js b/chrome/browser/resources/network_speech_synthesis/mv3/service_worker.js
+index d676374..5ca61f8 100644
+--- a/chrome/browser/resources/network_speech_synthesis/mv3/service_worker.js
++++ b/chrome/browser/resources/network_speech_synthesis/mv3/service_worker.js
+@@ -2,4 +2,127 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-importScripts('tts_extension.js');
++// Nya: keep the Google voice list but never reach the Google speech server.
++// Utterances play silently with start/end timed like network speech.
++class NyaSilentTts {
++  constructor() {
++    /** @type {?{utterance: string, callback: Function, timer: number,
++     *     endAt: number, remainingMs: number, started: boolean}} */
++    this.current_ = null;
++    this.keepAlive_ = null;
++
++    chrome.ttsEngine.onSpeak.addListener(
++        (utterance, options, callback) =>
++            this.onSpeak_(utterance, options, callback));
++    chrome.ttsEngine.onStop.addListener(() => this.onStop_());
++    chrome.ttsEngine.onPause.addListener(() => this.onPause_());
++    chrome.ttsEngine.onResume.addListener(() => this.onResume_());
++  }
++
++  estimateMs_(utterance, rate) {
++    let ms = 0;
++    for (const ch of utterance) {
++      if (/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uf900-\ufaff]/.test(ch)) {
++        ms += 230;
++      } else if (/[\s.,!?;:]/.test(ch)) {
++        ms += 40;
++      } else {
++        ms += 68;
++      }
++    }
++    const r = Math.min(Math.max(rate || 1, 0.1), 10);
++    return Math.max(350, Math.round(ms / r));
++  }
++
++  onSpeak_(utterance, options, callback) {
++    this.clear_();
++    if (utterance.length === 0) {
++      callback({'type': 'end', 'charIndex': 0});
++      return;
++    }
++    if (utterance.length > 32768) {
++      utterance = utterance.substr(0, 32768);
++    }
++    const cur = {
++      utterance,
++      callback,
++      timer: 0,
++      endAt: 0,
++      remainingMs: this.estimateMs_(utterance, options.rate),
++      started: false,
++    };
++    this.current_ = cur;
++    this.startKeepAlive_();
++    const latency = 180 + Math.floor(Math.random() * 260);
++    cur.timer = setTimeout(() => {
++      if (this.current_ !== cur) {
++        return;
++      }
++      cur.started = true;
++      callback({'type': 'start', 'charIndex': 0});
++      this.scheduleEnd_(cur);
++    }, latency);
++  }
++
++  scheduleEnd_(cur) {
++    cur.endAt = Date.now() + cur.remainingMs;
++    cur.timer = setTimeout(() => {
++      if (this.current_ !== cur) {
++        return;
++      }
++      this.current_ = null;
++      this.stopKeepAlive_();
++      cur.callback({'type': 'end', 'charIndex': cur.utterance.length});
++    }, cur.remainingMs);
++  }
++
++  onStop_() {
++    const cur = this.current_;
++    this.clear_();
++    if (cur) {
++      cur.callback({'type': 'end', 'charIndex': cur.utterance.length});
++    }
++  }
++
++  onPause_() {
++    const cur = this.current_;
++    if (!cur || !cur.started || !cur.timer) {
++      return;
++    }
++    clearTimeout(cur.timer);
++    cur.timer = 0;
++    cur.remainingMs = Math.max(0, cur.endAt - Date.now());
++  }
++
++  onResume_() {
++    const cur = this.current_;
++    if (cur && cur.started && !cur.timer) {
++      this.scheduleEnd_(cur);
++    }
++  }
++
++  clear_() {
++    if (this.current_ && this.current_.timer) {
++      clearTimeout(this.current_.timer);
++    }
++    this.current_ = null;
++    this.stopKeepAlive_();
++  }
++
++  // Extension API calls reset the MV3 idle timer so long utterances still end.
++  startKeepAlive_() {
++    if (this.keepAlive_ === null) {
++      this.keepAlive_ = setInterval(() => chrome.runtime.getPlatformInfo(),
++                                    20 * 1000);
++    }
++  }
++
++  stopKeepAlive_() {
++    if (this.keepAlive_ !== null) {
++      clearInterval(this.keepAlive_);
++      this.keepAlive_ = null;
++    }
++  }
++}
++
++new NyaSilentTts();
+diff --git a/content/browser/speech/tts_linux.cc b/content/browser/speech/tts_linux.cc
+index 2249cdd..72469da 100644
+--- a/content/browser/speech/tts_linux.cc
++++ b/content/browser/speech/tts_linux.cc
+@@ -14,17 +14,22 @@
+ #include "base/debug/leak_annotations.h"
+ #include "base/functional/bind.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
+ #include "base/no_destructor.h"
+ #include "base/synchronization/lock.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/task_runner.h"
+ #include "base/task/task_traits.h"
+ #include "base/task/thread_pool.h"
++#include "base/strings/string_split.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/time/time.h"
+ #include "base/threading/sequence_bound.h"
+ #include "content/browser/speech/tts_platform_impl.h"
+ #include "content/public/browser/browser_task_traits.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/tts_controller.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ #include "content/public/common/content_switches.h"
+ #include "library_loaders/libspeechd.h"
+ 
+@@ -175,6 +180,24 @@ class TtsPlatformImplLinux : public TtsPlatformImpl {
+ 
+   // Hold the state and the code of the background implementation.
+   base::SequenceBound<TtsPlatformImplBackgroundWorker> worker_;
++
++  // Emulated OS voices (--nya-os-voices): listed and "spoken" silently with
++  // the SAPI event sequence, never reaching speech-dispatcher.
++  struct NyaEvent {
++    int at_ms;
++    TtsEventType type;
++    int char_index;
++    int length;
++  };
++  void NyaSpeak(int utterance_id,
++                const std::string& utterance,
++                const UtteranceContinuousParameters& params,
++                base::OnceCallback<void(bool)> on_speak_finished);
++  void NyaFire(int utterance_id, size_t index);
++  std::vector<std::pair<std::string, std::string>> nya_voices_;
++  std::vector<NyaEvent> nya_events_;
++  int nya_char_index_ = 0;
++  base::WeakPtrFactory<TtsPlatformImplLinux> nya_weak_factory_{this};
+ };
+ 
+ //
+@@ -421,6 +444,22 @@ TtsPlatformImplLinux::TtsPlatformImplLinux()
+         base::NotFatalUntil::M159);
+   const base::CommandLine& command_line =
+       *base::CommandLine::ForCurrentProcess();
++  if (command_line.HasSwitch(::switches::kNyaOsVoices)) {
++    for (const std::string& item : base::SplitString(
++             command_line.GetSwitchValueASCII(::switches::kNyaOsVoices), ";",
++             base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++      std::vector<std::string> parts = base::SplitString(
++          item, "|", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++      if (parts.size() == 2 && parts[0].size() <= 96 && parts[1].size() <= 16) {
++        nya_voices_.emplace_back(parts[0], parts[1]);
++      }
++    }
++    if (!nya_voices_.empty()) {
++      is_supported_ = true;
++      is_initialized_ = true;
++      return;
++    }
++  }
+   if (!command_line.HasSwitch(switches::kEnableSpeechDispatcher))
+     return;
+ 
+@@ -460,6 +499,11 @@ void TtsPlatformImplLinux::Speak(
+   is_speaking_ = true;
+   utterance_id_ = utterance_id;
+ 
++  if (!nya_voices_.empty()) {
++    NyaSpeak(utterance_id, utterance, params, std::move(on_speak_finished));
++    return;
++  }
++
+   // Parse SSML and process speech.
+   TtsController::GetInstance()->StripSSML(
+       utterance,
+@@ -475,7 +519,9 @@ bool TtsPlatformImplLinux::StopSpeaking() {
+         base::NotFatalUntil::M159);
+   CHECK(PlatformImplInitialized(), base::NotFatalUntil::M159);
+ 
+-  worker_.AsyncCall(&TtsPlatformImplBackgroundWorker::StopSpeaking);
++  if (nya_voices_.empty()) {
++    worker_.AsyncCall(&TtsPlatformImplBackgroundWorker::StopSpeaking);
++  }
+   paused_ = false;
+ 
+   is_speaking_ = false;
+@@ -492,7 +538,13 @@ void TtsPlatformImplLinux::Pause() {
+   if (paused_ || !is_speaking_)
+     return;
+ 
+-  worker_.AsyncCall(&TtsPlatformImplBackgroundWorker::Pause);
++  if (nya_voices_.empty()) {
++    worker_.AsyncCall(&TtsPlatformImplBackgroundWorker::Pause);
++  } else {
++    TtsController::GetInstance()->OnTtsEvent(utterance_id_, TTS_EVENT_PAUSE,
++                                             nya_char_index_, -1,
++                                             std::string());
++  }
+   paused_ = true;
+ }
+ 
+@@ -504,7 +556,13 @@ void TtsPlatformImplLinux::Resume() {
+   if (!paused_ || !is_speaking_)
+     return;
+ 
+-  worker_.AsyncCall(&TtsPlatformImplBackgroundWorker::Resume);
++  if (nya_voices_.empty()) {
++    worker_.AsyncCall(&TtsPlatformImplBackgroundWorker::Resume);
++  } else {
++    TtsController::GetInstance()->OnTtsEvent(utterance_id_, TTS_EVENT_RESUME,
++                                             nya_char_index_, -1,
++                                             std::string());
++  }
+   paused_ = false;
+ }
+ 
+@@ -517,6 +575,21 @@ void TtsPlatformImplLinux::GetVoices(std::vector<VoiceData>* out_voices) {
+         base::NotFatalUntil::M159);
+   CHECK(PlatformImplInitialized(), base::NotFatalUntil::M159);
+ 
++  for (const auto& [name, lang] : nya_voices_) {
++    out_voices->push_back(VoiceData());
++    VoiceData& voice = out_voices->back();
++    voice.native = true;
++    voice.name = name;
++    voice.lang = lang;
++    voice.events.insert(TTS_EVENT_START);
++    voice.events.insert(TTS_EVENT_END);
++    voice.events.insert(TTS_EVENT_MARKER);
++    voice.events.insert(TTS_EVENT_WORD);
++    voice.events.insert(TTS_EVENT_SENTENCE);
++    voice.events.insert(TTS_EVENT_PAUSE);
++    voice.events.insert(TTS_EVENT_RESUME);
++  }
++
+   for (auto it = voices_.begin(); it != voices_.end(); ++it) {
+     out_voices->push_back(VoiceData());
+     VoiceData& voice = out_voices->back();
+@@ -536,6 +609,106 @@ void TtsPlatformImplLinux::Shutdown() {
+   worker_.AsyncCall(&TtsPlatformImplBackgroundWorker::Shutdown);
+ }
+ 
++void TtsPlatformImplLinux::NyaSpeak(
++    int utterance_id,
++    const std::string& utterance,
++    const UtteranceContinuousParameters& params,
++    base::OnceCallback<void(bool)> on_speak_finished) {
++  const std::u16string text = base::UTF8ToUTF16(utterance);
++  const int length = static_cast<int>(text.size());
++  const double rate = std::clamp(static_cast<double>(params.rate), 0.1, 10.0);
++  const auto is_cjk = [](char16_t ch) {
++    return (ch >= 0x3040 && ch <= 0x30ff) || (ch >= 0x3400 && ch <= 0x9fff) ||
++           (ch >= 0xac00 && ch <= 0xd7af) || (ch >= 0xf900 && ch <= 0xfaff);
++  };
++  const auto is_space = [](char16_t ch) {
++    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
++           ch == 0x3000;
++  };
++  const auto ends_sentence = [](char16_t ch) {
++    return ch == '.' || ch == '!' || ch == '?' || ch == 0x3002 ||
++           ch == 0xff01 || ch == 0xff1f;
++  };
++  const auto is_pause = [&](char16_t ch) {
++    return ends_sentence(ch) || ch == ',' || ch == ';' || ch == ':' ||
++           ch == 0xff0c || ch == 0x3001;
++  };
++
++  // SAPI order: start, then a sentence boundary before the first word of
++  // each sentence and a word boundary per word (per character for CJK), then
++  // end at the full length. Timing is a rough local-engine speaking rate.
++  nya_events_.clear();
++  nya_events_.push_back({0, TTS_EVENT_START, 0, -1});
++  double t = 60;
++  bool new_sentence = true;
++  int i = 0;
++  while (i < length) {
++    const char16_t ch = text[i];
++    if (is_space(ch)) {
++      t += 40;
++      ++i;
++      continue;
++    }
++    if (is_pause(ch)) {
++      t += ends_sentence(ch) ? 260 : 140;
++      new_sentence = new_sentence || ends_sentence(ch);
++      ++i;
++      continue;
++    }
++    int end = i + 1;
++    if (!is_cjk(ch)) {
++      while (end < length && !is_space(text[end]) && !is_cjk(text[end]) &&
++             !is_pause(text[end])) {
++        ++end;
++      }
++    }
++    const int at = static_cast<int>(t / rate);
++    if (new_sentence) {
++      nya_events_.push_back({at, TTS_EVENT_SENTENCE, i, -1});
++      new_sentence = false;
++    }
++    nya_events_.push_back({at, TTS_EVENT_WORD, i, end - i});
++    t += is_cjk(ch) ? 230 : 68.0 * (end - i);
++    i = end;
++  }
++  nya_events_.push_back(
++      {std::max(300, static_cast<int>(t / rate)), TTS_EVENT_END, length, -1});
++  nya_char_index_ = 0;
++  NyaFire(utterance_id, 0);
++  std::move(on_speak_finished).Run(true);
++}
++
++void TtsPlatformImplLinux::NyaFire(int utterance_id, size_t index) {
++  if (utterance_id != utterance_id_ || !is_speaking_ ||
++      index >= nya_events_.size()) {
++    return;
++  }
++  if (paused_) {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(&TtsPlatformImplLinux::NyaFire,
++                       nya_weak_factory_.GetWeakPtr(), utterance_id, index),
++        base::Milliseconds(100));
++    return;
++  }
++  const NyaEvent event = nya_events_[index];
++  nya_char_index_ = event.char_index;
++  if (event.type == TTS_EVENT_END) {
++    is_speaking_ = false;
++    utterance_id_ = kInvalidUtteranceId;
++  } else {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(&TtsPlatformImplLinux::NyaFire,
++                       nya_weak_factory_.GetWeakPtr(), utterance_id,
++                       index + 1),
++        base::Milliseconds(nya_events_[index + 1].at_ms - event.at_ms));
++  }
++  TtsController::GetInstance()->OnTtsEvent(utterance_id, event.type,
++                                           event.char_index, event.length,
++                                           std::string());
++}
++
+ void TtsPlatformImplLinux::OnInitialized(bool success, PlatformVoices voices) {
+   CHECK(BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+         base::NotFatalUntil::M159);

@@ -1,0 +1,530 @@
+diff --git a/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc b/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
+index 383ae4e..da1209d 100644
+--- a/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
++++ b/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
+@@ -28,20 +28,42 @@
+ #include "third_party/blink/renderer/core/css_value_keywords.h"
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+ #include "third_party/blink/renderer/platform/fonts/font_description.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ 
+ namespace blink {
+ 
++namespace {
++
++// Windows takes these from NONCLIENTMETRICS (9pt at 96 dpi).
++bool IsWindowsMetricsFont(CSSValueID system_font_id) {
++  return !nya::WindowsUiFont().empty() &&
++         (system_font_id == CSSValueID::kSmallCaption ||
++          system_font_id == CSSValueID::kMenu ||
++          system_font_id == CSSValueID::kStatusBar);
++}
++
++}  // namespace
++
+ // static
+ const AtomicString& LayoutThemeFontProvider::SystemFontFamily(
+     CSSValueID system_font_id) {
++  if (IsWindowsMetricsFont(system_font_id)) {
++    DEFINE_THREAD_SAFE_STATIC_LOCAL(
++        const AtomicString, ui_font,
++        (AtomicString::FromUtf8(nya::WindowsUiFont())));
++    return ui_font;
++  }
+   return DefaultGUIFont();
+ }
+ 
+ // static
+ float LayoutThemeFontProvider::SystemFontSize(CSSValueID system_font_id,
+                                               const Document* document) {
++  if (IsWindowsMetricsFont(system_font_id)) {
++    return 12.0f;
++  }
+   switch (system_font_id) {
+     case CSSValueID::kWebkitMiniControl:
+     case CSSValueID::kWebkitSmallControl:
+diff --git a/third_party/blink/renderer/modules/font_access/font_access.cc b/third_party/blink/renderer/modules/font_access/font_access.cc
+index c5984f3..7631ae3 100644
+--- a/third_party/blink/renderer/modules/font_access/font_access.cc
++++ b/third_party/blink/renderer/modules/font_access/font_access.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "third_party/blink/renderer/modules/font_access/font_access.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <algorithm>
+ 
+@@ -152,6 +153,26 @@ void FontAccess::DidGetEnumerationResponse(
+   table.ParseFromString(base::as_string_view(mapped_mem));
+ 
+   HeapVector<Member<FontMetadata>> entries;
++  // The font spoof list is served after the real permission flow. Windows
++  // sessions have the Windows font files, so only their faces are filtered;
++  // Linux sessions list the spoofed families themselves.
++  if (nya::HasFontSpoof() && !nya::EmulatesWindows()) {
++    for (const auto& family : nya::SpoofedFontFamilies()) {
++      const std::string postscript = nya::FontPostscriptName(family);
++      if (has_postscript_name_filter && !selection_utf8.contains(postscript)) {
++        continue;
++      }
++      String name = String::FromUtf8(family);
++      entries.push_back(MakeGarbageCollected<FontMetadata>(FontEnumerationEntry{
++          .postscript_name = String::FromUtf8(postscript),
++          .full_name = name,
++          .family = name,
++          .style = "Regular",
++      }));
++    }
++    resolver->Resolve(std::move(entries));
++    return;
++  }
+   for (const auto& element : table.fonts()) {
+     // If the optional postscript name filter is set in QueryOptions,
+     // only allow items that match.
+@@ -159,6 +180,9 @@ void FontAccess::DidGetEnumerationResponse(
+         !selection_utf8.contains(element.postscript_name())) {
+       continue;
+     }
++    if (!nya::AllowsFontFamily(element.family())) {
++      continue;
++    }
+ 
+     auto entry = FontEnumerationEntry{
+         .postscript_name = String::FromUtf8(element.postscript_name()),
+diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_party/blink/renderer/platform/fonts/font_cache.cc
+index db31094..e0395b0 100644
+--- a/third_party/blink/renderer/platform/fonts/font_cache.cc
++++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
+@@ -28,6 +28,7 @@
+  */
+ 
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ 
+ #include <unicode/uscript.h>
+ 
+@@ -166,6 +167,14 @@ const FontPlatformData* FontCache::GetFontPlatformData(
+   }
+ #endif
+ 
++  if (creation_params.CreationType() == kCreateFontByFamily) {
++    const std::string family = creation_params.Family().Utf8();
++    if ((nya::HasFontSpoof() && !nya::AllowsFontFamily(family)) ||
++        nya::WindowsLacksFamily(family)) {
++      return nullptr;
++    }
++  }
++
+   return font_platform_data_cache_.GetOrCreateFontPlatformData(
+       this, font_description, creation_params, alternate_font_name);
+ }
+@@ -199,6 +208,9 @@ const SimpleFontData* FontCache::FontDataFromFontPlatformData(
+ bool FontCache::IsPlatformFamilyMatchAvailable(
+     const FontDescription& font_description,
+     const AtomicString& family) {
++  if (nya::HasFontSpoof()) {
++    return nya::AllowsFontFamily(family.Utf8());
++  }
+   return GetFontPlatformData(
+       font_description,
+       FontFaceCreationParams(AdjustFamilyNameToAvoidUnsupportedFonts(family)),
+@@ -212,6 +224,10 @@ bool FontCache::IsPlatformFontUniqueNameMatchAvailable(
+   if (unique_font_name.empty()) {
+     return false;
+   }
++  if (nya::HasFontSpoof() &&
++      !nya::AllowsFontFamily(unique_font_name.Utf8())) {
++    return false;
++  }
+ 
+   return GetFontPlatformData(font_description,
+                              FontFaceCreationParams(unique_font_name),
+diff --git a/third_party/blink/renderer/platform/fonts/font_fallback_list.cc b/third_party/blink/renderer/platform/fonts/font_fallback_list.cc
+index 0c7b548..73a8ea3 100644
+--- a/third_party/blink/renderer/platform/fonts/font_fallback_list.cc
++++ b/third_party/blink/renderer/platform/fonts/font_fallback_list.cc
+@@ -39,6 +39,7 @@
+ #include "third_party/blink/renderer/platform/fonts/font_performance.h"
+ #include "third_party/blink/renderer/platform/fonts/segmented_font_data.h"
+ #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
+ 
+@@ -150,11 +151,17 @@ const FontData* FontFallbackList::GetFontData(
+   for (int i = 0; curr_family && i < family_index_; i++)
+     curr_family = curr_family->Next();
+ 
++  // DirectWrite has no families named after CSS generics; fontconfig does.
++  const bool system_lookup_generics = !nya::EmulatesWindows();
+   for (; curr_family; curr_family = curr_family->Next()) {
+     family_index_++;
++    const bool query_system =
++        !curr_family->FamilyName().empty() &&
++        (system_lookup_generics || !curr_family->FamilyIsGeneric() ||
++         curr_family->FamilyName() == font_family_names::kSystemUi);
+     if (!font_selector_) {
+       // Don't query system fonts for empty font family name.
+-      if (!curr_family->FamilyName().empty()) {
++      if (query_system) {
+         if (auto* result = FontCache::Get().GetFontData(
+                 font_description, curr_family->FamilyName())) {
+           return result;
+@@ -166,7 +173,7 @@ const FontData* FontFallbackList::GetFontData(
+     const FontData* result =
+         font_selector_->GetFontData(font_description, *curr_family);
+     // Don't query system fonts for empty font family name.
+-    if (!result && !curr_family->FamilyName().empty()) {
++    if (!result && query_system) {
+       result = FontCache::Get().GetFontData(font_description,
+                                             curr_family->FamilyName());
+     }
+diff --git a/third_party/blink/renderer/platform/fonts/font_metrics.cc b/third_party/blink/renderer/platform/fonts/font_metrics.cc
+index 11f9a7e..9755f2f 100644
+--- a/third_party/blink/renderer/platform/fonts/font_metrics.cc
++++ b/third_party/blink/renderer/platform/fonts/font_metrics.cc
+@@ -29,11 +29,14 @@
+ 
+ #include "third_party/blink/renderer/platform/fonts/font_metrics.h"
+ 
++#include <algorithm>
++
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+ #include "build/build_config.h"
+ #include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
+ #include "third_party/blink/renderer/platform/fonts/vdmx_parser.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+ #include "third_party/skia/include/core/SkFont.h"
+ #include "third_party/skia/include/core/SkFontMetrics.h"
+@@ -47,6 +50,60 @@ namespace blink {
+ static const size_t kMaxVDMXTableSize = 1024 * 1024;  // 1 MB
+ #endif
+ 
++namespace {
++
++uint16_t NyaReadU16(const uint8_t* data, size_t offset) {
++  return static_cast<uint16_t>(UNSAFE_TODO(data[offset]) << 8 |
++                               UNSAFE_TODO(data[offset + 1]));
++}
++
++int NyaReadS16(const uint8_t* data, size_t offset) {
++  return static_cast<int16_t>(NyaReadU16(data, offset));
++}
++
++}  // namespace
++
++void FontMetrics::ApplyNyaWindowsVerticalMetrics(const SkFont& font,
++                                                 SkFontMetrics& metrics) {
++  if (!nya::EmulatesWindows()) {
++    return;
++  }
++  SkTypeface* face = font.getTypeface();
++  if (!face || face->getUnitsPerEm() <= 0) {
++    return;
++  }
++  static const SkFontTableTag kOs2Tag = SkSetFourByteTag('O', 'S', '/', '2');
++  static const SkFontTableTag kHheaTag = SkSetFourByteTag('h', 'h', 'e', 'a');
++  uint8_t os2[78];
++  uint8_t hhea[10];
++  if (face->getTableData(kOs2Tag, 0, sizeof(os2), os2) != sizeof(os2) ||
++      face->getTableData(kHheaTag, 0, sizeof(hhea), hhea) != sizeof(hhea)) {
++    return;
++  }
++  int ascent;
++  int descent;
++  int line_gap;
++  if (NyaReadU16(os2, 62) & 0x80) {
++    // fsSelection USE_TYPO_METRICS.
++    ascent = NyaReadS16(os2, 68);
++    descent = -NyaReadS16(os2, 70);
++    line_gap = NyaReadS16(os2, 72);
++  } else {
++    ascent = NyaReadU16(os2, 74);
++    descent = NyaReadU16(os2, 76);
++    // GDI external leading: whatever hhea spacing exceeds the win extent.
++    line_gap = NyaReadS16(hhea, 4) - NyaReadS16(hhea, 6) +
++               NyaReadS16(hhea, 8) - (ascent + descent);
++  }
++  if (ascent + descent <= 0) {
++    return;
++  }
++  const float scale = font.getSize() / face->getUnitsPerEm();
++  metrics.fAscent = -ascent * scale;
++  metrics.fDescent = descent * scale;
++  metrics.fLeading = std::max(0, line_gap) * scale;
++}
++
+ void FontMetrics::AscentDescentWithHacks(
+     float& ascent,
+     float& descent,
+@@ -60,6 +117,7 @@ void FontMetrics::AscentDescentWithHacks(
+ 
+   SkFontMetrics metrics;
+   font.getMetrics(&metrics);
++  ApplyNyaWindowsVerticalMetrics(font, metrics);
+ 
+   if (ascent_override)
+     metrics.fAscent = -platform_data.size() * ascent_override.value();
+@@ -78,6 +136,7 @@ void FontMetrics::AscentDescentWithHacks(
+   int pixel_size = ClampTo<int>(platform_data.size() + 0.5);
+   // TODO(xiaochengh): How do we support ascent/descent override with VDMX?
+   if (!ascent_override && !descent_override && !font.isForceAutoHinting() &&
++      !nya::EmulatesWindows() &&
+       (font.getHinting() == SkFontHinting::kFull ||
+        font.getHinting() == SkFontHinting::kNormal)) {
+     size_t vdmx_size = face->getTableSize(kVdmxTag);
+@@ -123,7 +182,7 @@ void FontMetrics::AscentDescentWithHacks(
+     // the descent part of the glyph may be truncated when displayed in a
+     // 'overflow: hidden' container.  To avoid that, borrow 1 unit from the
+     // ascent when possible.
+-    if (descent < metrics.fDescent &&
++    if (descent < metrics.fDescent && !nya::EmulatesWindows() &&
+         platform_data.GetFontRenderStyle().use_subpixel_positioning &&
+         ascent >= 1) {
+       ++descent;
+diff --git a/third_party/blink/renderer/platform/fonts/font_metrics.h b/third_party/blink/renderer/platform/fonts/font_metrics.h
+index a757532..a5f78c3 100644
+--- a/third_party/blink/renderer/platform/fonts/font_metrics.h
++++ b/third_party/blink/renderer/platform/fonts/font_metrics.h
+@@ -31,6 +31,7 @@
+ #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+ 
+ class SkFont;
++struct SkFontMetrics;
+ 
+ namespace blink {
+ 
+@@ -225,6 +226,10 @@ class PLATFORM_EXPORT FontMetrics {
+       std::optional<float> ascent_override = std::nullopt,
+       std::optional<float> descent_override = std::nullopt);
+ 
++  // When emulating Windows, replaces ascent, descent and leading with the
++  // values DirectWrite derives from the OS/2 and hhea tables.
++  static void ApplyNyaWindowsVerticalMetrics(const SkFont&, SkFontMetrics&);
++
+  private:
+   friend class SimpleFontData;
+ 
+diff --git a/third_party/blink/renderer/platform/fonts/simple_font_data.cc b/third_party/blink/renderer/platform/fonts/simple_font_data.cc
+index a3afa4f..5ea3ed1 100644
+--- a/third_party/blink/renderer/platform/fonts/simple_font_data.cc
++++ b/third_party/blink/renderer/platform/fonts/simple_font_data.cc
+@@ -59,6 +59,7 @@
+ #include "third_party/skia/include/core/SkTypeface.h"
+ #include "third_party/skia/include/core/SkTypes.h"
+ #include "ui/gfx/geometry/rect_f.h"
++#include "third_party/blink/renderer/platform/nya/nya_farbling.h"
+ #include "ui/gfx/geometry/skia_conversions.h"
+ #include "v8/include/v8.h"
+ 
+@@ -126,6 +127,7 @@ void SimpleFontData::PlatformInit(bool subpixel_ascent_descent,
+   SkFontMetrics metrics;
+ 
+   font_.getMetrics(&metrics);
++  FontMetrics::ApplyNyaWindowsVerticalMetrics(font_, metrics);
+ 
+   float ascent;
+   float descent;
+@@ -202,7 +204,9 @@ void SimpleFontData::PlatformInit(bool subpixel_ascent_descent,
+ #endif
+ 
+ #if !BUILDFLAG(IS_APPLE)
+-  if (metrics.fAvgCharWidth) {
++  // DirectWrite never reports the OS/2 average; Windows sizes text fields
++  // from the 'x' advance.
++  if (metrics.fAvgCharWidth && !nya::EmulatesWindows()) {
+     avg_char_width_ = metrics.fAvgCharWidth;
+   } else {
+ #endif
+diff --git a/third_party/skia/src/ports/SkTypeface_fontations.cpp b/third_party/skia/src/ports/SkTypeface_fontations.cpp
+index e0a0489..2dbe6cc 100644
+--- a/third_party/skia/src/ports/SkTypeface_fontations.cpp
++++ b/third_party/skia/src/ports/SkTypeface_fontations.cpp
+@@ -23,8 +23,13 @@
+ #include "src/ports/SkTypeface_fontations_priv.h"
+ #include "src/ports/fontations/src/skpath_bridge.h"
+ 
++#include <cmath>
++#include <cstdlib>
++#include <cstring>
+ #include <optional>
++#include <string>
+ #include <utility>
++#include <vector>
+ 
+ namespace {
+ 
+@@ -46,6 +51,81 @@ bool embeddedBitmapStrikeCloseEnough(float strikePpem, float requestedPpem) {
+     return roundf(strikePpem) == roundf(requestedPpem);
+ }
+ 
++// Nya Windows emulation (NYA_FONT_RASTER=dwrite): DirectWrite measuring as
++// done by SkScalerContext_DW for Windows Blink (no linear-metrics flag,
++// embedded bitmaps requested except for Calibri and Courier New).
++bool nya_dwrite_emulation() {
++    static const bool on = [] {
++        const char* value = std::getenv("NYA_FONT_RASTER");
++        return value && std::strcmp(value, "dwrite") == 0;
++    }();
++    return on;
++}
++
++uint16_t nya_be16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
++
++std::vector<uint8_t> nya_table(const fontations_ffi::BridgeFontRef& font, SkFontTableTag tag) {
++    std::vector<uint8_t> data(fontations_ffi::table_data(font, tag, 0, rust::Slice<uint8_t>()));
++    if (!data.empty()) {
++        data.resize(fontations_ffi::table_data(
++                font, tag, 0, rust::Slice<uint8_t>(data.data(), data.size())));
++    }
++    return data;
++}
++
++// GDI-classic measuring applies when a bitmap strike sits at trunc(size)
++// ppem, or anywhere in the gasp range around it when that range is
++// gridfit-only. Returns the GDI ppem (size rounded half up) or 0.
++int nya_gdi_classic_ppem(const fontations_ffi::BridgeFontRef& font,
++                         SkScalar textSize,
++                         SkScalar* gdiTextSize) {
++    const rust::String family = fontations_ffi::family_name(font);
++    const std::string name(family.data(), family.size());
++    if (name == "Calibri" || name == "Courier New") {
++        return 0;
++    }
++    const SkScalar size = SkScalarRoundToScalar(textSize * 64.0f) / 64.0f;
++    if (size < 1) {
++        return 0;
++    }
++    const std::vector<uint8_t> eblc = nya_table(font, SkSetFourByteTag('E', 'B', 'L', 'C'));
++    if (eblc.size() < 8) {
++        return 0;
++    }
++    const int bitmapPPEM = SkScalarTruncToInt(size);
++    int minPPEM = bitmapPPEM;
++    int maxPPEM = bitmapPPEM;
++    const std::vector<uint8_t> gasp = nya_table(font, SkSetFourByteTag('g', 'a', 's', 'p'));
++    if (gasp.size() >= 4 && nya_be16(gasp.data()) <= 1) {
++        const size_t ranges = nya_be16(gasp.data() + 2);
++        int previous = -1;
++        for (size_t i = 0; i < ranges && 8 + 4 * i <= gasp.size(); ++i) {
++            const int rangeMax = nya_be16(gasp.data() + 4 + 4 * i);
++            if (previous < bitmapPPEM && bitmapPPEM <= rangeMax) {
++                if (nya_be16(gasp.data() + 6 + 4 * i) == 1) {
++                    minPPEM = previous + 1;
++                    maxPPEM = rangeMax;
++                }
++                break;
++            }
++            previous = rangeMax;
++        }
++    }
++    const uint32_t strikes = (uint32_t(nya_be16(eblc.data() + 4)) << 16) | nya_be16(eblc.data() + 6);
++    for (uint32_t i = 0; i < strikes && i < 1024 && 8 + 48 * (i + 1) <= eblc.size(); ++i) {
++        const uint8_t* record = eblc.data() + 8 + 48 * i;
++        const int start = nya_be16(record + 40);
++        const int end = nya_be16(record + 42);
++        const int ppemX = record[44];
++        const int ppemY = record[45];
++        if (ppemX == ppemY && minPPEM <= ppemY && ppemY <= maxPPEM && end >= start + 3) {
++            *gdiTextSize = size;
++            return SkScalarFloorToInt(size + 0.5f);
++        }
++    }
++    return 0;
++}
++
+ [[maybe_unused]] static inline const constexpr bool kSkShowTextBlitCoverage = false;
+ 
+ sk_sp<const SkData> streamToData(const std::unique_ptr<SkStreamAsset>& font_data) {
+@@ -467,6 +547,22 @@ public:
+                 }
+             }
+         }
++
++        if (nya_dwrite_emulation() && SkMask::kBW_Format != fRec.fMaskFormat &&
++            fontations_ffi::outline_format(fOutlines) != fontations_ffi::OutlineFormat::NoOutlines) {
++            fNyaUnitsPerEm = fontations_ffi::units_per_em_or_zero(fBridgeFontRef);
++            if (fNyaUnitsPerEm > 0) {
++                fNyaGdiPpem = nya_gdi_classic_ppem(fBridgeFontRef, fScale.y(), &fNyaGdiTextSize);
++            }
++            if (fNyaGdiPpem > 0) {
++                // GDI gives fixed-pitch DBCS faces double-width cells.
++                const auto post = nya_table(fBridgeFontRef, SkSetFourByteTag('p', 'o', 's', 't'));
++                const auto os2 = nya_table(fBridgeFontRef, SkSetFourByteTag('O', 'S', '/', '2'));
++                fNyaFixedPitch = post.size() >= 16 && (nya_be16(post.data() + 12) ||
++                                                       nya_be16(post.data() + 14));
++                fNyaHalfWidth = os2.size() >= 4 ? static_cast<int16_t>(nya_be16(os2.data() + 2)) : 0;
++            }
++        }
+     }
+ 
+     std::optional<SkScalar> getContourHeightForLetter(SkUnichar letter) {
+@@ -609,6 +705,17 @@ protected:
+                 }
+             }
+         }
++        if (fNyaUnitsPerEm > 0) {
++            if (fNyaGdiPpem > 0) {
++                x_advance = this->nyaGdiAdvance(glyph.getGlyphID());
++            } else {
++                // DirectWrite natural mode: design metrics in whole font units.
++                const long design = std::lround(fontations_ffi::unhinted_advance_width_or_zero(
++                        fBridgeFontRef, static_cast<float>(fNyaUnitsPerEm),
++                        fBridgeNormalizedCoords, glyph.getGlyphID()));
++                x_advance = fScale.y() * design / fNyaUnitsPerEm;
++            }
++        }
+         mx.advance = fRemainingMatrix.mapPoint({x_advance, 0});
+ 
+         if (has_colrv1_glyph || has_colrv0_glyph) {
+@@ -720,7 +827,7 @@ protected:
+             matrix.mapRect(&bounds);
+             mx.bounds = SkRect::Make(bounds.roundOut());
+ 
+-            if (SkIsFinite(bitmapMetrics.advance)) {
++            if (SkIsFinite(bitmapMetrics.advance) && fNyaUnitsPerEm == 0) {
+                 mx.advance = matrix.mapVector(bitmapMetrics.advance, 0);
+             }
+         } else {
+@@ -986,6 +1093,36 @@ private:
+     const SkSpan<const SkColor> fPalette;
+     rust::Box<fontations_ffi::BridgeHintingInstance> fHintingInstance;
+     bool fDoLinearMetrics = false;
++    // Windows emulation: units per em (0 = off) and GDI-classic ppem (0 = natural).
++    int fNyaUnitsPerEm = 0;
++    int fNyaGdiPpem = 0;
++    SkScalar fNyaGdiTextSize = 0;
++    bool fNyaFixedPitch = false;
++    long fNyaHalfWidth = 0;
++
++    // GDI-compatible advance: integer pixels at the GDI ppem (bitmap strike
++    // advance, else the rounded outline advance; fixed-pitch faces use whole
++    // multiples of the half-width cell), scaled back to the requested size
++    // and rounded like SkScalerContext_DW::generateAdvance.
++    SkScalar nyaGdiAdvance(SkGlyphID glyphID) {
++        const long upem = fNyaUnitsPerEm;
++        const long ppem = fNyaGdiPpem;
++        const long design = std::lround(fontations_ffi::unhinted_advance_width_or_zero(
++                fBridgeFontRef, static_cast<float>(upem), fBridgeNormalizedCoords, glyphID));
++        long pixels = (2 * design * ppem + upem) / (2 * upem);
++        if (fNyaFixedPitch && fNyaHalfWidth > 0) {
++            const long half = (2 * fNyaHalfWidth * ppem + upem) / (2 * upem);
++            pixels = design == 0 ? 0 : (2 * design > 3 * fNyaHalfWidth ? 2 * half : half);
++        } else if (fontations_ffi::has_bitmap_glyph(fBridgeFontRef, glyphID)) {
++            auto bitmap = fontations_ffi::bitmap_glyph(fBridgeFontRef, glyphID, ppem);
++            const auto& metrics = fontations_ffi::bitmap_metrics(*bitmap);
++            if (std::lround(metrics.ppem_y) == ppem && std::isfinite(metrics.advance)) {
++                pixels = std::lround(metrics.advance);
++            }
++        }
++        const long units = (2 * pixels * upem + ppem) / (2 * ppem);
++        return SkScalarRoundToScalar(fNyaGdiTextSize * units / upem);
++    }
+     // Keeping the path extraction target buffers around significantly avoids
+     // allocation churn.
+     SkMutex fPathMutex;

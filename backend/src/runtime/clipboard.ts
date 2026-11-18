@@ -3,6 +3,7 @@ import path from 'path';
 import { normalizeClipboardText, type ClipboardKind, type SessionClipboard } from '@nya/shared';
 import { uriList } from '../modules/files/fileUri.js';
 import { getDisplayHolder, killTree, sessionEnv } from './sessionManager.js';
+import type { SessionRuntime as Runtime } from './session/types.js';
 import {
   applyTargetsReady,
   beginHold,
@@ -38,13 +39,6 @@ export type { ClipboardHolder } from './clipboardLock.js';
 
 export const CLIP_PROBE_SEC = '0.1';
 
-type Runtime = {
-  display?: number;
-  uid?: number;
-  gid?: number;
-  id?: string;
-};
-
 function execFileOnHolder(
   runtime: Runtime,
   holder: ClipboardHolder,
@@ -53,7 +47,6 @@ function execFileOnHolder(
   timeoutMs?: number,
 ) {
   const display = holder.display ?? runtime.display;
-  /** @type {import('child_process').ExecFileOptions} */
   const opts: import('child_process').ExecFileOptions = {
     env: sessionEnv(runtime, { DISPLAY: `:${display}` }),
     maxBuffer: 2 * 1024 * 1024,

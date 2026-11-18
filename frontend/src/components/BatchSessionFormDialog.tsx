@@ -1,16 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { ProxyRecord } from '@nya/shared';
 import {
+  AUTO_LOCALE,
   COMMON_TIMEZONES,
-  NATIVE_MEDIA_LABEL,
   GPU_PROFILES,
-  MEDIA_AUDIO_INPUTS,
-  MEDIA_AUDIO_OUTPUTS,
-  MEDIA_VIDEO_INPUTS,
   WEBRTC_MODES,
   WEBRTC_MODE_LABELS,
-  FONT_PROFILES,
-  FONT_PROFILE_LABELS,
+  WINDOWS_RELEASES,
+  WINDOWS_RELEASE_LABELS,
   IDLE_TIMEOUT_MINUTES_MAX,
   PINNED_CHROME_LANGUAGES,
   chromeLanguageOptionLabel,
@@ -43,8 +40,10 @@ import { NONE_KEY } from '@/lib/groups';
 
 const KEEP_KEY = '__keep__';
 const COMMON_TZ = new Set<string>(COMMON_TIMEZONES);
+const AUTO_OPTION = { value: AUTO_LOCALE, label: '自动（跟随代理出口国家）' };
 const TIMEZONE_OPTIONS = [
   { value: KEEP_KEY, label: '不修改' },
+  AUTO_OPTION,
   ...listTimezones().map((tz) => ({
     value: tz,
     label: timezoneOptionLabel(tz),
@@ -54,6 +53,7 @@ const TIMEZONE_OPTIONS = [
 const PINNED_LANG = new Set<string>(PINNED_CHROME_LANGUAGES);
 const LANGUAGE_OPTIONS = [
   { value: KEEP_KEY, label: '不修改' },
+  AUTO_OPTION,
   ...CHROME_LANGUAGES.map((code) => ({
     value: code,
     label: chromeLanguageOptionLabel(code),
@@ -75,20 +75,12 @@ const WEBRTC_OPTIONS = [
     label: WEBRTC_MODE_LABELS[id],
   })),
 ];
-const FONT_OPTIONS = [
+const OS_OPTIONS = [
   { value: KEEP_KEY, label: '不修改' },
-  ...FONT_PROFILES.map((id) => ({
-    value: id,
-    label: FONT_PROFILE_LABELS[id],
-  })),
+  { value: 'linux', label: 'Linux（真实）' },
+  ...WINDOWS_RELEASES.map((id) => ({ value: `windows:${id}`, label: `Windows（伪装）· ${WINDOWS_RELEASE_LABELS[id]}` })),
 ];
 const HARDWARE_OPTIONS = [{ value: KEEP_KEY, label: '不修改' }, ...hardwareProfileOptions()];
-
-function mediaLabel(value: string) {
-  const raw = value.trim();
-  if (!raw || raw === NATIVE_MEDIA_LABEL) return '';
-  return raw;
-}
 
 export type BatchSessionPatch = {
   proxyId?: string | null;
@@ -96,10 +88,10 @@ export type BatchSessionPatch = {
   chromeLanguage?: string;
   gpuProfile?: string;
   webrtcMode?: string;
-  fontProfile?: string;
+  os?: string;
+  windowsRelease?: string;
   hardwareConcurrency?: number;
   deviceMemory?: number;
-  mediaDevices?: { audioInput?: string; audioOutput?: string; videoInput?: string };
   geo?: {
     permission?: string;
     latitude?: number | null;
@@ -124,11 +116,8 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
   const [chromeLanguage, setChromeLanguage] = useState(KEEP_KEY);
   const [gpuProfile, setGpuProfile] = useState(KEEP_KEY);
   const [webrtcMode, setWebrtcMode] = useState(KEEP_KEY);
-  const [fontProfile, setFontProfile] = useState(KEEP_KEY);
+  const [osChoice, setOsChoice] = useState(KEEP_KEY);
   const [hardware, setHardware] = useState(KEEP_KEY);
-  const [mediaAudioInput, setMediaAudioInput] = useState(KEEP_KEY);
-  const [mediaAudioOutput, setMediaAudioOutput] = useState(KEEP_KEY);
-  const [mediaVideoInput, setMediaVideoInput] = useState(KEEP_KEY);
   const [geoPermission, setGeoPermission] = useState(KEEP_KEY);
   const [geoLatitude, setGeoLatitude] = useState('');
   const [geoLongitude, setGeoLongitude] = useState('');
@@ -143,11 +132,8 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
     setChromeLanguage(KEEP_KEY);
     setGpuProfile(KEEP_KEY);
     setWebrtcMode(KEEP_KEY);
-    setFontProfile(KEEP_KEY);
+    setOsChoice(KEEP_KEY);
     setHardware(KEEP_KEY);
-    setMediaAudioInput(KEEP_KEY);
-    setMediaAudioOutput(KEEP_KEY);
-    setMediaVideoInput(KEEP_KEY);
     setGeoPermission(KEEP_KEY);
     setGeoLatitude('');
     setGeoLongitude('');
@@ -165,18 +151,16 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
     if (chromeLanguage !== KEEP_KEY) patch.chromeLanguage = chromeLanguage;
     if (gpuProfile !== KEEP_KEY) patch.gpuProfile = gpuProfile;
     if (webrtcMode !== KEEP_KEY) patch.webrtcMode = webrtcMode;
-    if (fontProfile !== KEEP_KEY) patch.fontProfile = fontProfile;
+    if (osChoice !== KEEP_KEY) {
+      const [os, release] = osChoice.split(':');
+      patch.os = os;
+      if (release) patch.windowsRelease = release;
+    }
     const hw = parseHardwareProfileId(hardware);
     if (hw) {
       patch.hardwareConcurrency = hw.cores;
       patch.deviceMemory = hw.memory;
     }
-
-    const mediaDevices: NonNullable<BatchSessionPatch['mediaDevices']> = {};
-    if (mediaAudioInput !== KEEP_KEY) mediaDevices.audioInput = mediaLabel(mediaAudioInput);
-    if (mediaAudioOutput !== KEEP_KEY) mediaDevices.audioOutput = mediaLabel(mediaAudioOutput);
-    if (mediaVideoInput !== KEEP_KEY) mediaDevices.videoInput = mediaLabel(mediaVideoInput);
-    if (Object.keys(mediaDevices).length) patch.mediaDevices = mediaDevices;
 
     const geo: NonNullable<BatchSessionPatch['geo']> = {};
     if (geoPermission !== KEEP_KEY) geo.permission = geoPermission;
@@ -285,60 +269,20 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
             </Select>
           </div>
           <div className="grid gap-2">
-            <Label>字体库</Label>
-            <Select value={fontProfile} onValueChange={setFontProfile}>
-              <SelectTrigger className="w-full">
+            <Label>操作系统</Label>
+            <Select value={osChoice} onValueChange={setOsChoice}>
+              <SelectTrigger className="w-full" aria-label="操作系统">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper">
-                {FONT_OPTIONS.map((opt) => (
+                {OS_OPTIONS.map((opt) => (
                   <SelectItem key={opt.value} value={opt.value}>
                     {opt.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <div className="grid gap-2">
-              <Label>麦克风</Label>
-              <SearchSelect
-                value={mediaAudioInput}
-                onChange={setMediaAudioInput}
-                options={[
-                  { value: KEEP_KEY, label: '不修改' },
-                  { value: NATIVE_MEDIA_LABEL, label: '真实设备（不伪装）' },
-                  ...MEDIA_AUDIO_INPUTS.map((v) => ({ value: v, label: v })),
-                ]}
-                searchPlaceholder="搜索"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>扬声器</Label>
-              <SearchSelect
-                value={mediaAudioOutput}
-                onChange={setMediaAudioOutput}
-                options={[
-                  { value: KEEP_KEY, label: '不修改' },
-                  { value: NATIVE_MEDIA_LABEL, label: '真实设备（不伪装）' },
-                  ...MEDIA_AUDIO_OUTPUTS.map((v) => ({ value: v, label: v })),
-                ]}
-                searchPlaceholder="搜索"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>摄像头</Label>
-              <SearchSelect
-                value={mediaVideoInput}
-                onChange={setMediaVideoInput}
-                options={[
-                  { value: KEEP_KEY, label: '不修改' },
-                  { value: NATIVE_MEDIA_LABEL, label: '真实设备（不伪装）' },
-                  ...MEDIA_VIDEO_INPUTS.map((v) => ({ value: v, label: v })),
-                ]}
-                searchPlaceholder="搜索"
-              />
-            </div>
+            <p className="text-xs text-muted-foreground">字体库跟随操作系统和 Windows 版本自动切换。</p>
           </div>
           <div className="grid gap-2">
             <Label>地理位置权限</Label>

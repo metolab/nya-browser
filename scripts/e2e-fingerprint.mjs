@@ -454,14 +454,16 @@ async function probeDeviceMemoryHeaders(cdp, port) {
     try {
       await sock.send('Runtime.enable');
       // The initial about:blank is already "complete", so also wait for the origin.
-      for (let i = 0; i < 100; i += 1) {
+      let loaded = false;
+      for (let i = 0; i < 150 && !loaded; i += 1) {
         const state = await sock.send('Runtime.evaluate', {
           expression: `location.origin === 'https://httpbin.org' && document.readyState === 'complete'`,
           returnByValue: true,
         });
-        if (state?.result?.value === true) break;
-        await sleep(200);
+        loaded = state?.result?.value === true;
+        if (!loaded) await sleep(300);
       }
+      if (!loaded) return { error: 'httpbin origin did not load' };
       const res = await sock.send('Runtime.evaluate', {
         expression: `fetch('/headers', { cache: 'no-store' })
           .then((r) => r.json())
@@ -530,7 +532,7 @@ async function cleanup(cookie) {
 }
 
 async function collect(cookie, name, input) {
-  const { patch, identity, ...payload } = input;
+  const { patch, identity, grantMedia, ...payload } = input;
   const created = await api(cookie, '/api/sessions', 'POST', {
     name: `fp-${name}-${Date.now().toString(36)}`,
     homeUrl: 'https://example.com/',
@@ -547,25 +549,17 @@ async function collect(cookie, name, input) {
   if (!runtime?.cdpPort) throw new Error(`session ${session.id} has no cdpPort`);
   await sleep(1500);
   let cdp = await cdpConnect(runtime.cdpPort);
-  if (payload.mediaDevices) {
+  const geoAllowed = payload.geo?.permission === 'allow' && payload.geo.latitude != null;
+  // One call: Browser.grantPermissions denies every permission it does not list.
+  const grants = [...(grantMedia ? ['audioCapture', 'videoCapture'] : []), ...(geoAllowed ? ['geolocation'] : [])];
+  if (grants.length) {
     try {
-      await cdp.browserSend('Browser.grantPermissions', {
-        origin: 'https://example.com',
-        permissions: ['audioCapture', 'videoCapture'],
-      });
+      await cdp.browserSend('Browser.grantPermissions', { origin: 'https://example.com', permissions: grants });
     } catch {
-      /* labels stay empty if grant is unavailable */
+      /* labels and position stay empty if grant is unavailable */
     }
   }
-  if (payload.geo?.permission === 'allow' && payload.geo.latitude != null) {
-    try {
-      await cdp.browserSend('Browser.grantPermissions', {
-        origin: 'https://example.com',
-        permissions: ['geolocation'],
-      });
-    } catch {
-      /* lifecycle may already have granted */
-    }
+  if (geoAllowed) {
     try {
       await cdp.send('Emulation.setGeolocationOverride', {
         latitude: payload.geo.latitude,
@@ -660,23 +654,15 @@ async function main() {
   const samples = [];
   const errors = [];
   const allCases = [
-    ['offline', { webrtcMode: 'offline', deviceName: 'DESKTOP-OFFLINE', fontProfile: 'win10' }],
-    ['disabled', { webrtcMode: 'disabled', deviceName: 'DESKTOP-DISABLED' }],
-    ['disable-udp', { webrtcMode: 'disable-udp', deviceName: 'DESKTOP-NOUDP' }],
-    [
-      'replace-no-ip',
-      { webrtcMode: 'replace', deviceName: 'DESKTOP-REPLACE' },
-    ],
+    ['offline', { webrtcMode: 'offline', os: 'windows' }],
+    ['disabled', { webrtcMode: 'disabled' }],
+    ['disable-udp', { webrtcMode: 'disable-udp' }],
+    ['replace-no-ip', { webrtcMode: 'replace' }],
     [
       'media-geo',
       {
         webrtcMode: 'offline',
-        deviceName: 'DESKTOP-MEDIA01',
-        mediaDevices: {
-          audioInput: 'USB Audio Device',
-          audioOutput: 'NVIDIA High Definition Audio',
-          videoInput: 'HD Pro Webcam C920',
-        },
+        grantMedia: true,
         geo: { permission: 'allow', latitude: 31.23, longitude: 121.47, accuracy: 80 },
       },
     ],
@@ -684,7 +670,8 @@ async function main() {
       'hardware',
       {
         webrtcMode: 'offline',
-        deviceName: 'DESKTOP-HW',
+        // Linux Chrome identity: network voices only (Windows voices are covered by e2e-os).
+        os: 'linux',
         hardwareConcurrency: 6,
         deviceMemory: 16,
         patch: { hardwareConcurrency: 12, deviceMemory: 32 },
@@ -719,7 +706,6 @@ async function main() {
     checks.push(check('offline-api', offline.page.webrtc?.rtcPeerConnection === true, offline.page.webrtc));
     checks.push(check('offline-no-ice', (offline.page.webrtc?.candidateCount || 0) === 0, offline.page.webrtc));
     checks.push(check('offline-no-sdp-ice', (offline.page.webrtc?.sdpCandidateCount || 0) === 0, offline.page.webrtc));
-    checks.push(check('offline-device-name', offline.stored.deviceName === 'DESKTOP-OFFLINE', offline.stored.deviceName));
     const swiftshader = /SwiftShader/i.test(offline.page.unmaskedRenderer || '');
     checks.push(
       check(
@@ -739,7 +725,8 @@ async function main() {
     );
     checks.push(check('font-arial', offline.page.fonts?.arial === true, offline.page.fonts));
     checks.push(check('font-calibri', offline.page.fonts?.calibri === true, offline.page.fonts));
-    checks.push(check('font-hide-noto-check', offline.page.fonts?.noto === false, offline.page.fonts));
+    // Chrome on Windows answers document.fonts.check() true for any installed-or-not system family.
+    checks.push(check('font-check-stock', offline.page.fonts?.noto === true, offline.page.fonts));
     checks.push(check('font-arial-metrics', offline.page.fonts?.arialInstalled === true, offline.page.fonts));
     checks.push(check('font-hide-noto-metrics', offline.page.fonts?.notoInstalled === false, offline.page.fonts));
   }
@@ -758,10 +745,13 @@ async function main() {
   }
   const mediaGeo = byName['media-geo'];
   if (mediaGeo) {
-    const labels = (mediaGeo.page.media?.devices || []).map((d) => d.label);
+    const devices = mediaGeo.page.media?.devices || [];
+    // Granted labels are the session's derived device names, never Chromium's fake devices.
+    const named = (kind) => devices.filter((d) => d.kind === kind).map((d) => d.label);
+    const real = (labels) => labels.length > 0 && labels.every((l) => l && !/fake/i.test(l));
     checks.push(check('media-present', mediaGeo.page.media?.present === true, mediaGeo.page.media));
-    checks.push(check('media-mic', labels.includes('USB Audio Device'), labels));
-    checks.push(check('media-cam', labels.includes('HD Pro Webcam C920'), labels));
+    checks.push(check('media-mic', real(named('audioinput')), named('audioinput')));
+    checks.push(check('media-cam', real(named('videoinput')), named('videoinput')));
     checks.push(check('geo-granted', mediaGeo.page.geo?.permission === 'granted', mediaGeo.page.geo));
     const pos = mediaGeo.page.geo?.position || {};
     checks.push(check('geo-lat', Math.abs((pos.latitude || 0) - 31.23) < 0.01, pos));
@@ -837,11 +827,9 @@ async function main() {
       name: s.name,
       stored: {
         webrtcMode: s.stored.webrtcMode,
-        deviceName: s.stored.deviceName,
+        os: s.stored.os,
         gpuProfile: s.stored.gpuProfile,
-        mediaDevices: s.stored.mediaDevices,
         geo: s.stored.geo,
-        fontProfile: s.stored.fontProfile,
         hardwareConcurrency: s.stored.hardwareConcurrency,
         deviceMemory: s.stored.deviceMemory,
       },

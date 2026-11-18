@@ -2,7 +2,7 @@
 export const CPU_CORE_OPTIONS = [2, 4, 6, 8, 10, 12, 16, 20, 24, 32] as const;
 
 /**
- * Desktop Chromium 151 rounds RAM to a power of two and clamps it to 2..32 GB
+ * Desktop Chromium rounds RAM to a power of two and clamps it to 2..32 GB
  * (navigator.deviceMemory and the Device-Memory client hint).
  */
 export const DEVICE_MEMORY_OPTIONS = [2, 4, 8, 16, 32] as const;

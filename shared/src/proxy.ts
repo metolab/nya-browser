@@ -2,6 +2,21 @@ export const PROXY_TYPES = ['http', 'https', 'socks5', 'anytls', 'ss', 'vless'] 
 
 export type ProxyType = (typeof PROXY_TYPES)[number];
 
+/** Port a form suggests for each type. */
+export const DEFAULT_PROXY_PORTS: Record<ProxyType, number> = {
+  http: 8080,
+  https: 443,
+  socks5: 1080,
+  anytls: 443,
+  ss: 8388,
+  vless: 443,
+};
+
+/** Types whose secret is mandatory (http/https/socks5 may run without auth). */
+export function proxyNeedsSecret(type: ProxyType) {
+  return type === 'anytls' || type === 'ss' || type === 'vless';
+}
+
 export type ProxyTypeOrNone = ProxyType | 'none';
 
 export const SS_METHODS = [

@@ -32,6 +32,10 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+      - name: Fetch private assets
+        env:
+          NYA_ASSETS_SSH_KEY: ${{ secrets.NYA_ASSETS_DEPLOY_KEY }}
+        run: bash scripts/fetch-assets.sh
       - uses: docker/build-push-action@v6
         with:
           context: .

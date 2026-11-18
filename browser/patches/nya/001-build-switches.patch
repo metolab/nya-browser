@@ -1,0 +1,200 @@
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index 9bb1d99..e9be714 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1806,13 +1806,22 @@ source_set("core") {
+       "fullscreen_linux.cc",
+       "icon_loader_auralinux.cc",
+       "shell_integration_linux.cc",
++      "ui/nya/nya_browser_native_widget.cc",
++      "ui/nya/nya_browser_native_widget.h",
++      "ui/nya/nya_multi_display.cc",
++      "ui/nya/nya_multi_display.h",
++      "ui/nya/nya_one_compositor.cc",
++      "ui/nya/nya_one_compositor.h",
+     ]
+     deps += [
+       ":fullscreen",
+       ":shell_integration_linux",
+       "//chrome/browser/lifetime",
+       "//components/os_crypt/browser:posix_key_provider",
++      "//components/ungoogled:ungoogled_switches",
+       "//third_party/libxml:xml_writer",
++      "//ui/events/platform/x11",
++      "//ui/gfx/x",
+       "//ui/linux:display_server_utils",
+     ]
+ 
+diff --git a/components/embedder_support/BUILD.gn b/components/embedder_support/BUILD.gn
+index 4fcfc89..da5f1fc 100644
+--- a/components/embedder_support/BUILD.gn
++++ b/components/embedder_support/BUILD.gn
+@@ -58,6 +58,7 @@ static_library("user_agent") {
+   deps = [
+     ":embedder_support",
+     "//build:branding_buildflags",
++    "//components/ungoogled:ungoogled_switches",
+     "//components/version_info",
+     "//net",
+     "//third_party/blink/public/common:headers",
+diff --git a/components/ungoogled/ungoogled_switches.cc b/components/ungoogled/ungoogled_switches.cc
+index c2f9515..6c513e3 100644
+--- a/components/ungoogled/ungoogled_switches.cc
++++ b/components/ungoogled/ungoogled_switches.cc
+@@ -15,4 +15,37 @@ const char kFingerprintingCanvasMeasureTextNoise[] = "fingerprinting-canvas-meas
+ // Enable fingerprinting deception for Canvas image data
+ const char kFingerprintingCanvasImageDataNoise[] = "fingerprinting-canvas-image-data-noise";
+ 
++// Nya per-session farbling seed (64-char hex) and hardware overrides.
++const char kNyaFpSeed[] = "nya-fp-seed";
++const char kNyaHwConcurrency[] = "nya-hw-concurrency";
++const char kNyaDeviceMemory[] = "nya-device-memory";
++const char kNyaGpuModel[] = "nya-gpu-model";
++const char kNyaGpuDeviceId[] = "nya-gpu-device-id";
++const char kNyaGpuArch[] = "nya-gpu-arch";
++const char kNyaWebrtcMode[] = "nya-webrtc-mode";
++const char kNyaWebrtcPublicIp[] = "nya-webrtc-public-ip";
++const char kNyaMediaAudioIn[] = "nya-media-audio-in";
++const char kNyaMediaAudioOut[] = "nya-media-audio-out";
++const char kNyaMediaVideo[] = "nya-media-video";
++const char kNyaFonts[] = "nya-fonts";
++const char kNyaX11MultiDisplay[] = "nya-x11-multi-display";
++// Browser brand added to UA client hints next to "Chromium", e.g. "Google Chrome".
++const char kNyaUaBrand[] = "nya-ua-brand";
++// Emulated OS identity ("windows"); values come from the Nya backend.
++const char kNyaOs[] = "nya-os";
++const char kNyaOsRelease[] = "nya-os-release";
++const char kNyaOsUaPlatform[] = "nya-os-ua-platform";
++const char kNyaOsNavigatorPlatform[] = "nya-os-navigator-platform";
++const char kNyaOsChPlatform[] = "nya-os-ch-platform";
++const char kNyaOsChPlatformVersion[] = "nya-os-ch-platform-version";
++// Local system voices "Name|lang;Name|lang" exposed by speechSynthesis.
++const char kNyaOsVoices[] = "nya-os-voices";
++// Windows NONCLIENTMETRICS menu/caption/status font family.
++const char kNyaOsUiFont[] = "nya-os-ui-font";
++// Claim the hardware video codecs a Windows GPU exposes (HEVC, H.264 High).
++const char kNyaOsHwVideo[] = "nya-os-hw-video";
++// Localized "Default" / "Communications" audio endpoint prefixes.
++const char kNyaMediaDefaultPrefix[] = "nya-media-default-prefix";
++const char kNyaMediaCommPrefix[] = "nya-media-comm-prefix";
++
+ }  // namespace switches
+diff --git a/components/ungoogled/ungoogled_switches.h b/components/ungoogled/ungoogled_switches.h
+index 7dace11..4fc0733 100644
+--- a/components/ungoogled/ungoogled_switches.h
++++ b/components/ungoogled/ungoogled_switches.h
+@@ -14,6 +14,31 @@ namespace switches {
+ COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingClientRectsNoise[];
+ COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingCanvasMeasureTextNoise[];
+ COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingCanvasImageDataNoise[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaFpSeed[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaHwConcurrency[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaDeviceMemory[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaGpuModel[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaGpuDeviceId[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaGpuArch[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaWebrtcMode[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaWebrtcPublicIp[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaMediaAudioIn[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaMediaAudioOut[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaMediaVideo[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaFonts[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaX11MultiDisplay[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaUaBrand[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOs[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOsRelease[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOsUaPlatform[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOsNavigatorPlatform[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOsChPlatform[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOsChPlatformVersion[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOsVoices[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOsUiFont[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaOsHwVideo[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaMediaDefaultPrefix[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kNyaMediaCommPrefix[];
+ 
+ }
+ 
+diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
+index 1320777..eb0b91d 100644
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3972,6 +3972,25 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+       switches::kFingerprintingClientRectsNoise,
+       switches::kFingerprintingCanvasMeasureTextNoise,
+       switches::kFingerprintingCanvasImageDataNoise,
++      switches::kNyaFpSeed,
++      switches::kNyaHwConcurrency,
++      switches::kNyaDeviceMemory,
++      switches::kNyaGpuModel,
++      switches::kNyaGpuDeviceId,
++      switches::kNyaGpuArch,
++      switches::kNyaWebrtcMode,
++      switches::kNyaWebrtcPublicIp,
++      switches::kNyaMediaAudioIn,
++      switches::kNyaMediaAudioOut,
++      switches::kNyaMediaVideo,
++      switches::kNyaFonts,
++      switches::kNyaOs,
++      switches::kNyaOsRelease,
++      switches::kNyaOsNavigatorPlatform,
++      switches::kNyaOsUiFont,
++      switches::kNyaOsHwVideo,
++      switches::kNyaMediaDefaultPrefix,
++      switches::kNyaMediaCommPrefix,
+       switches::kForceDeviceScaleFactor,
+       switches::kForceDisplayColorProfile,
+       switches::kForceHighContrast,
+diff --git a/third_party/blink/common/BUILD.gn b/third_party/blink/common/BUILD.gn
+index cea2f37..9109642 100644
+--- a/third_party/blink/common/BUILD.gn
++++ b/third_party/blink/common/BUILD.gn
+@@ -308,6 +308,7 @@ source_set("common") {
+     "//base",
+     "//build:android_buildflags",
+     "//build:chromecast_buildflags",
++    "//components/ungoogled:ungoogled_switches",
+     "//media/capture:capture_base",
+     "//media/capture/mojom:video_capture_mojom_support",
+     "//mojo/public/cpp/system",
+diff --git a/third_party/blink/renderer/platform/BUILD.gn b/third_party/blink/renderer/platform/BUILD.gn
+index 57ebaaa..c2aec0d 100644
+--- a/third_party/blink/renderer/platform/BUILD.gn
++++ b/third_party/blink/renderer/platform/BUILD.gn
+@@ -1162,6 +1162,8 @@ component("platform") {
+     "graphics/image.h",
+     "graphics/image_data_buffer.cc",
+     "graphics/image_data_buffer.h",
++    "nya/nya_farbling.cc",
++    "nya/nya_farbling.h",
+     "graphics/image_decoder_wrapper.cc",
+     "graphics/image_decoder_wrapper.h",
+     "graphics/image_decoding_store.cc",
+diff --git a/third_party/blink/renderer/platform/runtime_enabled_features.json5 b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+index 0f5c006..fc92c47 100644
+--- a/third_party/blink/renderer/platform/runtime_enabled_features.json5
++++ b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+@@ -4672,6 +4672,10 @@
+       name: "NotifySelectionControllerOnUnchangedSelection",
+       status: "stable",
+     },
++    {
++      name: "NyaWebRTC",
++      status: "stable",
++    },
+     {
+       name: "NumberInputFullWidthChars",
+       status: "stable",
+diff --git a/ui/ozone/platform/x11/BUILD.gn b/ui/ozone/platform/x11/BUILD.gn
+index 7998b35..2ba59ca 100644
+--- a/ui/ozone/platform/x11/BUILD.gn
++++ b/ui/ozone/platform/x11/BUILD.gn
+@@ -35,6 +35,8 @@ source_set("x11") {
+     "x11_keyboard_hook.h",
+     "x11_menu_utils.cc",
+     "x11_menu_utils.h",
++    "x11_readback_present_cache.cc",
++    "x11_readback_present_cache.h",
+     "x11_screen_ozone.cc",
+     "x11_screen_ozone.h",
+     "x11_surface_factory.cc",

@@ -339,7 +339,7 @@ sessionsRouter.post(
   '/:id/windows',
   asyncHandler(async (req, res) => {
     try {
-      const { session, admin } = assertSessionAccess(req, req.params.id);
+      const { session } = assertSessionAccess(req, req.params.id);
       const parsed = createWindowSchema.safeParse(req.body || {});
       const url = parsed.success ? parsed.data.url : undefined;
       const takeover = Boolean(parsed.success && parsed.data.takeover);

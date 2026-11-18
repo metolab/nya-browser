@@ -19,6 +19,7 @@ import {
 import { normalizeTimezone, DEFAULT_TIMEZONE, isValidTimezone } from './timezones.js';
 import {
   normalizeChromeLanguage,
+  isValidChromeLanguage,
   DEFAULT_CHROME_LANGUAGE,
   acceptLanguageHeader,
   posixLocale,
@@ -32,18 +33,9 @@ import {
   normalizeGpuProfile,
 } from './gpuProfiles.js';
 import { coerceWebrtcMode, DEFAULT_WEBRTC_MODE } from './webrtc.js';
-import {
-  MEDIA_AUDIO_INPUTS,
-  MEDIA_VIDEO_INPUTS,
-  mediaDevicesFromSeed,
-  normalizeMediaDevices,
-} from './mediaDevices.js';
-import {
-  DEFAULT_FONT_PROFILE,
-  coerceFontProfile,
-  fontsFromProfile,
-} from './fontProfiles.js';
-import { deviceNameFromSeed } from './deviceName.js';
+import { sessionMediaDevices } from './mediaDevices.js';
+import { countryLocale, resolveSessionLocale } from './countryLocale.js';
+import { windowsFontNames } from './windowsFontNames.js';
 import { normalizeGeo } from './geo.js';
 import { regionFromLoc } from './region.js';
 import { injectIndexHtml, joinBasePath, normalizeBasePath } from './basePath.js';
@@ -123,13 +115,14 @@ describe('schemas', () => {
     expect(s.notepad).toBe('');
   });
 
-  it('accepts empty native media labels', () => {
-    expect(
-      createSessionSchema.parse({
-        name: 's1',
-        mediaDevices: { audioInput: '', audioOutput: '', videoInput: '' },
-      }).mediaDevices,
-    ).toEqual({ audioInput: '', audioOutput: '', videoInput: '' });
+  it('drops the removed device name and media fields', () => {
+    const parsed = createSessionSchema.parse({
+      name: 's1',
+      deviceName: 'DESKTOP-X',
+      mediaDevices: { audioInput: 'USB Audio Device' },
+    });
+    expect(parsed).not.toHaveProperty('deviceName');
+    expect(parsed).not.toHaveProperty('mediaDevices');
   });
 
   it('accepts an NVIDIA desktop GPU profile', () => {
@@ -211,49 +204,72 @@ describe('gpu profiles', () => {
 });
 
 describe('webrtc and device name', () => {
-  it('coerces unknown webrtc modes to disabled', () => {
-    expect(DEFAULT_WEBRTC_MODE).toBe('disabled');
+  it('defaults new sessions to offline and reads unknown stored modes as disabled', () => {
+    expect(DEFAULT_WEBRTC_MODE).toBe('offline');
     expect(coerceWebrtcMode('forward')).toBe('forward');
     expect(coerceWebrtcMode('nope')).toBe('disabled');
     expect(coerceWebrtcMode('')).toBe('disabled');
   });
+});
 
-  it('builds a stable desktop name from seed', () => {
-    const name = deviceNameFromSeed('a'.repeat(64));
-    expect(name.startsWith('DESKTOP-')).toBe(true);
-    expect(deviceNameFromSeed('a'.repeat(64))).toBe(name);
+describe('windows font names', () => {
+  it('follows the Windows release', () => {
+    const win10 = windowsFontNames('win10', 'a'.repeat(64));
+    expect(win10).toContain('Arial');
+    expect(win10).toContain('Times');
+    expect(win10).toContain('Courier');
+    expect(win10).not.toContain('Cascadia Code');
+    expect(windowsFontNames('win11', 'a'.repeat(64))).toContain('Cascadia Code');
   });
 });
 
-describe('font profiles', () => {
-  it('defaults unknown to native and keeps explicit profiles', () => {
-    expect(DEFAULT_FONT_PROFILE).toBe('native');
-    expect(coerceFontProfile('')).toBe('native');
-    expect(coerceFontProfile('native')).toBe('native');
-    expect(fontsFromProfile('native', 'a'.repeat(64))).toEqual([]);
-    expect(fontsFromProfile('win10', 'a'.repeat(64))).toContain('Arial');
-    expect(fontsFromProfile('win10', 'a'.repeat(64))).toContain('Times');
-    expect(fontsFromProfile('win10', 'a'.repeat(64))).toContain('Courier');
-    expect(fontsFromProfile('win11', 'a'.repeat(64))).toContain('Cascadia Code');
+describe('session media devices', () => {
+  it('names endpoints the way each OS does, stable per seed', () => {
+    const seed = 'a'.repeat(64);
+    const win = sessionMediaDevices('windows', seed, 'en-US');
+    expect(win.audioInput).toMatch(/^Microphone \(/);
+    expect(win.audioOutput).toMatch(/^Speakers \(/);
+    expect(win.videoInput).toMatch(/\([0-9a-f]{4}:[0-9a-f]{4}\)$/);
+    expect(sessionMediaDevices('windows', seed, 'zh-CN').audioInput).toMatch(/^麦克风 \(/);
+    const linux = sessionMediaDevices('linux', seed, 'zh-CN');
+    expect(linux.audioInput).toBe(linux.audioOutput);
+    expect(linux.audioInput).toMatch(/Analog Stereo$/);
+    expect(linux.videoInput).toMatch(/\([0-9a-f]{4}:[0-9a-f]{4}\)$/);
+    expect(sessionMediaDevices('linux', seed, 'en-US')).toEqual(linux);
   });
 });
 
-describe('media device library', () => {
-  it('stays on Windows/PC labels', () => {
-    expect(MEDIA_VIDEO_INPUTS.join(' ')).not.toMatch(/FaceTime/i);
-    expect(MEDIA_AUDIO_INPUTS.join('')).not.toMatch(/[^\x00-\x7F]/);
-    expect(MEDIA_VIDEO_INPUTS).toContain('HD Pro Webcam C920');
-    expect(mediaDevicesFromSeed('a'.repeat(64)).audioInput.length).toBeGreaterThan(0);
+describe('country locale', () => {
+  it('maps a proxy exit to a timezone and Chrome language', () => {
+    expect(countryLocale('JP')).toEqual({ timezone: 'Asia/Tokyo', language: 'ja' });
+    expect(countryLocale('us', 'LAX')?.timezone).toBe('America/Los_Angeles');
+    expect(countryLocale('CA', 'SEA')?.timezone).toBe('America/Toronto');
+    expect(countryLocale('XX')).toBeNull();
   });
 
-  it('treats missing media as native and keeps partial overrides', () => {
-    expect(normalizeMediaDevices(undefined, 'a'.repeat(64)).audioInput).toBe('');
-    expect(normalizeMediaDevices({}, 'a'.repeat(64)).videoInput).toBe('');
-    expect(normalizeMediaDevices({ audioInput: 'native' }, 'a'.repeat(64)).audioInput).toBe('');
-    const partial = normalizeMediaDevices({ videoInput: 'USB Camera' }, 'a'.repeat(64));
-    expect(partial.videoInput).toBe('USB Camera');
-    expect(partial.audioInput).toBe('');
-    expect(partial.audioOutput).toBe('');
+  it('resolves auto from a tested exit and keeps explicit values', () => {
+    const exit = { ok: true, loc: 'DE', colo: 'FRA' };
+    expect(resolveSessionLocale({ timezone: 'auto', chromeLanguage: 'auto' }, exit)).toEqual({
+      timezone: 'Europe/Berlin',
+      language: 'de',
+    });
+    expect(resolveSessionLocale({ timezone: 'Asia/Tokyo', chromeLanguage: 'auto' }, exit).timezone).toBe('Asia/Tokyo');
+    expect(resolveSessionLocale({ timezone: 'auto', chromeLanguage: 'auto' }, { ...exit, ok: false })).toEqual({
+      timezone: 'Asia/Shanghai',
+      language: 'zh-CN',
+    });
+  });
+
+  it('only uses valid timezones and languages', () => {
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    for (const a of letters) {
+      for (const b of letters) {
+        const row = countryLocale(a + b);
+        if (!row) continue;
+        expect(isValidTimezone(row.timezone), a + b).toBe(true);
+        expect(isValidChromeLanguage(row.language), a + b).toBe(true);
+      }
+    }
   });
 });
 
@@ -273,13 +289,11 @@ describe('nested fingerprint on session schema', () => {
       name: 's1',
       fingerprint: { webrtcMode: 'replace', gpuProfile: 'rtx-2080', fontProfile: 'win11' },
     });
+    expect(parsed.fingerprint).not.toHaveProperty('fontProfile');
     expect(pickSessionFingerprint(parsed)).toEqual({
       gpuProfile: 'rtx-2080',
       webrtcMode: 'replace',
-      deviceName: undefined,
-      mediaDevices: undefined,
       geo: undefined,
-      fontProfile: 'win11',
     });
   });
 });
