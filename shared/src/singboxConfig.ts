@@ -167,15 +167,19 @@ export function buildSingboxOutbound(
   return outbound;
 }
 
+/** A `none` proxy builds a direct outbound, so a session keeps one local listener whatever its proxy. */
 export function buildSingboxConfig(opts: BuildSingboxConfigOptions): Record<string, unknown> {
   const listenHost = opts.listenHost || '127.0.0.1';
   const blockLoopback = opts.blockLoopback !== false;
-  const via = opts.via || [];
+  const direct = opts.proxy.type === 'none';
+  const via = direct ? [] : opts.via || [];
   const viaTags = via.map((_, i) => `via-${i}`);
-  const outbounds = [
-    buildSingboxOutbound(opts.proxy, { tag: 'proxy', detour: viaTags[0] }),
-    ...via.map((hop, i) => buildSingboxOutbound(hop, { tag: viaTags[i], detour: viaTags[i + 1] })),
-  ];
+  const outbounds = direct
+    ? [{ type: 'direct', tag: 'proxy' }]
+    : [
+        buildSingboxOutbound(opts.proxy, { tag: 'proxy', detour: viaTags[0] }),
+        ...via.map((hop, i) => buildSingboxOutbound(hop, { tag: viaTags[i], detour: viaTags[i + 1] })),
+      ];
   const rules: Record<string, unknown>[] = [];
   if (blockLoopback) {
     rules.push(

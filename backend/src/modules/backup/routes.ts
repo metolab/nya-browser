@@ -14,6 +14,7 @@ import {
   getSession,
   listProxies,
   sessionDir,
+  setCustomProxyTest,
 } from '../../store.js';
 import { getRuntimePublic, stopSession } from '../../runtime/sessionManager.js';
 import { presentSession } from '../sessions/present.js';
@@ -100,6 +101,7 @@ backupRouter.get(
         port: session.proxy.port,
         username: session.proxy.username,
       },
+      customProxy: session.customProxy,
       passwords,
     };
     const home = sessionDir(session.id);
@@ -167,7 +169,12 @@ backupRouter.post(
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as BackupManifest;
     let proxyId: string | null = null;
     let proxyMatched = false;
-    if (manifest.proxy?.type && manifest.proxy.type !== 'none') {
+    let customProxy: Record<string, unknown> | null = null;
+    if (manifest.customProxy) {
+      const via = manifest.customProxy.viaProxyId;
+      customProxy = { ...manifest.customProxy, viaProxyId: via && getProxy(via) ? via : null };
+      proxyMatched = true;
+    } else if (manifest.proxy?.type && manifest.proxy.type !== 'none') {
       const found = listProxies().find(
         (p) =>
           p.type === manifest.proxy.type &&
@@ -179,7 +186,7 @@ backupRouter.post(
         proxyMatched = true;
       }
     }
-    const session = createSession({
+    const fields = {
       name: manifest.name,
       description: manifest.description,
       notepad: manifest.notepad || '',
@@ -188,8 +195,17 @@ backupRouter.post(
       homeUrl: manifest.homeUrl,
       idleTimeoutMinutes: manifest.idleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES,
       fingerprint: manifest.fingerprint,
-      proxyId,
-    });
+    };
+    let session;
+    try {
+      session = createSession({ ...fields, proxyId, customProxy });
+    } catch {
+      proxyMatched = false;
+      session = createSession({ ...fields, proxyId: null });
+    }
+    if (customProxy && manifest.customProxy?.lastTest && session.customProxy) {
+      session = setCustomProxyTest(session.id, manifest.customProxy.lastTest) || session;
+    }
     const dest = chromeProfileDir(session.id);
     fs.rmSync(dest, { recursive: true, force: true });
     const srcChrome = path.join(tmp, 'chrome');

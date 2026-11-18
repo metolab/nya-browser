@@ -74,6 +74,7 @@ function matchesQuery(session: Session, query: string) {
 function proxyText(session: Session, proxies?: ProxyRecord[]) {
   const p = session.proxy;
   if (!p || p.type === 'none') return '直连';
+  if (session.customProxy) return `临时 · ${p.type}://${p.host}:${p.port}`;
   const named = proxies?.find((row) => row.id === session.proxyId);
   if (named?.name) return named.name;
   return `${p.type}://${p.host}:${p.port}`;

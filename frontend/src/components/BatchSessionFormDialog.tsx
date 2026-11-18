@@ -350,6 +350,7 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-foreground">会替换会话的临时代理；运行中的会话就地切换，不重启浏览器</p>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy} onClick={onCancel}>

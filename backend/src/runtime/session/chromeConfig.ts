@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { chromeProfileDir, downloadsDir, getProxy, getSession, normalizeHomeUrl, sessionDir } from '../../store.js';
+import { chromeProfileDir, downloadsDir, getSession, normalizeHomeUrl, sessionDir, sessionProxyTest } from '../../store.js';
 import type { FingerprintConfig, WebrtcMode } from '@nya/shared';
 import { acceptLanguageHeader, chromeAudioDevicePrefixes, chromeDefaultAcceptLanguages, coerceOs, coerceWebrtcMode, coerceWindowsRelease, gpuProfileById, NEW_TAB_URL, sessionMediaDevices, webrtcLocksUdp, webrtcNeedsPublicIp, windowsFontNames, windowsIdentity, windowsUiFont, windowsVoices } from '@nya/shared';
 import { resolveTampermonkeyDir, TAMPERMONKEY_ID } from '../tampermonkey.js';
@@ -337,15 +337,23 @@ function firstIpv4(raw: unknown) {
 
 function sessionPublicIp(sessionId: string) {
   const session = getSession(sessionId);
-  const proxy = session?.proxyId ? getProxy(session.proxyId) : null;
-  if (!proxy?.lastTest?.ok) return '';
-  const ip = firstIpv4(proxy.lastTest.exitIp);
+  const test = session ? sessionProxyTest(session) : null;
+  if (!test?.ok) return '';
+  const ip = firstIpv4(test.exitIp);
   if (!ip) return '';
   const [a, b] = ip.split('.').map((n) => Number(n));
   if (a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) {
     return '';
   }
   return ip;
+}
+
+/** The launch flags that follow the proxy exit; Chrome restarts when this changes under a new proxy. */
+export function chromeExitProfile(sessionId: string, fingerprint: FingerprintConfig | null = null) {
+  const { timezone, language } = sessionLocaleOf(sessionId);
+  const webrtcMode = sessionWebrtcMode(sessionId, fingerprint);
+  const publicIp = webrtcNeedsPublicIp(webrtcMode) ? sessionPublicIp(sessionId) : '';
+  return `${timezone}|${language}|${publicIp}`;
 }
 
 export function chromeArgs(

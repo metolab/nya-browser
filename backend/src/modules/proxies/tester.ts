@@ -1,7 +1,7 @@
 import http from 'http';
 import https from 'https';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import type { ProxyRecord, ProxyTestResult } from '@nya/shared';
+import type { ProxyConfig, ProxyTestResult } from '@nya/shared';
 import { regionFromLoc } from '@nya/shared';
 import { withEphemeralSidecar } from '../../runtime/singbox.js';
 
@@ -53,7 +53,7 @@ function requestText(url: string, agent: unknown): Promise<{ status: number; bod
   });
 }
 
-export async function testProxy(proxy: ProxyRecord): Promise<ProxyTestResult> {
+export async function testProxy(proxy: ProxyConfig): Promise<ProxyTestResult> {
   const started = Date.now();
   const empty = { exitIp: null, loc: null, colo: null, region: null };
   try {

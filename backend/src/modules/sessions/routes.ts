@@ -5,22 +5,33 @@ import {
   createWindowSchema,
   pickSessionFingerprint,
   putNotepadSchema,
+  putSessionProxySchema,
   putTargetGrantsSchema,
   startSessionSchema,
   updateSessionSchema,
 } from '@nya/shared';
 import { fingerprintLaunchChanged } from '../../runtime/fingerprint.js';
+import { proxyTestPublicIpChanged } from '../../runtime/proxyLastTest.js';
+import { checkSingboxProxy } from '../../runtime/singbox.js';
 import { asyncHandler, requireAdmin } from '../../http/util.js';
 import { HttpError, assertNotepadAccess, assertSessionAccess, handleHttpError } from '../../http/access.js';
 import { auditFromReq } from '../audit/service.js';
+import { testProxy } from '../proxies/tester.js';
 import {
   createSession,
+  customProxyInputConfig,
   deleteSession,
+  getProxy,
   getSession,
   listSessionGrants,
   regenerateSessionFingerprint,
+  restoreSessionProxy,
+  sessionProxyChanged,
+  setCustomProxyTest,
   setSessionGrants,
+  updateProxyRecord,
   updateSession,
+  type SessionRecord,
 } from '../../store.js';
 import {
   applyProxy,
@@ -33,6 +44,7 @@ import {
   ownedWindows,
   releaseMainWindow,
   restartBrowser,
+  restartSessionsForProxyExitIp,
   startSession,
   stopSession,
   stopSub,
@@ -54,20 +66,52 @@ sessionsRouter.get(
   }),
 );
 
+/** Probe a session's own proxy and keep the result; the exit drives `auto` locale and the WebRTC IP. */
+async function testCustomProxy(sessionId: string) {
+  const session = getSession(sessionId)!;
+  if (!session.customProxy) return session;
+  const result = await testProxy(session.proxy);
+  return setCustomProxyTest(sessionId, result) || session;
+}
+
+/** Reject a custom proxy input before anything is stored. */
+async function precheckCustomProxy(input: unknown) {
+  if (input == null) return;
+  await checkSingboxProxy(customProxyInputConfig(input));
+}
+
+/**
+ * After a session's proxy is stored: probe a changed custom proxy, then switch
+ * the running browser over. A failed switch puts the previous proxy back.
+ */
+async function switchSessionProxy(before: SessionRecord, after: SessionRecord) {
+  if (!sessionProxyChanged(before, after)) return { session: after, restarted: false };
+  const session = after.customProxy && !after.customProxy.lastTest ? await testCustomProxy(after.id) : after;
+  try {
+    const { restarted } = await applyProxy(session.id);
+    return { session: getSession(session.id) || session, restarted };
+  } catch (err) {
+    restoreSessionProxy(before);
+    throw new HttpError(400, `切换代理失败，已恢复原代理：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 sessionsRouter.post(
   '/',
   requireAdmin,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const parsed = createSessionSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
     let session;
     try {
+      await precheckCustomProxy(parsed.data.customProxy);
       session = createSession({
         name: parsed.data.name,
         description: parsed.data.description,
         notepad: parsed.data.notepad,
         groupId: parsed.data.groupId ?? null,
         proxyId: parsed.data.proxyId ?? null,
+        customProxy: parsed.data.customProxy ?? null,
         timezone: parsed.data.timezone,
         chromeLanguage: parsed.data.chromeLanguage,
         ...pickSessionFingerprint(parsed.data),
@@ -77,6 +121,7 @@ sessionsRouter.post(
     } catch (err) {
       return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
+    if (session.customProxy) session = await testCustomProxy(session.id);
     auditFromReq(req, {
       action: AUDIT_ACTIONS.sessionCreate,
       resourceType: 'session',
@@ -98,6 +143,7 @@ sessionsRouter.patch(
     if (!before) return res.status(404).json({ error: 'Not found' });
     let session;
     try {
+      await precheckCustomProxy(parsed.data.customProxy);
       const { fingerprint: _nested, ...rest } = parsed.data;
       session = updateSession(req.params.id, {
         ...rest,
@@ -107,15 +153,21 @@ sessionsRouter.patch(
       return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
     if (!session) return res.status(404).json({ error: 'Not found' });
-    if (parsed.data.proxyId !== undefined && parsed.data.proxyId !== before.proxyId) {
-      await applyProxy(session.id, session.proxy);
-    } else if (
+    let restarted = false;
+    try {
+      ({ session, restarted } = await switchSessionProxy(before, session));
+    } catch (err) {
+      return handleHttpError(err, res);
+    }
+    if (
+      !restarted &&
       getRuntimePublic(session.id) &&
       ((parsed.data.timezone && parsed.data.timezone !== before.timezone) ||
         (parsed.data.chromeLanguage && parsed.data.chromeLanguage !== before.chromeLanguage) ||
         fingerprintLaunchChanged(before.fingerprint, session.fingerprint))
     ) {
       await restartBrowser(session.id);
+      restarted = true;
     }
     if (parsed.data.idleTimeoutMinutes !== undefined) {
       syncIdleWatch(session.id);
@@ -126,7 +178,7 @@ sessionsRouter.patch(
       resourceId: session.id,
       success: true,
     });
-    res.json({ session: presentSession(session, req.user) });
+    res.json({ session: presentSession(session, req.user), restarted });
   }),
 );
 
@@ -304,22 +356,66 @@ sessionsRouter.post(
   }),
 );
 
+/** Set a saved proxy (`proxyId`), the session's own proxy (`customProxy`, fields or URI), or neither for direct. */
 sessionsRouter.put(
   '/:id/proxy',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const proxyId = req.body?.proxyId === undefined ? null : req.body.proxyId;
-    const session = updateSession(req.params.id, { proxyId });
+    const parsed = putSessionProxySchema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
+    const before = getSession(req.params.id);
+    if (!before) return res.status(404).json({ error: 'Not found' });
+    const customProxy = parsed.data.customProxy ?? null;
+    const proxyId = customProxy ? null : (parsed.data.proxyId ?? null);
+    let session;
+    try {
+      await precheckCustomProxy(customProxy);
+      session = updateSession(req.params.id, customProxy ? { customProxy } : { proxyId });
+    } catch (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
     if (!session) return res.status(404).json({ error: 'Not found' });
-    await applyProxy(session.id, session.proxy);
+    let restarted = false;
+    try {
+      ({ session, restarted } = await switchSessionProxy(before, session));
+    } catch (err) {
+      return handleHttpError(err, res);
+    }
     auditFromReq(req, {
       action: AUDIT_ACTIONS.sessionUpdate,
       resourceType: 'session',
       resourceId: session.id,
       success: true,
-      detail: { proxyId },
+      detail: { proxyId, customProxy: session.customProxy ? `${session.proxy.type}://${session.proxy.host}:${session.proxy.port}` : null },
     });
-    res.json({ session: presentSession(session, req.user) });
+    res.json({ session: presentSession(session, req.user), restarted });
+  }),
+);
+
+/** Probe the proxy a session runs with and keep the result on that proxy. */
+sessionsRouter.post(
+  '/:id/proxy/test',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const session = getSession(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Not found' });
+    if (session.proxy.type === 'none') return res.status(400).json({ error: 'Session has no proxy' });
+    const saved = session.customProxy ? null : getProxy(session.proxyId);
+    const previous = session.customProxy ? session.customProxy.lastTest : saved?.lastTest || null;
+    const result = await testProxy(session.proxy);
+    if (session.customProxy) setCustomProxyTest(session.id, result);
+    else if (saved) updateProxyRecord(saved.id, { lastTestAt: new Date().toISOString(), lastTest: result });
+    if (proxyTestPublicIpChanged(previous, result)) {
+      await restartSessionsForProxyExitIp(saved ? { proxyId: saved.id } : { sessionId: session.id });
+    }
+    auditFromReq(req, {
+      action: AUDIT_ACTIONS.proxyTest,
+      resourceType: 'session',
+      resourceId: session.id,
+      success: result.ok,
+      detail: { latencyMs: result.latencyMs, exitIp: result.exitIp, loc: result.loc, error: result.error },
+    });
+    res.json({ result, session: presentSession(getSession(session.id)!, req.user) });
   }),
 );
 

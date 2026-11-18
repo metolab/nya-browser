@@ -33,6 +33,10 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 挂代理的会话只能连到自己的本地代理端口，直连的包（包括 WebRTC 的 UDP）在 iptables 里被拒绝。
 
+会话的代理可以选已保存的代理，也可以填一个只属于该会话的临时代理（字段或分享链接，可选已保存的代理做前置），保存时自动测试出口。每个运行中的会话都有一个 sing-box sidecar（直连会话用 direct 出口），Chrome 固定连它，所以切换代理只替换 sidecar、断开现有连接，浏览器不重启；只有时区/语言为 `auto` 且出口国家变了，或 WebRTC 为 replace/forward 且出口 IP 变了时才重启 Chrome。
+
+会话的代理可以选已保存的代理，也可以填一个只属于该会话的临时代理（字段或分享链接，可选已保存的代理做前置），保存时自动测试出口。每个运行中的会话都有一个 sing-box sidecar（直连会话用 direct 出口），Chrome 固定连它，所以切换代理只替换 sidecar、断开现有连接，浏览器不重启；只有时区/语言为 `auto` 且出口国家变了，或 WebRTC 为 replace/forward 且出口 IP 变了时才重启 Chrome。
+
 ## Windows 字体
 
 Windows 会话优先使用真实的 Windows 字体。字体有授权限制，不放在本仓库，而是放在私有仓库 [metolab/nya-browser-assets](https://github.com/metolab/nya-browser-assets) 的 `windows-fonts/` 下。构建镜像前用 `scripts/fetch-assets.sh` 把 `third_party/assets.ref` 固定的 commit 检出到 `third_party/assets`。Image workflow 通过只读 deploy key（secret `NYA_ASSETS_DEPLOY_KEY`）访问，本地使用 git/gh 凭据。

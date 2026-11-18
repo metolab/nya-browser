@@ -34,6 +34,7 @@ nya = Nya()  # 读取 NYA_BASE_URL / NYA_API_KEY
 proxy = nya.proxies.create(name="us-1", type="socks5", host="1.2.3.4", port=1080,
                            username="u", password="p")
 print(nya.proxies.test(proxy.id).exit_ip)
+print(nya.proxies.probe(type="socks5", host="5.6.7.8", port=1080).ok)   # 不保存，只测试
 
 s = nya.sessions.create(name="shop-01", proxy_id=proxy.id,
                         timezone="America/New_York", chrome_language="en-US")
@@ -109,7 +110,11 @@ nya cdp-forward shop-01 --port 9222 --start
 
 ```python
 s.update(home_url="https://example.com", idle_timeout_minutes=0)
-s.set_proxy(other_proxy.id)          # 运行中会重启浏览器
+s.set_proxy(other_proxy.id)          # 运行中就地切换，不重启浏览器
+s.set_proxy(custom="socks5://u:p@5.6.7.8:1080")   # 只属于这个会话的临时代理
+s.set_proxy(custom={"type": "ss", "host": "5.6.7.8", "port": 8388, "password": "p",
+                    "extra": {"method": "aes-256-gcm"}, "via_proxy_id": front.id})
+s.test_proxy()                        # 测试当前代理的出口
 s.regenerate_fingerprint()
 s.restart()
 s.stop()

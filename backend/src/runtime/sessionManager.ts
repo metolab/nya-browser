@@ -3,14 +3,22 @@ import fs from 'fs';
 import path from 'path';
 import { AUDIT_ACTIONS, coerceOs, coerceWebrtcMode, webrtcNeedsPublicIp, type ProxyConfig } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
-import { ensureSessionDirs, ensureSessionFingerprint, getSession, listSessions, sessionDir } from '../store.js';
+import {
+  ensureSessionDirs,
+  ensureSessionFingerprint,
+  getSession,
+  listSessions,
+  sessionDir,
+  sessionProxyTest,
+} from '../store.js';
 import { logChromeCrash } from './chromeCrashLog.js';
 import { hasChromeLifecycle, startChromeLifecycle, stopChromeLifecycle } from './chromeLifecycle.js';
 import { snapshotSessionPasswords } from './sessionPasswords.js';
-import { startSingboxSidecar, stopSingboxSidecar } from './singbox.js';
+import { checkSingboxProxy, startSingboxSidecar, stopSingboxSidecar } from './singbox.js';
 import {
   CHROME_BIN,
   chromeArgs,
+  chromeExitProfile,
   chromeFontEnv,
   clearChromeLocks,
   sessionHomeUrl,
@@ -82,21 +90,82 @@ import {
 
 const WINDOW_ENSURE_COOLDOWN_MS = 8000;
 
-async function startLocalProxy(runtime: SessionRuntime, proxy: ProxyConfig) {
-  const started = await startSingboxSidecar({
-    id: runtime.id,
-    proxy,
-    listenPort: LOCAL_PROXY_BASE + runtime.slot,
-  });
-  runtime.singbox = started.handle;
-  runtime.localProxyPort = started.port;
+function localProxyPort(runtime: SessionRuntime) {
+  return LOCAL_PROXY_BASE + runtime.slot;
 }
 
-async function restartLocalProxy(runtime: SessionRuntime, proxy: ProxyConfig) {
+async function launchSidecar(runtime: SessionRuntime, proxy: ProxyConfig) {
+  const handle = await startSingboxSidecar({ id: runtime.id, proxy, listenPort: localProxyPort(runtime) });
+  if (runtime.stopping) {
+    await stopSingboxSidecar(handle);
+    throw new Error('Session is stopping');
+  }
+  runtime.singbox = handle;
+  runtime.localProxyPort = handle.port;
+  runtime.proxy = proxy;
+}
+
+/**
+ * Every session runs a sidecar (a direct outbound when it has no proxy), so
+ * Chrome keeps one `--proxy-server` and a proxy change only swaps the sidecar.
+ */
+async function startLocalProxy(runtime: SessionRuntime, proxy: ProxyConfig) {
+  try {
+    await launchSidecar(runtime, proxy);
+  } catch (err) {
+    if (proxy.type !== 'none' || runtime.stopping) throw err;
+    console.warn(`[proxy ${runtime.id}] no direct sidecar, a later proxy change restarts Chrome:`, errMsg(err));
+    runtime.singbox = null;
+    runtime.localProxyPort = null;
+    runtime.proxy = proxy;
+  }
+}
+
+function withProxyLock<T>(runtime: SessionRuntime, fn: () => Promise<T>): Promise<T> {
+  const run = (runtime.proxyTail || Promise.resolve()).then(fn, fn);
+  runtime.proxyTail = run.catch(() => undefined);
+  return run;
+}
+
+/** Point the running sidecar at `proxy`; on failure the previous proxy is restored and the error rethrown. */
+async function swapLocalProxy(runtime: SessionRuntime, proxy: ProxyConfig) {
+  await checkSingboxProxy(proxy);
+  const previous = runtime.proxy;
+  // Close direct egress before the sidecar starts sending through a proxy.
+  if (proxy.type !== 'none') {
+    runtime.proxy = proxy;
+    applySessionNetFilter(runtime);
+  }
   await stopSingboxSidecar(runtime.singbox);
   runtime.singbox = null;
-  runtime.localProxyPort = null;
-  await startLocalProxy(runtime, proxy);
+  try {
+    await launchSidecar(runtime, proxy);
+  } catch (err) {
+    runtime.proxy = previous;
+    if (!runtime.stopping) {
+      await launchSidecar(runtime, previous).catch((restoreErr) => {
+        console.error(`[proxy ${runtime.id}] restoring the previous proxy failed:`, errMsg(restoreErr));
+      });
+      applySessionNetFilter(runtime);
+    }
+    throw err;
+  }
+  applySessionNetFilter(runtime);
+}
+
+/** Bring back a sidecar that died under a running session. */
+function watchLocalProxy(runtime: SessionRuntime) {
+  if (runtime.stopping || !runtime.localProxyPort) return;
+  const handle = runtime.singbox;
+  if (handle && handle.child.exitCode == null && handle.child.signalCode == null) return;
+  void withProxyLock(runtime, async () => {
+    if (runtime.singbox !== handle || runtime.stopping) return;
+    console.warn(`[proxy ${runtime.id}] sing-box is down, restarting`);
+    runtime.singbox = null;
+    await launchSidecar(runtime, runtime.proxy);
+  }).catch((err) => {
+    console.warn(`[proxy ${runtime.id}] sing-box restart failed:`, errMsg(err));
+  });
 }
 
 /** Kill a desktop's processes (taskbar, clipboard holder, x11vnc, openbox, Xvfb). */
@@ -189,6 +258,8 @@ async function startChrome(runtime: SessionRuntime) {
   chownSessionFiles(runtime.id, runtime);
   const cdpPort = runtime.cdpPort || (NYA_CDP_BASE > 0 ? NYA_CDP_BASE + runtime.slot : null);
   runtime.cdpPort = cdpPort;
+  runtime.chromeProxyPort = runtime.localProxyPort;
+  runtime.chromeExitProfile = chromeExitProfile(runtime.id, fingerprint);
   const args = chromeArgs(
     runtime.id,
     runtime.localProxyPort,
@@ -330,6 +401,7 @@ function startChromeWatchdog() {
   if (watchTimer) return;
   watchTimer = setInterval(() => {
     for (const runtime of runtimes.values()) {
+      watchLocalProxy(runtime);
       void watchChrome(runtime);
     }
   }, 5000);
@@ -395,6 +467,7 @@ export async function startSession(
       authFile,
       localProxyPort: null,
       singbox: null,
+      proxy: session.proxy,
       xvfb: null,
       openbox: null,
       chrome: null,
@@ -532,27 +605,49 @@ export async function restartBrowser(sessionId: string, { url }: { url?: string 
   }
 }
 
-/** Restart running sessions whose WebRTC mode embeds the exit IP of `proxyId`. */
-export async function restartSessionsForProxyExitIp(proxyId: string) {
-  if (!proxyId) return;
+/** Restart running sessions whose WebRTC mode embeds the exit IP of `proxyId`, or of their own proxy. */
+export async function restartSessionsForProxyExitIp(target: { proxyId: string } | { sessionId: string }) {
   for (const session of listSessions()) {
-    if (session.proxyId !== proxyId) continue;
+    if ('proxyId' in target ? session.proxyId !== target.proxyId : session.id !== target.sessionId) continue;
     if (!webrtcNeedsPublicIp(coerceWebrtcMode(session.fingerprint?.webrtcMode))) continue;
     if (!runtimes.has(session.id)) continue;
     await restartBrowser(session.id).catch(() => undefined);
   }
 }
 
-export async function applyProxy(sessionId: string, proxyInput?: ProxyConfig | null) {
-  const session = getSession(sessionId);
-  if (!session) throw new Error('Session not found');
+/**
+ * Switch a running session to its stored proxy without restarting Chrome.
+ * Chrome restarts only when it launched without the sidecar, or when the new
+ * exit moves launch flags (an `auto` timezone/language, the WebRTC public IP).
+ * An untested exit keeps the running flags.
+ */
+export async function applyProxy(sessionId: string): Promise<{ restarted: boolean }> {
   const runtime = runtimes.get(sessionId);
-  if (runtime) {
-    await restartLocalProxy(runtime, proxyInput || session.proxy);
-    applySessionNetFilter(runtime);
-    await restartBrowser(sessionId);
-  }
-  return getSession(sessionId);
+  if (!runtime) return { restarted: false };
+  return withProxyLock(runtime, async () => {
+    const session = getSession(sessionId);
+    if (!session) throw new Error('Session not found');
+    if (runtime.stopping || !runtimes.has(sessionId)) return { restarted: false };
+    const proxy = session.proxy;
+    if (runtime.singbox) {
+      await swapLocalProxy(runtime, proxy);
+    } else {
+      await startLocalProxy(runtime, proxy);
+      applySessionNetFilter(runtime);
+    }
+    const exitKnown = proxy.type === 'none' || Boolean(sessionProxyTest(session)?.ok);
+    const restarted =
+      runtime.chromeProxyPort !== runtime.localProxyPort ||
+      (exitKnown && chromeExitProfile(sessionId) !== runtime.chromeExitProfile);
+    console.log(`[proxy ${sessionId}] switched to ${proxy.type}${restarted ? ', restarting browser' : ''}`);
+    if (restarted) {
+      // The proxy is live either way; a failed restart is left to the Chrome watchdog.
+      await restartBrowser(sessionId).catch((err) => {
+        console.error(`[proxy ${sessionId}] browser restart failed:`, errMsg(err));
+      });
+    }
+    return { restarted };
+  });
 }
 
 async function stopSubInternal(runtime: SessionRuntime, sub: SubDesktop) {
@@ -701,7 +796,7 @@ export function getRuntimePublic(sessionId: string) {
   return {
     running: true,
     display: runtime.display,
-    hasProxy: Boolean(runtime.localProxyPort),
+    hasProxy: runtime.proxy.type !== 'none',
     cdpPort: runtime.cdpPort || null,
     cdpClients: cdpClientCount(sessionId),
     startedAt: runtime.startedAt,

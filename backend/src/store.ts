@@ -13,6 +13,8 @@ import {
   normalizeChromeLanguage,
   normalizeProxyExtra,
   normalizeTimezone,
+  parseProxyUri,
+  proxyConfigSchema,
   resolveSessionLocale,
   type FingerprintConfig,
   type AccessGrant,
@@ -21,6 +23,7 @@ import {
   type ProxyRecord,
   type ProxyTestResult,
   type SessionGroup,
+  type SessionProxy,
 } from '@nya/shared';
 import { DATA_DIR } from './config.js';
 import { db } from './db/client.js';
@@ -204,6 +207,12 @@ function toSingboxInput(proxy: ProxyRecord | ProxyConfig) {
 }
 
 export function proxyChainInputs(proxy: ProxyRecord | ProxyConfig) {
+  if (proxy.type === 'none') {
+    return {
+      proxy: { type: 'none' as const, host: '', port: null, username: '', password: '', extra: emptyProxyExtra() },
+      via: [],
+    };
+  }
   const selfId = 'id' in proxy ? proxy.id : null;
   assertProxyChain(selfId, proxy.viaProxyId);
   const via = [];
@@ -382,7 +391,7 @@ export function deleteProxyRecord(id: string) {
     .from(proxiesTable)
     .where(eq(proxiesTable.viaProxyId, id))
     .all();
-  if (chained.length) {
+  if (chained.length || listSessions().some((s) => s.customProxy?.viaProxyId === id)) {
     throw new Error('Proxy is used as a front proxy');
   }
   const r = db.delete(proxiesTable).where(eq(proxiesTable.id, id)).run();
@@ -402,6 +411,121 @@ export function proxyToConfig(proxy: ProxyRecord | null): ProxyConfig {
   };
 }
 
+type CustomProxyFields = Omit<SessionProxy, 'lastTestAt' | 'lastTest'>;
+
+/** Validate a session's own proxy, given as fields or as a share URI. */
+export function normalizeCustomProxy(input: unknown): CustomProxyFields {
+  let raw = input;
+  if (typeof input === 'string') {
+    const parsed = parseProxyUri(input);
+    raw = {
+      type: parsed.type,
+      host: parsed.host,
+      port: parsed.port,
+      username: parsed.username,
+      password: parsed.password,
+      extra: parsed.extra,
+    };
+  }
+  const result = proxyConfigSchema.safeParse(raw);
+  if (!result.success) throw new Error(result.error.issues[0]?.message || 'Invalid proxy');
+  const value = result.data;
+  const viaProxyId = normalizeViaId(value.viaProxyId);
+  assertProxyChain(null, viaProxyId);
+  return {
+    type: value.type,
+    host: value.host,
+    port: value.port,
+    username: value.username || '',
+    password: value.password || '',
+    extra: normalizeProxyExtra(value.extra),
+    viaProxyId,
+  };
+}
+
+function parseCustomProxy(raw: string | null | undefined): SessionProxy | null {
+  if (!raw) return null;
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    if (!o || !isProxyType(o.type) || !o.host || !Number(o.port)) return null;
+    return {
+      type: o.type,
+      host: String(o.host),
+      port: Number(o.port),
+      username: String(o.username || ''),
+      password: String(o.password || ''),
+      extra: normalizeProxyExtra(o.extra),
+      viaProxyId: normalizeViaId(o.viaProxyId),
+      lastTestAt: typeof o.lastTestAt === 'string' ? o.lastTestAt : null,
+      lastTest: o.lastTest && typeof o.lastTest === 'object' ? (o.lastTest as ProxyTestResult) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function customProxyToConfig(proxy: SessionProxy): ProxyConfig {
+  return {
+    type: proxy.type,
+    host: proxy.host,
+    port: proxy.port,
+    username: proxy.username,
+    password: proxy.password,
+    extra: proxy.extra,
+    viaProxyId: proxy.viaProxyId,
+  };
+}
+
+/** Whether two sessions' proxies route traffic differently. */
+export function sessionProxyChanged(before: Pick<SessionRecord, 'proxy'>, after: Pick<SessionRecord, 'proxy'>) {
+  return JSON.stringify(before.proxy) !== JSON.stringify(after.proxy);
+}
+
+/** Last test of the proxy a session runs with. */
+export function sessionProxyTest(session: Pick<SessionRecord, 'proxyId' | 'customProxy'>) {
+  if (session.customProxy) return session.customProxy.lastTest;
+  return getProxy(session.proxyId)?.lastTest || null;
+}
+
+/** Saved proxies a session's traffic passes through, outermost first. */
+export function sessionProxyChainIds(session: Pick<SessionRecord, 'proxyId' | 'customProxy'>) {
+  const ids: string[] = [];
+  let cur = session.customProxy ? session.customProxy.viaProxyId : session.proxyId;
+  while (cur && !ids.includes(cur)) {
+    ids.push(cur);
+    cur = getProxy(cur)?.viaProxyId || null;
+  }
+  return ids;
+}
+
+/** Put back a session's proxy exactly as it was, test result included. */
+export function restoreSessionProxy(before: Pick<SessionRecord, 'id' | 'proxyId' | 'customProxy'>) {
+  db.update(sessionsTable)
+    .set({
+      proxyId: before.proxyId,
+      customProxy: before.customProxy ? JSON.stringify(before.customProxy) : null,
+    } as Partial<typeof sessionsTable.$inferSelect>)
+    .where(eq(sessionsTable.id, before.id))
+    .run();
+  return getSession(before.id);
+}
+
+/** The proxy config a custom proxy input would run with. */
+export function customProxyInputConfig(input: unknown): ProxyConfig {
+  return customProxyToConfig({ ...normalizeCustomProxy(input), lastTestAt: null, lastTest: null });
+}
+
+export function setCustomProxyTest(id: string, result: ProxyTestResult) {
+  const current = getSession(id);
+  if (!current?.customProxy) return null;
+  const next: SessionProxy = { ...current.customProxy, lastTestAt: new Date().toISOString(), lastTest: result };
+  db.update(sessionsTable)
+    .set({ customProxy: JSON.stringify(next) } as Partial<typeof sessionsTable.$inferSelect>)
+    .where(eq(sessionsTable.id, id))
+    .run();
+  return getSession(id);
+}
+
 export type SessionRecord = {
   id: string;
   name: string;
@@ -409,6 +533,7 @@ export type SessionRecord = {
   notepad: string;
   groupId: string | null;
   proxyId: string | null;
+  customProxy: SessionProxy | null;
   proxy: ProxyConfig;
   fingerprint: FingerprintConfig;
   timezone: string;
@@ -420,15 +545,16 @@ export type SessionRecord = {
 };
 
 function hydrateSession(row: typeof sessionsTable.$inferSelect): SessionRecord {
-  const proxy = getProxy(row.proxyId);
+  const customProxy = parseCustomProxy(row.customProxy);
   return {
     id: row.id,
     name: row.name,
     description: row.description || '',
     notepad: row.notepad || '',
     groupId: row.groupId || null,
-    proxyId: row.proxyId,
-    proxy: proxyToConfig(proxy),
+    proxyId: customProxy ? null : row.proxyId,
+    customProxy,
+    proxy: customProxy ? customProxyToConfig(customProxy) : proxyToConfig(getProxy(row.proxyId)),
     fingerprint: parseFingerprint(row.fingerprint),
     timezone: sessionTimezone(row.timezone),
     chromeLanguage: sessionChromeLanguage(row.chromeLanguage),
@@ -454,6 +580,7 @@ export function createSession(input: {
   notepad?: string;
   groupId?: string | null;
   proxyId?: string | null;
+  customProxy?: unknown;
   timezone?: string;
   chromeLanguage?: string;
   gpuProfile?: string;
@@ -471,7 +598,12 @@ export function createSession(input: {
   const all = listSessions();
   const now = new Date().toISOString();
   const id = input.id || nanoid(10);
+  if (input.proxyId && input.customProxy != null) throw new Error('Set either proxyId or customProxy, not both');
   if (input.proxyId && !getProxy(input.proxyId)) throw new Error('Proxy not found');
+  const customProxy: SessionProxy | null =
+    input.customProxy != null
+      ? { ...normalizeCustomProxy(input.customProxy), lastTestAt: null, lastTest: null }
+      : null;
   const groupId = input.groupId || null;
   if (groupId && !getGroup(groupId)) throw new Error('Group not found');
   const session: SessionRecord = {
@@ -480,8 +612,9 @@ export function createSession(input: {
     description: String(input.description || ''),
     notepad: String(input.notepad || ''),
     groupId,
-    proxyId: input.proxyId || null,
-    proxy: proxyToConfig(getProxy(input.proxyId || null)),
+    proxyId: customProxy ? null : input.proxyId || null,
+    customProxy,
+    proxy: customProxy ? customProxyToConfig(customProxy) : proxyToConfig(getProxy(input.proxyId || null)),
     fingerprint: input.fingerprint
       ? normalizeFingerprint({
           ...input.fingerprint,
@@ -510,6 +643,7 @@ export function createSession(input: {
       notepad: session.notepad,
       groupId: session.groupId,
       proxyId: session.proxyId,
+      customProxy: customProxy ? JSON.stringify(customProxy) : null,
       timezone: session.timezone,
       chromeLanguage: session.chromeLanguage,
       homeUrl: session.homeUrl,
@@ -530,6 +664,8 @@ export function updateSession(
     notepad: string;
     groupId: string | null;
     proxyId: string | null;
+    /** Fields or a share URI; null clears it. A saved `proxyId` (or null) clears it too. */
+    customProxy: unknown;
     timezone: string;
     chromeLanguage: string;
     gpuProfile: string;
@@ -552,12 +688,25 @@ export function updateSession(
   if (patch.groupId !== undefined && patch.groupId && !getGroup(patch.groupId)) {
     throw new Error('Group not found');
   }
+  let proxyId = current.proxyId;
+  let customProxy = current.customProxy;
+  if (patch.customProxy != null) {
+    if (patch.proxyId) throw new Error('Set either proxyId or customProxy, not both');
+    const fields = normalizeCustomProxy(patch.customProxy);
+    const keep = customProxy && !proxyConnectivityChanged(customProxy, fields) ? customProxy : null;
+    customProxy = { ...fields, lastTestAt: keep?.lastTestAt ?? null, lastTest: keep?.lastTest ?? null };
+    proxyId = null;
+  } else if (patch.customProxy === null || patch.proxyId !== undefined) {
+    customProxy = null;
+    if (patch.proxyId !== undefined) proxyId = patch.proxyId;
+  }
   const next = {
     name: patch.name !== undefined ? String(patch.name).trim() || current.name : current.name,
     description: patch.description !== undefined ? String(patch.description) : current.description,
     notepad: patch.notepad !== undefined ? String(patch.notepad) : current.notepad,
     groupId: patch.groupId !== undefined ? patch.groupId : current.groupId,
-    proxyId: patch.proxyId !== undefined ? patch.proxyId : current.proxyId,
+    proxyId,
+    customProxy: customProxy ? JSON.stringify(customProxy) : null,
     timezone:
       patch.timezone !== undefined ? sessionTimezone(patch.timezone) : current.timezone,
     chromeLanguage:
@@ -638,8 +787,10 @@ export function regenerateSessionFingerprint(id: string) {
 }
 
 /** The timezone and Chrome language a session launches with (`auto` follows its proxy's last test). */
-export function sessionLocaleSettings(session: Pick<SessionRecord, 'timezone' | 'chromeLanguage' | 'proxyId'>) {
-  return resolveSessionLocale(session, getProxy(session.proxyId || null)?.lastTest);
+export function sessionLocaleSettings(
+  session: Pick<SessionRecord, 'timezone' | 'chromeLanguage' | 'proxyId' | 'customProxy'>,
+) {
+  return resolveSessionLocale(session, sessionProxyTest(session));
 }
 
 export function deleteSession(id: string) {

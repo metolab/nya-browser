@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'child_process';
+import { execFile, spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import net from 'net';
 import os from 'os';
@@ -143,12 +143,17 @@ export async function stopSingboxSidecar(handle: SingboxHandle | ChildProcess | 
       }
     }
   };
-  kill('SIGTERM');
+  const exited = () => child.exitCode != null || child.signalCode != null;
+  if (!exited()) kill('SIGTERM');
   const deadline = Date.now() + 2000;
-  while (Date.now() < deadline && child.exitCode == null) {
+  while (Date.now() < deadline && !exited()) {
     await sleep(50);
   }
-  if (child.exitCode == null) kill('SIGKILL');
+  if (!exited()) {
+    kill('SIGKILL');
+    const killDeadline = Date.now() + 1000;
+    while (Date.now() < killDeadline && !exited()) await sleep(20);
+  }
   if (isHandle(handle)) {
     try {
       fs.unlinkSync(handle.configPath);
@@ -158,27 +163,57 @@ export async function stopSingboxSidecar(handle: SingboxHandle | ChildProcess | 
   }
 }
 
+function sidecarConfig(proxy: ProxyConfig, listenPort: number, logPath?: string) {
+  const chain = proxyChainInputs(proxy);
+  return {
+    via: chain.via.length,
+    config: buildSingboxConfig({
+      listenPort,
+      proxy: chain.proxy,
+      via: chain.via,
+      logPath,
+      blockLoopback: true,
+    }),
+  };
+}
+
+/** Reject a proxy sing-box would not start with, without touching a running sidecar. Skipped without sing-box. */
+export async function checkSingboxProxy(proxy: ProxyConfig) {
+  let bin: string;
+  try {
+    bin = resolveSingboxBin();
+  } catch {
+    return;
+  }
+  const { config } = sidecarConfig(proxy, 1);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nya-singbox-check-'));
+  const configPath = path.join(dir, 'config.json');
+  try {
+    writeConfig(configPath, config);
+    await new Promise<void>((resolve, reject) => {
+      execFile(bin, ['check', '-c', configPath], { timeout: START_TIMEOUT_MS }, (err, _stdout, stderr) => {
+        if (!err) return resolve();
+        const detail = String(stderr || '').trim().split('\n').pop() || err.message;
+        reject(new Error(`Invalid proxy config: ${detail}`));
+      });
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Start a session's sidecar. A `none` proxy runs a direct outbound on the same port. */
 export async function startSingboxSidecar(opts: {
   id: string;
   proxy: ProxyConfig;
   listenPort: number;
   configDir?: string;
-}): Promise<{ port: number | null; handle: SingboxHandle | null }> {
-  if (!opts.proxy || opts.proxy.type === 'none') {
-    return { port: null, handle: null };
-  }
+}): Promise<SingboxHandle> {
   const bin = resolveSingboxBin();
   const dir = opts.configDir || runtimeDir();
   const configPath = path.join(dir, `${opts.id}.json`);
   const logPath = path.join(dir, `${opts.id}.log`);
-  const chain = proxyChainInputs(opts.proxy);
-  const config = buildSingboxConfig({
-    listenPort: opts.listenPort,
-    proxy: chain.proxy,
-    via: chain.via,
-    logPath,
-    blockLoopback: true,
-  });
+  const { config, via } = sidecarConfig(opts.proxy, opts.listenPort, logPath);
   writeConfig(configPath, config);
   const child = spawnSingbox(bin, configPath, logPath);
   try {
@@ -187,14 +222,8 @@ export async function startSingboxSidecar(opts: {
     await stopSingboxSidecar(child);
     throw err;
   }
-  logger.info(
-    { id: opts.id, port: opts.listenPort, type: opts.proxy.type, via: chain.via.length },
-    'sing-box sidecar started',
-  );
-  return {
-    port: opts.listenPort,
-    handle: { child, port: opts.listenPort, configPath, logPath },
-  };
+  logger.info({ id: opts.id, port: opts.listenPort, type: opts.proxy.type, via }, 'sing-box sidecar started');
+  return { child, port: opts.listenPort, configPath, logPath };
 }
 
 export async function withEphemeralSidecar<T>(

@@ -93,8 +93,7 @@ export const putTargetGrantsSchema = z.object({
   notepadUserIds: z.array(z.string().min(1)).optional().default([]),
 });
 
-export const proxyFieldsSchema = z.object({
-  name: z.string().trim().min(1).max(80),
+export const proxyConnectionSchema = z.object({
   type: proxyTypeSchema,
   host: z.string().trim().min(1).max(255),
   port: z.number().int().min(1).max(65535),
@@ -104,7 +103,11 @@ export const proxyFieldsSchema = z.object({
   viaProxyId: z.string().min(1).nullable().optional(),
 });
 
-export const createProxySchema = proxyFieldsSchema.superRefine((value, ctx) => {
+export const proxyFieldsSchema = proxyConnectionSchema.extend({
+  name: z.string().trim().min(1).max(80),
+});
+
+function refineProxySecrets(value: z.infer<typeof proxyConnectionSchema>, ctx: z.RefinementCtx) {
   if (proxyNeedsSecret(value.type) && !value.password) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -129,9 +132,24 @@ export const createProxySchema = proxyFieldsSchema.superRefine((value, ctx) => {
       path: ['extra', 'publicKey'],
     });
   }
-});
+}
+
+export const createProxySchema = proxyFieldsSchema.superRefine(refineProxySecrets);
 
 export const updateProxySchema = proxyFieldsSchema.partial();
+
+/** An unsaved proxy: a session's own proxy, or a form being probed. */
+export const proxyConfigSchema = proxyConnectionSchema.superRefine(refineProxySecrets);
+
+export const PROXY_URI_MAX = 4096;
+
+/** A session's own proxy, as fields or as a share URI (ss://, vless://, socks5://...). */
+export const customProxyInputSchema = z.union([z.string().trim().min(1).max(PROXY_URI_MAX), proxyConfigSchema]);
+
+export const putSessionProxySchema = z.object({
+  proxyId: z.string().min(1).nullable().optional(),
+  customProxy: customProxyInputSchema.nullable().optional(),
+});
 
 /** Idle auto-stop timeout stored on each session. Unit is minutes; 0 disables. */
 export const IDLE_TIMEOUT_MINUTES_MAX = 7 * 24 * 60;
@@ -215,6 +233,7 @@ export const createSessionSchema = z.object({
   notepad: notepadSchema.optional().default(''),
   groupId: z.string().min(1).nullable().optional(),
   proxyId: z.string().min(1).nullable().optional(),
+  customProxy: customProxyInputSchema.nullable().optional(),
   timezone: timezoneSchema.optional(),
   chromeLanguage: chromeLanguageSchema.optional(),
   ...sessionFingerprintFields,
@@ -228,6 +247,7 @@ export const updateSessionSchema = z.object({
   notepad: notepadSchema.optional(),
   groupId: z.string().min(1).nullable().optional(),
   proxyId: z.string().min(1).nullable().optional(),
+  customProxy: customProxyInputSchema.nullable().optional(),
   timezone: timezoneSchema.optional(),
   chromeLanguage: chromeLanguageSchema.optional(),
   ...sessionFingerprintFields,

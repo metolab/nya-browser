@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { ProxyRecord, Session, SessionGroup, UserPublic } from '@nya/shared';
+import type { ProxyRecord, ProxyTestResult, Session, SessionGroup, UserPublic } from '@nya/shared';
 import {
   DEFAULT_GPU_PROFILE,
   DEFAULT_IDLE_TIMEOUT_MINUTES,
@@ -12,6 +12,7 @@ import { SessionTree } from '../../components/SessionTree';
 import SessionFormDialog from '../../components/SessionFormDialog';
 import BatchSessionFormDialog, { type BatchSessionPatch } from '../../components/BatchSessionFormDialog';
 import { SessionPasswordsDialog } from '../../components/SessionPasswordsDialog';
+import { proxyTestLabel } from '../../components/ProxyFields';
 import { UserGrantList } from './GrantEditor';
 import { NONE_KEY, filterSessionsByGroup, groupSelectOptions } from '@/lib/groups';
 import { Button } from '@/components/ui/button';
@@ -50,6 +51,11 @@ function cloneSessionName(name: string) {
   return `${name.slice(0, SESSION_NAME_MAX - suffix.length)}${suffix}`;
 }
 
+function toastProxyTest(test: ProxyTestResult) {
+  if (test.ok) toast.message(`临时代理出口：${proxyTestLabel(test)}`);
+  else toast.error(`临时代理测试失败：${proxyTestLabel(test)}`);
+}
+
 function sessionFingerprintPayload(data: SessionFormValues) {
   const lat = data.geoLatitude.trim() === '' ? null : Number(data.geoLatitude);
   const lng = data.geoLongitude.trim() === '' ? null : Number(data.geoLongitude);
@@ -60,6 +66,7 @@ function sessionFingerprintPayload(data: SessionFormValues) {
     notepad: data.notepad,
     groupId: data.groupId,
     proxyId: data.proxyId,
+    customProxy: data.customProxy,
     timezone: data.timezone,
     chromeLanguage: data.chromeLanguage,
     gpuProfile: data.gpuProfile,
@@ -241,6 +248,7 @@ export default function SessionsPage() {
         initialName={cloneFrom ? cloneSessionName(cloneFrom.name) : ''}
         initialGroupId={cloneFrom?.groupId ?? createGroupId}
         initialProxyId={cloneFrom?.proxyId}
+        initialCustomProxy={cloneFrom?.customProxy}
         initialTimezone={cloneFrom?.timezone}
         initialChromeLanguage={cloneFrom?.chromeLanguage}
         initialGpuProfile={cloneFrom?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
@@ -260,9 +268,11 @@ export default function SessionsPage() {
           setCloneFrom(null);
         }}
         onSubmit={async (data) => {
-          await api.createSession(sessionFingerprintPayload(data));
+          const { session } = await api.createSession(sessionFingerprintPayload(data));
           await load();
           toast.success('已创建');
+          const test = session.customProxy?.lastTest;
+          if (test) toastProxyTest(test);
         }}
       />
       <BatchSessionFormDialog
@@ -305,6 +315,7 @@ export default function SessionsPage() {
         initialNotepad={edit?.notepad}
         initialGroupId={edit?.groupId}
         initialProxyId={edit?.proxyId}
+        initialCustomProxy={edit?.customProxy}
         initialTimezone={edit?.timezone}
         initialChromeLanguage={edit?.chromeLanguage}
         initialGpuProfile={edit?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
@@ -322,9 +333,11 @@ export default function SessionsPage() {
         onCancel={() => setEdit(null)}
         onSubmit={async (data) => {
           if (!edit) return;
-          await api.updateSession(edit.id, sessionFingerprintPayload(data));
+          const { session, restarted } = await api.updateSession(edit.id, sessionFingerprintPayload(data));
           await load();
-          toast.success('已保存');
+          toast.success(restarted ? '已保存，浏览器已重启' : '已保存');
+          const test = session.customProxy?.lastTest;
+          if (test && session.customProxy?.lastTestAt !== edit.customProxy?.lastTestAt) toastProxyTest(test);
         }}
       />
 

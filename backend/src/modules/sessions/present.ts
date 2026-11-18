@@ -11,10 +11,9 @@ import {
 import { getRuntimePublic, listWindows } from '../../runtime/sessionManager.js';
 import { getUserById, toPublicUser } from '../auth/service.js';
 
-function redactProxy(session: SessionRecord, admin: boolean) {
-  const proxy = { ...session.proxy };
-  if (!admin) proxy.password = proxy.password ? '***' : '';
-  return proxy;
+function redactProxy<T extends { password: string }>(proxy: T, admin: boolean): T {
+  if (admin) return { ...proxy };
+  return { ...proxy, password: proxy.password ? '***' : '' };
 }
 
 export function presentSession(session: SessionRecord, user: UserPublic | undefined): Session {
@@ -38,7 +37,8 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
     canNotepad: admin || Boolean(user && userCanAccessNotepad(user.id, session)),
     groupId: session.groupId,
     proxyId: session.proxyId,
-    proxy: redactProxy(session, Boolean(admin)),
+    customProxy: session.customProxy ? redactProxy(session.customProxy, Boolean(admin)) : null,
+    proxy: redactProxy(session.proxy, Boolean(admin)),
     fingerprint: session.fingerprint,
     timezone: session.timezone,
     chromeLanguage: session.chromeLanguage,

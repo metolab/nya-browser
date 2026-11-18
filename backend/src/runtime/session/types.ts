@@ -1,5 +1,5 @@
 import type { ChildProcess } from 'child_process';
-import type { ClipboardKind } from '@nya/shared';
+import type { ClipboardKind, ProxyConfig } from '@nya/shared';
 import type { SingboxHandle } from '../singbox.js';
 
 export type Geom = { w: number; h: number };
@@ -41,6 +41,14 @@ export type SessionRuntime = DisplayHolder & {
   authFile: string;
   localProxyPort: number | null;
   singbox: SingboxHandle | null;
+  /** The proxy the sidecar runs; `none` means a direct outbound. */
+  proxy: ProxyConfig;
+  /** Serializes sidecar swaps and restarts. */
+  proxyTail?: Promise<unknown>;
+  /** The `--proxy-server` port Chrome launched with; null means `--no-proxy-server`. */
+  chromeProxyPort?: number | null;
+  /** Launch flags that follow the proxy exit (locale, WebRTC public IP) at Chrome start. */
+  chromeExitProfile?: string;
   chrome: ChildProcess | null;
   cdpPort: number | null;
   startedAt: string;

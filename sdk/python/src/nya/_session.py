@@ -64,8 +64,11 @@ class Session(Record):
     def restart(self, url: Optional[str] = None) -> Dict[str, Any]:
         return self._client.sessions.restart(self.id, url=url)
 
-    def set_proxy(self, proxy_id: Optional[str]) -> "Session":
-        return then(self._t, self._client.sessions.set_proxy(self.id, proxy_id), self._absorb)
+    def set_proxy(self, proxy_id: Optional[str] = None, *, custom: Optional[Any] = None) -> "Session":
+        return then(self._t, self._client.sessions.set_proxy(self.id, proxy_id, custom=custom), self._absorb)
+
+    def test_proxy(self) -> Record:
+        return self._client.sessions.test_proxy(self.id)
 
     def regenerate_fingerprint(self) -> "Session":
         return then(self._t, self._client.sessions.regenerate_fingerprint(self.id), self._absorb)

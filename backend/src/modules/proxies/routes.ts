@@ -1,18 +1,20 @@
 import { Router } from 'express';
-import { AUDIT_ACTIONS, createProxySchema, updateProxySchema } from '@nya/shared';
+import { AUDIT_ACTIONS, createProxySchema, proxyConfigSchema, updateProxySchema } from '@nya/shared';
 import { asyncHandler, requireAdmin } from '../../http/util.js';
 import { auditFromReq } from '../audit/service.js';
 import {
   createProxyRecord,
   deleteProxyRecord,
   getProxy,
+  getSession,
   listProxies,
+  normalizeProxyConfig,
+  sessionProxyChainIds,
   updateProxyRecord,
 } from '../../store.js';
 import { testProxy } from './tester.js';
-import { applyProxy, restartSessionsForProxyExitIp } from '../../runtime/sessionManager.js';
+import { applyProxy, listRunningIds, restartSessionsForProxyExitIp } from '../../runtime/sessionManager.js';
 import { proxyTestPublicIpChanged } from '../../runtime/proxyLastTest.js';
-import { listSessions } from '../../store.js';
 
 export const proxiesRouter = Router();
 proxiesRouter.use(requireAdmin);
@@ -54,12 +56,20 @@ proxiesRouter.patch(
   asyncHandler(async (req, res) => {
     const parsed = updateProxySchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
-    const proxy = updateProxyRecord(req.params.id, parsed.data);
+    let proxy;
+    try {
+      proxy = updateProxyRecord(req.params.id, parsed.data);
+    } catch (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
     if (!proxy) return res.status(404).json({ error: 'Not found' });
-    for (const s of listSessions()) {
-      if (s.proxyId === proxy.id) {
-        await applyProxy(s.id, s.proxy).catch(() => undefined);
-      }
+    // Running sessions whose traffic passes through this proxy, as exit or front, switch in place.
+    for (const id of listRunningIds()) {
+      const s = getSession(id);
+      if (!s || !sessionProxyChainIds(s).includes(proxy.id)) continue;
+      await applyProxy(s.id).catch((err) => {
+        console.warn(`[proxy ${s.id}] apply after proxy ${proxy.id} update failed:`, err instanceof Error ? err.message : err);
+      });
     }
     auditFromReq(req, {
       action: AUDIT_ACTIONS.proxyUpdate,
@@ -90,6 +100,22 @@ proxiesRouter.delete(
   }),
 );
 
+/** Probe an unsaved proxy (a form, or a session's own proxy before it is stored). */
+proxiesRouter.post(
+  '/probe',
+  asyncHandler(async (req, res) => {
+    const parsed = proxyConfigSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid' });
+    let config;
+    try {
+      config = normalizeProxyConfig(parsed.data);
+    } catch (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+    res.json({ result: await testProxy(config) });
+  }),
+);
+
 proxiesRouter.post(
   '/:id/test',
   asyncHandler(async (req, res) => {
@@ -102,7 +128,7 @@ proxiesRouter.post(
       lastTest: result,
     });
     if (proxyTestPublicIpChanged(previousTest, result)) {
-      await restartSessionsForProxyExitIp(proxy.id);
+      await restartSessionsForProxyExitIp({ proxyId: proxy.id });
     }
     auditFromReq(req, {
       action: AUDIT_ACTIONS.proxyTest,

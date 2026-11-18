@@ -31,6 +31,7 @@ export const sessions = sqliteTable('sessions', {
   notepad: text('notepad').notNull().default(''),
   groupId: text('group_id'),
   proxyId: text('proxy_id'),
+  customProxy: text('custom_proxy'),
   timezone: text('timezone').notNull(),
   chromeLanguage: text('chrome_language').notNull().default('zh-CN'),
   homeUrl: text('home_url').notNull(),

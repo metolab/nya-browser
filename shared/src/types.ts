@@ -36,6 +36,19 @@ export interface ProxyTestResult {
   error: string | null;
 }
 
+/** A proxy that belongs to one session only; its front proxy is a saved one. */
+export interface SessionProxy {
+  type: ProxyType;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  extra: ProxyExtra;
+  viaProxyId: string | null;
+  lastTestAt: string | null;
+  lastTest: ProxyTestResult | null;
+}
+
 export interface ProxyRecord {
   id: string;
   name: string;
@@ -131,6 +144,9 @@ export interface Session {
   canNotepad?: boolean;
   groupId: string | null;
   proxyId: string | null;
+  /** Set instead of `proxyId` when the session uses its own proxy. */
+  customProxy: SessionProxy | null;
+  /** The proxy the session runs with: the saved one, the custom one, or `none`. */
   proxy: ProxyConfig;
   fingerprint?: FingerprintConfig;
   /** An IANA name, or `auto` to follow the proxy exit country. */
@@ -279,6 +295,7 @@ export interface BackupManifest {
     username: string;
     extra?: ProxyExtra;
   };
+  customProxy?: SessionProxy | null;
   passwords?: SessionPassword[];
 }
 

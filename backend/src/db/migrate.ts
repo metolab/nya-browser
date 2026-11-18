@@ -105,6 +105,7 @@ export function migrate() {
     sqlite.exec('DROP TABLE IF EXISTS session_assignments');
     ensureColumn('sessions', 'notepad', "TEXT NOT NULL DEFAULT ''");
     ensureColumn('access_grants', 'allow_notepad', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn('sessions', 'custom_proxy', 'TEXT');
     sqlite.exec('COMMIT');
   } catch (err) {
     sqlite.exec('ROLLBACK');

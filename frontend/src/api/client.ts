@@ -22,6 +22,17 @@ import {
 import { withBase } from '../basePath';
 
 export { emptyProxy };
+
+/** A proxy given by its fields: a session's own proxy, or a form being probed. */
+export type CustomProxyInput = {
+  type: ProxyRecord['type'];
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  extra: ProxyRecord['extra'];
+  viaProxyId: string | null;
+};
 export type { ApiKey, FileEntry, ProxyConfig, Session, SessionClipboard, SessionDownload, SessionTransfer, SessionUpload, UserPublic };
 
 export class ApiError extends Error {
@@ -89,6 +100,7 @@ export const api = {
     notepad?: string;
     groupId?: string | null;
     proxyId?: string | null;
+    customProxy?: CustomProxyInput | null;
     timezone?: string;
     chromeLanguage?: string;
     gpuProfile?: string;
@@ -132,6 +144,7 @@ export const api = {
       notepad: string;
       groupId: string | null;
       proxyId: string | null;
+      customProxy: CustomProxyInput | null;
       timezone: string;
       chromeLanguage: string;
       gpuProfile: string;
@@ -164,7 +177,7 @@ export const api = {
       idleTimeoutMinutes: number;
     }>,
   ) =>
-    request<{ session: Session }>(`/api/sessions/${id}`, {
+    request<{ session: Session; restarted?: boolean }>(`/api/sessions/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
@@ -205,10 +218,10 @@ export const api = {
     request<{ session: Session }>(`/api/sessions/${id}/fingerprint/regenerate`, {
       method: 'POST',
     }),
-  setProxy: (id: string, proxyId: string | null) =>
-    request<{ session: Session }>(`/api/sessions/${id}/proxy`, {
+  setProxy: (id: string, proxy: { proxyId?: string | null; customProxy?: CustomProxyInput | string | null }) =>
+    request<{ session: Session; restarted: boolean }>(`/api/sessions/${id}/proxy`, {
       method: 'PUT',
-      body: JSON.stringify({ proxyId }),
+      body: JSON.stringify(proxy),
     }),
   getSessionGrants: (id: string) =>
     request<{ grants: AccessGrant[] }>(`/api/sessions/${id}/grants`),
@@ -413,6 +426,13 @@ export const api = {
     }),
   deleteProxy: (id: string) => request<{ ok: boolean }>(`/api/proxies/${id}`, { method: 'DELETE' }),
   testProxy: (id: string) => request<{ result: ProxyTestResult }>(`/api/proxies/${id}/test`, { method: 'POST' }),
+  probeProxy: (payload: CustomProxyInput) =>
+    request<{ result: ProxyTestResult }>('/api/proxies/probe', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  testSessionProxy: (id: string) =>
+    request<{ result: ProxyTestResult; session: Session }>(`/api/sessions/${id}/proxy/test`, { method: 'POST' }),
 
   live: () => request<{ sessions: LiveSession[] }>('/api/live'),
   monitor: () => request<{ monitor: MonitorSnapshot }>('/api/monitor'),

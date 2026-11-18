@@ -54,7 +54,8 @@ class SessionsResource:
         return self._t.call("GET", "/sessions", parse=pick)
 
     def create(self, name: str, **fields: Any) -> Session:
-        """Create a session. Fields use snake_case, e.g. ``proxy_id``, ``timezone``,
+        """Create a session. Fields use snake_case, e.g. ``proxy_id`` or ``custom_proxy``
+        (see ``set_proxy``), ``timezone``,
         ``chrome_language``, ``home_url``, ``idle_timeout_minutes``, ``gpu_profile``,
         ``webrtc_mode``, ``hardware_concurrency`` (2/4/6/8/10/12/16/20/24/32),
         ``device_memory`` (2/4/8/16/32), ``geo``, ``group_id``, ``os`` (``linux``/``windows``),
@@ -86,12 +87,26 @@ class SessionsResource:
             "POST", f"/sessions/{_q(session_id)}/restart", json=body, parse=lambda d: d.get("runtime") or {}
         )
 
-    def set_proxy(self, session_id: str, proxy_id: Optional[str]) -> Session:
+    def set_proxy(
+        self, session_id: str, proxy_id: Optional[str] = None, *, custom: Optional[Any] = None
+    ) -> Session:
+        """Use a saved proxy (``proxy_id``), a proxy of this session only (``custom``: a share URI
+        such as ``"socks5://u:p@1.2.3.4:1080"``, or a dict of ``type``/``host``/``port``/``username``/
+        ``password``/``extra``/``via_proxy_id``), or neither for direct. A running browser switches in
+        place; it restarts only when an ``auto`` timezone/language or the WebRTC public IP must follow
+        a new exit."""
+        body: Dict[str, Any] = {"customProxy": camelize(custom)} if custom is not None else {"proxyId": proxy_id}
         return self._t.call(
             "PUT",
             f"/sessions/{_q(session_id)}/proxy",
-            json={"proxyId": proxy_id},
+            json=body,
             parse=lambda d: self._session(d["session"]),
+        )
+
+    def test_proxy(self, session_id: str) -> Record:
+        """Probe the proxy the session runs with and keep the result (exit IP and location)."""
+        return self._t.call(
+            "POST", f"/sessions/{_q(session_id)}/proxy/test", parse=lambda d: Record(d["result"])
         )
 
     def regenerate_fingerprint(self, session_id: str) -> Session:
@@ -134,7 +149,7 @@ class ProxiesResource:
         return self._t.call("POST", "/proxies", json=body, parse=lambda d: Proxy(d["proxy"]))
 
     def update(self, proxy_id: str, **fields: Any) -> Proxy:
-        """Patch a proxy. Running sessions that use it reconnect."""
+        """Patch a proxy. Running sessions routed through it (as exit or front) switch in place."""
         return self._t.call(
             "PATCH", f"/proxies/{_q(proxy_id)}", json=camelize(fields), parse=lambda d: Proxy(d["proxy"])
         )
@@ -145,6 +160,11 @@ class ProxiesResource:
     def test(self, proxy_id: str) -> Record:
         """Probe the proxy: latency, exit IP and location."""
         return self._t.call("POST", f"/proxies/{_q(proxy_id)}/test", parse=lambda d: Record(d["result"]))
+
+    def probe(self, *, type: str, host: str, port: int, **fields: Any) -> Record:
+        """Probe a proxy without saving it. Takes the fields of ``create`` except ``name``."""
+        body = camelize({"type": type, "host": host, "port": port, **fields})
+        return self._t.call("POST", "/proxies/probe", json=body, parse=lambda d: Record(d["result"]))
 
 
 class GroupsResource:

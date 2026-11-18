@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { ProxyRecord, SessionGroup } from '@nya/shared';
+import { toast } from 'sonner';
+import type { ProxyRecord, ProxyTestResult, SessionGroup, SessionProxy } from '@nya/shared';
 import {
   COMMON_TIMEZONES,
   DEFAULT_GPU_PROFILE,
@@ -34,6 +35,14 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import SearchSelect from '@/components/SearchSelect';
+import ProxyFields, {
+  emptyProxyDraft,
+  proxyDraftFrom,
+  proxyDraftPayload,
+  proxyTestLabel,
+  type ProxyDraft,
+} from '@/components/ProxyFields';
+import type { CustomProxyInput } from '../api/client';
 import {
   Dialog,
   DialogContent,
@@ -79,6 +88,7 @@ const WEBRTC_OPTIONS = WEBRTC_MODES.map((id) => ({
   label: WEBRTC_MODE_LABELS[id],
 }));
 const RANDOM_HARDWARE_KEY = '__random__';
+const CUSTOM_PROXY_KEY = '__custom__';
 
 function initialHardwareKey(cores?: number, memory?: number) {
   return cores && memory ? hardwareProfileId(cores, memory) : RANDOM_HARDWARE_KEY;
@@ -90,6 +100,7 @@ export type SessionFormValues = {
   notepad: string;
   groupId: string | null;
   proxyId: string | null;
+  customProxy: CustomProxyInput | null;
   timezone: string;
   chromeLanguage: string;
   gpuProfile: string;
@@ -114,6 +125,7 @@ type Props = {
   initialDescription?: string;
   initialNotepad?: string;
   initialProxyId?: string | null;
+  initialCustomProxy?: SessionProxy | null;
   initialGroupId?: string | null;
   initialTimezone?: string;
   initialChromeLanguage?: string;
@@ -145,6 +157,7 @@ export default function SessionFormDialog({
   initialDescription = '',
   initialNotepad = '',
   initialProxyId = null,
+  initialCustomProxy = null,
   initialGroupId = null,
   initialTimezone = AUTO_LOCALE,
   initialChromeLanguage = AUTO_LOCALE,
@@ -189,13 +202,19 @@ export default function SessionFormDialog({
   const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState(
     String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES),
   );
-  const [proxyId, setProxyId] = useState(initialProxyId || NONE_KEY);
+  const initialProxyChoice = () => (initialCustomProxy ? CUSTOM_PROXY_KEY : initialProxyId || NONE_KEY);
+  const initialCustomDraft = () => (initialCustomProxy ? proxyDraftFrom(initialCustomProxy) : emptyProxyDraft());
+  const [proxyId, setProxyId] = useState(initialProxyChoice);
+  const [customDraft, setCustomDraft] = useState<ProxyDraft>(initialCustomDraft);
+  const [customTest, setCustomTest] = useState<ProxyTestResult | null>(initialCustomProxy?.lastTest || null);
+  const custom = proxyId === CUSTOM_PROXY_KEY;
   const autoLocaleHint = (() => {
     if (timezone !== AUTO_LOCALE && chromeLanguage !== AUTO_LOCALE) return '';
-    const exit = proxies.find((p) => p.id === proxyId)?.lastTest;
+    const exit = custom ? customTest : proxies.find((p) => p.id === proxyId)?.lastTest;
     const resolved = resolveSessionLocale({ timezone, chromeLanguage }, exit);
     const now = `${resolved.timezone} · ${chromeLanguageOptionLabel(resolved.language)}`;
-    if (exit?.ok && exit.loc) return `自动：出口 ${exit.region || exit.loc} → ${now}，代理重新测试后下次启动生效`;
+    if (exit?.ok && exit.loc) return `自动：出口 ${exit.region || exit.loc} → ${now}`;
+    if (custom) return `自动：临时代理保存时自动测试出口，测试前暂用 ${now}`;
     return `自动：代理还没有测试出口，暂用 ${now}；测试代理后下次启动自动切换`;
   })();
   const [groupId, setGroupId] = useState(initialGroupId || NONE_KEY);
@@ -218,7 +237,9 @@ export default function SessionFormDialog({
     setGeoAccuracy(String(initialGeoAccuracy ?? 100));
     setHomeUrl(initialHomeUrl || '');
     setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES));
-    setProxyId(initialProxyId || NONE_KEY);
+    setProxyId(initialProxyChoice());
+    setCustomDraft(initialCustomDraft());
+    setCustomTest(initialCustomProxy?.lastTest || null);
     setGroupId(initialGroupId || NONE_KEY);
     setBusy(false);
   }, [
@@ -227,6 +248,7 @@ export default function SessionFormDialog({
     initialDescription,
     initialNotepad,
     initialProxyId,
+    initialCustomProxy,
     initialGroupId,
     initialTimezone,
     initialChromeLanguage,
@@ -278,10 +300,12 @@ export default function SessionFormDialog({
                 if (!Number.isFinite(n) || n <= 0) return 0;
                 return Math.min(IDLE_TIMEOUT_MINUTES_MAX, n);
               })(),
-              proxyId: proxyId === NONE_KEY ? null : proxyId,
+              proxyId: proxyId === NONE_KEY || custom ? null : proxyId,
+              customProxy: custom ? proxyDraftPayload(customDraft) : null,
               groupId: groupId === NONE_KEY ? null : groupId,
             })
               .then(onCancel)
+              .catch((e: Error) => toast.error(e.message))
               .finally(() => setBusy(false));
           }}
         >
@@ -524,6 +548,7 @@ export default function SessionFormDialog({
               </SelectTrigger>
               <SelectContent position="popper" className="max-h-64">
                 <SelectItem value={NONE_KEY}>直连（无代理）</SelectItem>
+                <SelectItem value={CUSTOM_PROXY_KEY}>临时代理（只属于这个会话）</SelectItem>
                 {proxies.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     {p.name} · {p.type}://{p.host}:{p.port}
@@ -531,7 +556,26 @@ export default function SessionFormDialog({
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-foreground">
+              运行中切换代理不重启浏览器，只断开现有连接；时区或语言为自动且出口国家变化时会重启以保持一致
+            </p>
           </div>
+          {custom && (
+            <div className="grid gap-4 rounded-lg border p-3">
+              <ProxyFields
+                idPrefix="session-proxy"
+                value={customDraft}
+                onChange={setCustomDraft}
+                fronts={proxies}
+                onTested={setCustomTest}
+              />
+              {initialCustomProxy?.lastTest ? (
+                <p className="text-xs text-muted-foreground">
+                  上次测试：{proxyTestLabel(initialCustomProxy.lastTest)}
+                </p>
+              ) : null}
+            </div>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onCancel}>
               取消

@@ -72,12 +72,15 @@ function netChainName(slot: number) {
 /**
  * Per-session OUTPUT chain for the session uid: loopback is closed except the
  * local proxy and CDP port, a proxied session reaches nothing else at all, and
- * IPv6 is rejected.
+ * IPv6 is rejected. Re-run it whenever the session's proxy changes.
  */
 export function applySessionNetFilter(runtime: SessionRuntime) {
   if (!Number.isInteger(runtime.uid)) return;
   const chain = netChainName(runtime.slot);
   const uid = String(runtime.uid);
+  // Hold the uid closed while the chain is rebuilt under a live browser.
+  const guard = ['-m', 'owner', '--uid-owner', uid, '-j', 'REJECT', '--reject-with', 'icmp-port-unreachable'];
+  const guarded = iptables(['-I', 'OUTPUT', '1', ...guard]);
   iptables(['-D', 'OUTPUT', '-m', 'owner', '--uid-owner', uid, '-j', chain]);
   iptables(['-N', chain]);
   iptables(['-F', chain]);
@@ -121,7 +124,7 @@ export function applySessionNetFilter(runtime: SessionRuntime) {
     '--reject-with',
     'icmp-port-unreachable',
   ]);
-  if (runtime.localProxyPort) {
+  if (runtime.localProxyPort && runtime.proxy.type !== 'none') {
     // A proxied session reaches the network only through its local proxy:
     // direct packets (WebRTC STUN and ICE checks over UDP) carry the host address.
     iptables(['-A', chain, '-j', 'REJECT', '--reject-with', 'icmp-port-unreachable']);
@@ -137,6 +140,7 @@ export function applySessionNetFilter(runtime: SessionRuntime) {
     '-j',
     chain,
   ]);
+  if (guarded) iptables(['-D', 'OUTPUT', ...guard]);
   if (!jumped) {
     console.warn(
       `[net-filter] session=${runtime.id} uid=${uid} network isolation skipped (need NET_ADMIN)`,
