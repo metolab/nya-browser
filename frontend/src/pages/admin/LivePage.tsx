@@ -147,7 +147,7 @@ export default function LivePage() {
       >
         <DialogContent
           className="flex w-auto max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] flex-col gap-3 overflow-hidden sm:max-w-none"
-          style={{ width: Math.min(geom.width + 32, typeof window === 'undefined' ? geom.width : window.innerWidth - 32) }}
+          style={{ width: `min(${geom.width + 32}px, calc(100vw - 2rem))` }}
         >
           <DialogHeader>
             <DialogTitle>{view ? `观看 ${view.name}` : '观看'}</DialogTitle>
@@ -158,20 +158,21 @@ export default function LivePage() {
             </DialogDescription>
           </DialogHeader>
           {view ? (
-            <div className="min-h-0 flex-1 overflow-auto bg-black">
-              <div style={{ width: geom.width, height: geom.height }}>
-                <VncViewer
-                  sessionId={view.sessionId}
-                  subId={vncWindowExtra(view.window.id)}
-                  focused
-                  title={view.name}
-                  remoteWidth={geom.width}
-                  remoteHeight={geom.height}
-                  viewOnly={!control}
-                  resizeRemote={false}
-                  onFocus={() => undefined}
-                />
-              </div>
+            <div
+              className="min-h-0 w-full flex-1 overflow-hidden bg-black"
+              style={{ aspectRatio: `${geom.width} / ${geom.height}` }}
+            >
+              <VncViewer
+                sessionId={view.sessionId}
+                subId={vncWindowExtra(view.window.id)}
+                focused
+                title={view.name}
+                remoteWidth={geom.width}
+                remoteHeight={geom.height}
+                viewOnly={!control}
+                resizeRemote={false}
+                onFocus={() => undefined}
+              />
             </div>
           ) : null}
           <DialogFooter className="sm:justify-between">

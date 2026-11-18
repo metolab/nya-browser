@@ -391,7 +391,7 @@ export default function VncViewer({
         );
 
         const rfb = withVncCanvasHints(() => new RFB(mount, ws, { shared: true }));
-        rfb.scaleViewport = resizeRemoteRef.current;
+        rfb.scaleViewport = true;
         rfb.clipViewport = false;
         rfb.resizeSession = false;
         rfb.focusOnClick = false;
