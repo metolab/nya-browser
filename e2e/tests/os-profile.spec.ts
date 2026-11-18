@@ -12,6 +12,8 @@ test('session form picks Windows emulation and release', async ({ page }) => {
   await expect(dialog.getByRole('heading', { name: '新建会话' })).toBeVisible();
   await dialog.getByLabel('名称').fill(name);
 
+  await expect(dialog.getByLabel('操作系统')).toHaveCount(0);
+  await dialog.getByRole('button', { name: /^高级/ }).click();
   await expect(dialog.getByLabel('操作系统')).toContainText('Windows（伪装）');
   await expect(dialog.getByLabel('Windows 版本')).toContainText('Windows 11');
   await dialog.getByLabel('操作系统').click();

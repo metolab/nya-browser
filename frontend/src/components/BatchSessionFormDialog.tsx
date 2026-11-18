@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ChevronDownIcon } from 'lucide-react';
 import type { ProxyRecord } from '@nya/shared';
 import {
   COMMON_TIMEZONES,
@@ -20,6 +21,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import SearchSelect from '@/components/SearchSelect';
 import {
   Dialog,
@@ -108,6 +110,7 @@ type Props = {
 
 export default function BatchSessionFormDialog({ open, count, proxies, onCancel, onSubmit }: Props) {
   const [busy, setBusy] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [timezone, setTimezone] = useState(KEEP_KEY);
   const [chromeLanguage, setChromeLanguage] = useState(KEEP_KEY);
   const [gpuProfile, setGpuProfile] = useState(KEEP_KEY);
@@ -137,6 +140,7 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
     setHomeUrl('');
     setIdleTimeoutMinutes('');
     setProxyId(KEEP_KEY);
+    setAdvancedOpen(false);
     setBusy(false);
   }, [open]);
 
@@ -226,89 +230,6 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
             </div>
           </div>
           <div className="grid gap-2">
-            <Label>显卡</Label>
-            <SearchSelect
-              value={gpuProfile}
-              onChange={setGpuProfile}
-              options={GPU_OPTIONS}
-              searchPlaceholder="搜索 GTX / RTX"
-            />
-          </div>
-          <div className="grid gap-2">
-            <Label>CPU / 内存</Label>
-            <Select value={hardware} onValueChange={setHardware}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent position="popper" className="max-h-64">
-                {HARDWARE_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid gap-2">
-            <Label>WebRTC</Label>
-            <Select value={webrtcMode} onValueChange={setWebrtcMode}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent position="popper">
-                {WEBRTC_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid gap-2">
-            <Label>操作系统</Label>
-            <Select value={osChoice} onValueChange={setOsChoice}>
-              <SelectTrigger className="w-full" aria-label="操作系统">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent position="popper">
-                {OS_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">字体库跟随操作系统和 Windows 版本自动切换。</p>
-          </div>
-          <div className="grid gap-2">
-            <Label>地理位置权限</Label>
-            <Select value={geoPermission} onValueChange={setGeoPermission}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={KEEP_KEY}>不修改</SelectItem>
-                <SelectItem value="ask">询问</SelectItem>
-                <SelectItem value="allow">允许</SelectItem>
-                <SelectItem value="block">禁止</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <div className="grid gap-2">
-              <Label>纬度</Label>
-              <Input value={geoLatitude} placeholder="不修改" onChange={(e) => setGeoLatitude(e.target.value)} />
-            </div>
-            <div className="grid gap-2">
-              <Label>经度</Label>
-              <Input value={geoLongitude} placeholder="不修改" onChange={(e) => setGeoLongitude(e.target.value)} />
-            </div>
-            <div className="grid gap-2">
-              <Label>精度 (m)</Label>
-              <Input value={geoAccuracy} placeholder="不修改" onChange={(e) => setGeoAccuracy(e.target.value)} />
-            </div>
-          </div>
-          <div className="grid gap-2">
             <Label htmlFor="batch-session-url">默认网址</Label>
             <Input
               id="batch-session-url"
@@ -348,6 +269,104 @@ export default function BatchSessionFormDialog({ open, count, proxies, onCancel,
             </Select>
             <p className="text-xs text-muted-foreground">会替换会话的临时代理；运行中的会话就地切换，不重启浏览器</p>
           </div>
+          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="grid gap-4">
+            <CollapsibleTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="justify-start gap-1.5 px-0 text-muted-foreground hover:bg-transparent [&[data-state=open]>svg]:rotate-180"
+              >
+                <ChevronDownIcon className="transition-transform" />
+                高级（操作系统、显卡、CPU / 内存、WebRTC、定位）
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="grid gap-4">
+              <div className="grid gap-2">
+                <Label>操作系统</Label>
+                <Select value={osChoice} onValueChange={setOsChoice}>
+                  <SelectTrigger className="w-full" aria-label="操作系统">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper">
+                    {OS_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">字体库跟随操作系统和 Windows 版本自动切换。</p>
+              </div>
+              <div className="grid gap-2">
+                <Label>显卡</Label>
+                <SearchSelect
+                  value={gpuProfile}
+                  onChange={setGpuProfile}
+                  options={GPU_OPTIONS}
+                  searchPlaceholder="搜索 GTX / RTX"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>CPU / 内存</Label>
+                <Select value={hardware} onValueChange={setHardware}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="max-h-64">
+                    {HARDWARE_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label>WebRTC</Label>
+                <Select value={webrtcMode} onValueChange={setWebrtcMode}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper">
+                    {WEBRTC_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label>地理位置权限</Label>
+                <Select value={geoPermission} onValueChange={setGeoPermission}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={KEEP_KEY}>不修改</SelectItem>
+                    <SelectItem value="ask">询问</SelectItem>
+                    <SelectItem value="allow">允许</SelectItem>
+                    <SelectItem value="block">禁止</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2">
+                  <Label>纬度</Label>
+                  <Input value={geoLatitude} placeholder="不修改" onChange={(e) => setGeoLatitude(e.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <Label>经度</Label>
+                  <Input value={geoLongitude} placeholder="不修改" onChange={(e) => setGeoLongitude(e.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <Label>精度 (m)</Label>
+                  <Input value={geoAccuracy} placeholder="不修改" onChange={(e) => setGeoAccuracy(e.target.value)} />
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy} onClick={onCancel}>
               取消
