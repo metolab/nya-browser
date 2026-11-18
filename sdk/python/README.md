@@ -45,6 +45,20 @@ with s.browser() as context:          # 自动启动会话，优先用 Patchrigh
     print(page.title())
 ```
 
+### 创建会话的选项
+
+- `timezone` / `chrome_language`：默认 `Asia/Shanghai`、`zh-CN`，不随代理出口变化。
+- `gpu_profile`、`hardware_concurrency`、`device_memory`：不传就由服务端按显卡档位和常见占比一起随机，搭配更可信（例如 GTX 1650 多配 4～6 核 / 8～16 GB，RTX 4090 多配 16～32 核 / 32 GB）。只传其中一部分时，剩下的会按已传的值搭配。
+  - `gpu_profile`：`native`（真实显卡，不伪装），或 `gtx-1050-ti`、`gtx-1060`、`gtx-1650`、`gtx-1660-super`、`rtx-2060`、`rtx-3060`、`rtx-3070`、`rtx-4060`、`rtx-4070`、`rtx-4090` 等 NVIDIA 桌面卡（GTX 10/16、RTX 20/30/40 全系）。
+  - `hardware_concurrency`：2/4/6/8/10/12/16/20/24/32；`device_memory`：2/4/8/16/32（GB）。
+- `os`：`windows`（默认）/ `linux`；`windows_release`：`win11`（默认）/ `win10`。
+
+```python
+s = nya.sessions.create(name="shop-02")                       # 显卡、CPU、内存随机搭配
+s = nya.sessions.create(name="shop-03", gpu_profile="rtx-4070")  # CPU、内存按 RTX 4070 搭配
+print(s.fingerprint.gpu_profile, s.fingerprint.hardware_concurrency, s.fingerprint.device_memory)
+```
+
 `s.browser()` 给出的是会话自己的持久 context（Cookie、登录态都在里面）。**不要** 调 `browser.new_context()`，那会得到一个不带会话数据的临时 context。
 
 ### 自己管理 Playwright

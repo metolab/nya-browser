@@ -60,6 +60,7 @@ export default function SearchSelect({
 
   return (
     <Popover
+      modal
       open={open}
       onOpenChange={(next: boolean) => {
         setOpen(next);

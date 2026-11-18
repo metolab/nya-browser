@@ -16,7 +16,7 @@ import {
   SlidersHorizontalIcon,
   Trash2Icon,
 } from 'lucide-react';
-import { AUTO_LOCALE, type ProxyRecord, type Session, type SessionGroup } from '@nya/shared';
+import type { ProxyRecord, Session, SessionGroup } from '@nya/shared';
 import { childrenOf, groupSelectOptions, groupSessionCount, NONE_KEY } from '@/lib/groups';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -81,13 +81,12 @@ function proxyText(session: Session, proxies?: ProxyRecord[]) {
 }
 
 function localeText(session: Session) {
-  const tz = session.locale?.timezone || session.timezone || '';
+  const tz = session.timezone || '';
   const city = tz.split('/').pop()?.replace(/_/g, ' ') || '—';
-  const lang = session.locale?.language || session.chromeLanguage || '—';
-  const auto = session.timezone === AUTO_LOCALE || session.chromeLanguage === AUTO_LOCALE ? '（自动）' : '';
+  const lang = session.chromeLanguage || '—';
   const fp = session.fingerprint;
   const os = fp?.os === 'windows' ? ` · ${fp.windowsRelease === 'win10' ? 'Win10' : 'Win11'}` : '';
-  return `${city}/${lang}${auto}${os}`;
+  return `${city}/${lang}${os}`;
 }
 
 function indentStyle(mode: 'pick' | 'manage', depth: number) {

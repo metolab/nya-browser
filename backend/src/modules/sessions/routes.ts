@@ -66,7 +66,7 @@ sessionsRouter.get(
   }),
 );
 
-/** Probe a session's own proxy and keep the result; the exit drives `auto` locale and the WebRTC IP. */
+/** Probe a session's own proxy and keep the result; the exit drives the WebRTC IP. */
 async function testCustomProxy(sessionId: string) {
   const session = getSession(sessionId)!;
   if (!session.customProxy) return session;

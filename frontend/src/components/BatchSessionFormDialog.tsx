@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ProxyRecord } from '@nya/shared';
 import {
-  AUTO_LOCALE,
   COMMON_TIMEZONES,
   GPU_PROFILES,
   WEBRTC_MODES,
@@ -40,10 +39,8 @@ import { NONE_KEY } from '@/lib/groups';
 
 const KEEP_KEY = '__keep__';
 const COMMON_TZ = new Set<string>(COMMON_TIMEZONES);
-const AUTO_OPTION = { value: AUTO_LOCALE, label: '自动（跟随代理出口国家）' };
 const TIMEZONE_OPTIONS = [
   { value: KEEP_KEY, label: '不修改' },
-  AUTO_OPTION,
   ...listTimezones().map((tz) => ({
     value: tz,
     label: timezoneOptionLabel(tz),
@@ -53,7 +50,6 @@ const TIMEZONE_OPTIONS = [
 const PINNED_LANG = new Set<string>(PINNED_CHROME_LANGUAGES);
 const LANGUAGE_OPTIONS = [
   { value: KEEP_KEY, label: '不修改' },
-  AUTO_OPTION,
   ...CHROME_LANGUAGES.map((code) => ({
     value: code,
     label: chromeLanguageOptionLabel(code),

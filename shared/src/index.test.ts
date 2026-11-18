@@ -19,7 +19,6 @@ import {
 import { normalizeTimezone, DEFAULT_TIMEZONE, isValidTimezone } from './timezones.js';
 import {
   normalizeChromeLanguage,
-  isValidChromeLanguage,
   DEFAULT_CHROME_LANGUAGE,
   acceptLanguageHeader,
   posixLocale,
@@ -34,7 +33,6 @@ import {
 } from './gpuProfiles.js';
 import { coerceWebrtcMode, DEFAULT_WEBRTC_MODE } from './webrtc.js';
 import { sessionMediaDevices } from './mediaDevices.js';
-import { countryLocale, resolveSessionLocale } from './countryLocale.js';
 import { windowsFontNames } from './windowsFontNames.js';
 import { normalizeGeo } from './geo.js';
 import { regionFromLoc } from './region.js';
@@ -236,40 +234,6 @@ describe('session media devices', () => {
     expect(linux.audioInput).toMatch(/Analog Stereo$/);
     expect(linux.videoInput).toMatch(/\([0-9a-f]{4}:[0-9a-f]{4}\)$/);
     expect(sessionMediaDevices('linux', seed, 'en-US')).toEqual(linux);
-  });
-});
-
-describe('country locale', () => {
-  it('maps a proxy exit to a timezone and Chrome language', () => {
-    expect(countryLocale('JP')).toEqual({ timezone: 'Asia/Tokyo', language: 'ja' });
-    expect(countryLocale('us', 'LAX')?.timezone).toBe('America/Los_Angeles');
-    expect(countryLocale('CA', 'SEA')?.timezone).toBe('America/Toronto');
-    expect(countryLocale('XX')).toBeNull();
-  });
-
-  it('resolves auto from a tested exit and keeps explicit values', () => {
-    const exit = { ok: true, loc: 'DE', colo: 'FRA' };
-    expect(resolveSessionLocale({ timezone: 'auto', chromeLanguage: 'auto' }, exit)).toEqual({
-      timezone: 'Europe/Berlin',
-      language: 'de',
-    });
-    expect(resolveSessionLocale({ timezone: 'Asia/Tokyo', chromeLanguage: 'auto' }, exit).timezone).toBe('Asia/Tokyo');
-    expect(resolveSessionLocale({ timezone: 'auto', chromeLanguage: 'auto' }, { ...exit, ok: false })).toEqual({
-      timezone: 'Asia/Shanghai',
-      language: 'zh-CN',
-    });
-  });
-
-  it('only uses valid timezones and languages', () => {
-    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    for (const a of letters) {
-      for (const b of letters) {
-        const row = countryLocale(a + b);
-        if (!row) continue;
-        expect(isValidTimezone(row.timezone), a + b).toBe(true);
-        expect(isValidChromeLanguage(row.language), a + b).toBe(true);
-      }
-    }
   });
 });
 

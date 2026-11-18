@@ -618,7 +618,7 @@ export async function restartSessionsForProxyExitIp(target: { proxyId: string } 
 /**
  * Switch a running session to its stored proxy without restarting Chrome.
  * Chrome restarts only when it launched without the sidecar, or when the new
- * exit moves launch flags (an `auto` timezone/language, the WebRTC public IP).
+ * exit moves launch flags (the WebRTC public IP).
  * An untested exit keeps the running flags.
  */
 export async function applyProxy(sessionId: string): Promise<{ restarted: boolean }> {

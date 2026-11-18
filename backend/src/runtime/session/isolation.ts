@@ -3,8 +3,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFile, execFileSync, type ExecFileOptions } from 'child_process';
-import { ensureSessionDirs, getSession, sessionDir, sessionLocaleSettings } from '../../store.js';
-import { posixLocale, resolveSessionLocale } from '@nya/shared';
+import { ensureSessionDirs, getSession, sessionDir } from '../../store.js';
+import { DEFAULT_CHROME_LANGUAGE, DEFAULT_TIMEZONE, posixLocale } from '@nya/shared';
 import { DATA_DIR } from '../../config.js';
 import { sessionLocale } from '../locale.js';
 import { errMsg, run, type RunOptions } from './proc.js';
@@ -353,10 +353,12 @@ export function markActiveDisplay(sessionId: string, display: number | null | un
   writeActiveDisplay(runtime, display);
 }
 
-/** Timezone and Chrome language of a session, with `auto` resolved from its proxy exit. */
 export function sessionLocaleOf(sessionId: string) {
   const session = getSession(sessionId);
-  return session ? sessionLocaleSettings(session) : resolveSessionLocale({});
+  return {
+    timezone: session?.timezone || DEFAULT_TIMEZONE,
+    language: session?.chromeLanguage || DEFAULT_CHROME_LANGUAGE,
+  };
 }
 
 // Backend credentials and secrets stay out of the browser's environment.

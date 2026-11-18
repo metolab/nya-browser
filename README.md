@@ -27,15 +27,14 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 - 系统：Windows 11 伪装（Linux 需显式选择）。旧库里没有系统字段的会话仍按 Linux 运行。
 - WebRTC：`offline`（API 可用，没有任何 ICE 候选）。
-- 时区和语言：`auto`，启动时按代理最近一次测试得到的出口国家决定；没有代理或没测过时用 Asia/Shanghai、zh-CN。
+- 时区和语言：Asia/Shanghai（UTC+8）、zh-CN，不随代理出口变化。
+- 显卡、CPU 和内存：留空时创建会话按显卡档位和常见占比一起随机抽取（例如 GTX 1650 多配 4～6 核 / 8～16 GB，RTX 4090 多配 16～32 核 / 32 GB）；只指定其中一部分时，其余的按已指定的值搭配。选 `native` 则不伪装显卡。
 - 主页：留空，打开新标签页。
 - 字体和媒体设备名：没有配置项，跟随系统、版本和指纹种子自动生成。
 
 挂代理的会话只能连到自己的本地代理端口，直连的包（包括 WebRTC 的 UDP）在 iptables 里被拒绝。
 
-会话的代理可以选已保存的代理，也可以填一个只属于该会话的临时代理（字段或分享链接，可选已保存的代理做前置），保存时自动测试出口。每个运行中的会话都有一个 sing-box sidecar（直连会话用 direct 出口），Chrome 固定连它，所以切换代理只替换 sidecar、断开现有连接，浏览器不重启；只有时区/语言为 `auto` 且出口国家变了，或 WebRTC 为 replace/forward 且出口 IP 变了时才重启 Chrome。
-
-会话的代理可以选已保存的代理，也可以填一个只属于该会话的临时代理（字段或分享链接，可选已保存的代理做前置），保存时自动测试出口。每个运行中的会话都有一个 sing-box sidecar（直连会话用 direct 出口），Chrome 固定连它，所以切换代理只替换 sidecar、断开现有连接，浏览器不重启；只有时区/语言为 `auto` 且出口国家变了，或 WebRTC 为 replace/forward 且出口 IP 变了时才重启 Chrome。
+会话的代理可以选已保存的代理，也可以填一个只属于该会话的临时代理（字段或分享链接，可选已保存的代理做前置），保存时自动测试出口。每个运行中的会话都有一个 sing-box sidecar（直连会话用 direct 出口），Chrome 固定连它，所以切换代理只替换 sidecar、断开现有连接，浏览器不重启；只有 WebRTC 为 replace/forward 且出口 IP 变了时才重启 Chrome。
 
 ## Windows 字体
 

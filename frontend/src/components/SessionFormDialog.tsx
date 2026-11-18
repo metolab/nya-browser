@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { ProxyRecord, ProxyTestResult, SessionGroup, SessionProxy } from '@nya/shared';
+import type { ProxyRecord, SessionGroup, SessionProxy } from '@nya/shared';
 import {
   COMMON_TIMEZONES,
-  DEFAULT_GPU_PROFILE,
+  DEFAULT_CHROME_LANGUAGE,
+  DEFAULT_TIMEZONE,
   DEFAULT_WEBRTC_MODE,
-  AUTO_LOCALE,
-  resolveSessionLocale,
   GPU_PROFILES,
   WEBRTC_MODES,
   WEBRTC_MODE_LABELS,
@@ -60,38 +59,33 @@ import {
 import { NONE_KEY, groupSelectOptions } from '@/lib/groups';
 
 const COMMON_TZ = new Set<string>(COMMON_TIMEZONES);
-const AUTO_OPTION = { value: AUTO_LOCALE, label: '自动（跟随代理出口国家）', group: '常用' };
-const TIMEZONE_OPTIONS = [
-  AUTO_OPTION,
-  ...listTimezones().map((tz) => ({
-    value: tz,
-    label: timezoneOptionLabel(tz),
-    group: COMMON_TZ.has(tz) ? '常用' : '全部',
-  })),
-];
+const TIMEZONE_OPTIONS = listTimezones().map((tz) => ({
+  value: tz,
+  label: timezoneOptionLabel(tz),
+  group: COMMON_TZ.has(tz) ? '常用' : '全部',
+}));
 const PINNED_LANG = new Set<string>(PINNED_CHROME_LANGUAGES);
-const LANGUAGE_OPTIONS = [
-  AUTO_OPTION,
-  ...CHROME_LANGUAGES.map((code) => ({
-    value: code,
-    label: chromeLanguageOptionLabel(code),
-    group: PINNED_LANG.has(code) ? '常用' : '全部',
-  })),
-];
+const LANGUAGE_OPTIONS = CHROME_LANGUAGES.map((code) => ({
+  value: code,
+  label: chromeLanguageOptionLabel(code),
+  group: PINNED_LANG.has(code) ? '常用' : '全部',
+}));
+const RANDOM_KEY = '__random__';
+const RANDOM_LABEL = '随机（按常见搭配加权）';
 const GPU_OPTIONS = GPU_PROFILES.map((row) => ({
   value: row.id,
   label: gpuProfileOptionLabel(row.id),
   group: row.group,
 }));
+const GPU_OPTIONS_WITH_RANDOM = [{ value: RANDOM_KEY, label: RANDOM_LABEL, group: '常用' }, ...GPU_OPTIONS];
 const WEBRTC_OPTIONS = WEBRTC_MODES.map((id) => ({
   value: id,
   label: WEBRTC_MODE_LABELS[id],
 }));
-const RANDOM_HARDWARE_KEY = '__random__';
 const CUSTOM_PROXY_KEY = '__custom__';
 
 function initialHardwareKey(cores?: number, memory?: number) {
-  return cores && memory ? hardwareProfileId(cores, memory) : RANDOM_HARDWARE_KEY;
+  return cores && memory ? hardwareProfileId(cores, memory) : RANDOM_KEY;
 }
 
 export type SessionFormValues = {
@@ -103,11 +97,11 @@ export type SessionFormValues = {
   customProxy: CustomProxyInput | null;
   timezone: string;
   chromeLanguage: string;
-  gpuProfile: string;
+  /** Unset GPU, CPU and memory are picked together by the backend as a common combo. */
+  gpuProfile?: string;
   webrtcMode: string;
   os: string;
   windowsRelease: string;
-  /** Unset means the backend picks a common combo from the fingerprint seed. */
   hardwareConcurrency?: number;
   deviceMemory?: number;
   geoPermission: string;
@@ -159,9 +153,9 @@ export default function SessionFormDialog({
   initialProxyId = null,
   initialCustomProxy = null,
   initialGroupId = null,
-  initialTimezone = AUTO_LOCALE,
-  initialChromeLanguage = AUTO_LOCALE,
-  initialGpuProfile = DEFAULT_GPU_PROFILE,
+  initialTimezone = DEFAULT_TIMEZONE,
+  initialChromeLanguage = DEFAULT_CHROME_LANGUAGE,
+  initialGpuProfile,
   initialWebrtcMode = DEFAULT_WEBRTC_MODE,
   initialOs = DEFAULT_OS,
   initialWindowsRelease = DEFAULT_WINDOWS_RELEASE,
@@ -187,7 +181,7 @@ export default function SessionFormDialog({
   const [notepad, setNotepad] = useState(initialNotepad);
   const [timezone, setTimezone] = useState(initialTimezone);
   const [chromeLanguage, setChromeLanguage] = useState(initialChromeLanguage);
-  const [gpuProfile, setGpuProfile] = useState(initialGpuProfile);
+  const [gpuProfile, setGpuProfile] = useState(initialGpuProfile || RANDOM_KEY);
   const [webrtcMode, setWebrtcMode] = useState(initialWebrtcMode);
   const [os, setOs] = useState<string>(coerceOs(initialOs));
   const [windowsRelease, setWindowsRelease] = useState<string>(coerceWindowsRelease(initialWindowsRelease));
@@ -206,17 +200,7 @@ export default function SessionFormDialog({
   const initialCustomDraft = () => (initialCustomProxy ? proxyDraftFrom(initialCustomProxy) : emptyProxyDraft());
   const [proxyId, setProxyId] = useState(initialProxyChoice);
   const [customDraft, setCustomDraft] = useState<ProxyDraft>(initialCustomDraft);
-  const [customTest, setCustomTest] = useState<ProxyTestResult | null>(initialCustomProxy?.lastTest || null);
   const custom = proxyId === CUSTOM_PROXY_KEY;
-  const autoLocaleHint = (() => {
-    if (timezone !== AUTO_LOCALE && chromeLanguage !== AUTO_LOCALE) return '';
-    const exit = custom ? customTest : proxies.find((p) => p.id === proxyId)?.lastTest;
-    const resolved = resolveSessionLocale({ timezone, chromeLanguage }, exit);
-    const now = `${resolved.timezone} · ${chromeLanguageOptionLabel(resolved.language)}`;
-    if (exit?.ok && exit.loc) return `自动：出口 ${exit.region || exit.loc} → ${now}`;
-    if (custom) return `自动：临时代理保存时自动测试出口，测试前暂用 ${now}`;
-    return `自动：代理还没有测试出口，暂用 ${now}；测试代理后下次启动自动切换`;
-  })();
   const [groupId, setGroupId] = useState(initialGroupId || NONE_KEY);
 
   useEffect(() => {
@@ -224,9 +208,9 @@ export default function SessionFormDialog({
     setName(initialName);
     setDescription(initialDescription);
     setNotepad(initialNotepad);
-    setTimezone(initialTimezone || AUTO_LOCALE);
-    setChromeLanguage(initialChromeLanguage || AUTO_LOCALE);
-    setGpuProfile(initialGpuProfile || DEFAULT_GPU_PROFILE);
+    setTimezone(initialTimezone || DEFAULT_TIMEZONE);
+    setChromeLanguage(initialChromeLanguage || DEFAULT_CHROME_LANGUAGE);
+    setGpuProfile(initialGpuProfile || RANDOM_KEY);
     setWebrtcMode(initialWebrtcMode || DEFAULT_WEBRTC_MODE);
     setOs(coerceOs(initialOs));
     setWindowsRelease(coerceWindowsRelease(initialWindowsRelease));
@@ -239,7 +223,6 @@ export default function SessionFormDialog({
     setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES));
     setProxyId(initialProxyChoice());
     setCustomDraft(initialCustomDraft());
-    setCustomTest(initialCustomProxy?.lastTest || null);
     setGroupId(initialGroupId || NONE_KEY);
     setBusy(false);
   }, [
@@ -282,9 +265,9 @@ export default function SessionFormDialog({
               name: name.trim() || initialName || 'Session',
               description,
               notepad,
-              timezone: timezone || AUTO_LOCALE,
-              chromeLanguage: chromeLanguage || AUTO_LOCALE,
-              gpuProfile: gpuProfile || DEFAULT_GPU_PROFILE,
+              timezone: timezone || DEFAULT_TIMEZONE,
+              chromeLanguage: chromeLanguage || DEFAULT_CHROME_LANGUAGE,
+              gpuProfile: gpuProfile === RANDOM_KEY ? undefined : gpuProfile,
               webrtcMode: webrtcMode || DEFAULT_WEBRTC_MODE,
               os,
               windowsRelease,
@@ -364,9 +347,6 @@ export default function SessionFormDialog({
                     searchPlaceholder="搜索语言"
                   />
                 </div>
-                {autoLocaleHint ? (
-                  <p className="text-xs text-muted-foreground sm:col-span-2">{autoLocaleHint}</p>
-                ) : null}
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="grid gap-2">
@@ -419,13 +399,19 @@ export default function SessionFormDialog({
                 <SearchSelect
                   value={gpuProfile}
                   onChange={setGpuProfile}
-                  options={GPU_OPTIONS}
+                  options={initialGpuProfile ? GPU_OPTIONS : GPU_OPTIONS_WITH_RANDOM}
                   searchPlaceholder="搜索 GTX / RTX"
                 />
                 <p className="text-xs text-muted-foreground">
                   WebGL 卡名和 WebGPU vendor/architecture/device 一起改。只限
                   NVIDIA 桌面卡，扩展和 MAX_* 仍用本机。
                 </p>
+                {gpuProfile === RANDOM_KEY || hardware === RANDOM_KEY ? (
+                  <p className="text-xs text-muted-foreground">
+                    随机项创建时按显卡档位和常见占比一起抽取，例如 GTX 1650 多配 4～6 核 / 8～16 GB，RTX 4090
+                    多配 16～32 核 / 32 GB；已指定的项会参与搭配。
+                  </p>
+                ) : null}
               </div>
               <div className="grid gap-2">
                 <Label>CPU / 内存</Label>
@@ -435,7 +421,7 @@ export default function SessionFormDialog({
                   </SelectTrigger>
                   <SelectContent position="popper" className="max-h-64">
                     {!(initialHardwareConcurrency && initialDeviceMemory) && (
-                      <SelectItem value={RANDOM_HARDWARE_KEY}>随机（常见配置）</SelectItem>
+                      <SelectItem value={RANDOM_KEY}>{RANDOM_LABEL}</SelectItem>
                     )}
                     {hardwareProfileOptions(
                       initialHardwareKey(initialHardwareConcurrency, initialDeviceMemory),
@@ -557,7 +543,7 @@ export default function SessionFormDialog({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              运行中切换代理不重启浏览器，只断开现有连接；时区或语言为自动且出口国家变化时会重启以保持一致
+              运行中切换代理不重启浏览器，只断开现有连接；WebRTC 需要出口公网 IP 且 IP 变化时会重启
             </p>
           </div>
           {custom && (
@@ -567,7 +553,6 @@ export default function SessionFormDialog({
                 value={customDraft}
                 onChange={setCustomDraft}
                 fronts={proxies}
-                onTested={setCustomTest}
               />
               {initialCustomProxy?.lastTest ? (
                 <p className="text-xs text-muted-foreground">

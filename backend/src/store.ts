@@ -3,19 +3,16 @@ import path from 'path';
 import { nanoid } from 'nanoid';
 import { and, asc, eq } from 'drizzle-orm';
 import {
-  AUTO_LOCALE,
   DEFAULT_HOME_URL,
   IDLE_TIMEOUT_MINUTES_MAX,
   emptyProxy,
   emptyProxyExtra,
-  isAutoLocale,
   isProxyType,
   normalizeChromeLanguage,
   normalizeProxyExtra,
   normalizeTimezone,
   parseProxyUri,
   proxyConfigSchema,
-  resolveSessionLocale,
   type FingerprintConfig,
   type AccessGrant,
   type AccessKind,
@@ -105,14 +102,17 @@ export function ensureSessionDirs(id: string) {
   ensureFilesDir(id);
 }
 
-/** Stored timezone: `auto` (also for empty input) or a valid IANA name. */
-function sessionTimezone(input: unknown) {
-  return !String(input ?? '').trim() || isAutoLocale(input) ? AUTO_LOCALE : normalizeTimezone(input);
+/** Older releases stored `auto` to follow the proxy exit country; it now reads as the default. */
+function isLegacyAutoLocale(input: unknown) {
+  return String(input ?? '').trim().toLowerCase() === 'auto';
 }
 
-/** Stored Chrome language: `auto` (also for empty input) or a supported code. */
+function sessionTimezone(input: unknown) {
+  return normalizeTimezone(isLegacyAutoLocale(input) ? '' : input);
+}
+
 function sessionChromeLanguage(input: unknown) {
-  return !String(input ?? '').trim() || isAutoLocale(input) ? AUTO_LOCALE : normalizeChromeLanguage(input);
+  return normalizeChromeLanguage(isLegacyAutoLocale(input) ? '' : input);
 }
 
 export function normalizeHomeUrl(input: unknown) {
@@ -784,13 +784,6 @@ export function regenerateSessionFingerprint(id: string) {
       deviceMemory: fp.deviceMemory,
     }),
   });
-}
-
-/** The timezone and Chrome language a session launches with (`auto` follows its proxy's last test). */
-export function sessionLocaleSettings(
-  session: Pick<SessionRecord, 'timezone' | 'chromeLanguage' | 'proxyId' | 'customProxy'>,
-) {
-  return resolveSessionLocale(session, sessionProxyTest(session));
 }
 
 export function deleteSession(id: string) {

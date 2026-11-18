@@ -149,12 +149,10 @@ export interface Session {
   /** The proxy the session runs with: the saved one, the custom one, or `none`. */
   proxy: ProxyConfig;
   fingerprint?: FingerprintConfig;
-  /** An IANA name, or `auto` to follow the proxy exit country. */
+  /** An IANA name. */
   timezone: string;
-  /** A Chrome UI language, or `auto` to follow the proxy exit country. */
+  /** A Chrome UI language code. */
   chromeLanguage: string;
-  /** What the session launches with, `auto` resolved. */
-  locale: { timezone: string; language: string };
   homeUrl: string;
   idleTimeoutMinutes: number;
   createdAt: string;

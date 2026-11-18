@@ -47,7 +47,7 @@ export type SessionRuntime = DisplayHolder & {
   proxyTail?: Promise<unknown>;
   /** The `--proxy-server` port Chrome launched with; null means `--no-proxy-server`. */
   chromeProxyPort?: number | null;
-  /** Launch flags that follow the proxy exit (locale, WebRTC public IP) at Chrome start. */
+  /** Launch flags that follow the proxy exit (WebRTC public IP) at Chrome start. */
   chromeExitProfile?: string;
   chrome: ChildProcess | null;
   cdpPort: number | null;

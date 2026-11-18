@@ -11,9 +11,9 @@ import {
 const SEED = 'a'.repeat(64);
 
 describe('fingerprint GPU profile', () => {
-  it('creates new sessions as Windows with offline WebRTC and a native GPU', () => {
+  it('creates new sessions as Windows with offline WebRTC and a picked NVIDIA GPU', () => {
     const fp = createFingerprint();
-    expect(fp.gpuProfile).toBe('native');
+    expect(fp.gpuProfile).toMatch(/^(gtx|rtx)-/);
     expect(fp.webrtcMode).toBe('offline');
     expect(fp.os).toBe('windows');
     expect(fp.windowsRelease).toBe('win11');

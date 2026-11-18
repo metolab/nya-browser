@@ -55,11 +55,16 @@ class SessionsResource:
 
     def create(self, name: str, **fields: Any) -> Session:
         """Create a session. Fields use snake_case, e.g. ``proxy_id`` or ``custom_proxy``
-        (see ``set_proxy``), ``timezone``,
-        ``chrome_language``, ``home_url``, ``idle_timeout_minutes``, ``gpu_profile``,
-        ``webrtc_mode``, ``hardware_concurrency`` (2/4/6/8/10/12/16/20/24/32),
+        (see ``set_proxy``), ``timezone`` (IANA name, default ``Asia/Shanghai``),
+        ``chrome_language`` (e.g. ``en-US``, default ``zh-CN``), ``home_url``, ``idle_timeout_minutes``,
+        ``gpu_profile`` (``native`` for the real GPU, or an NVIDIA desktop card such as ``gtx-1650``,
+        ``rtx-3060``, ``rtx-4090``), ``webrtc_mode``, ``hardware_concurrency`` (2/4/6/8/10/12/16/20/24/32),
         ``device_memory`` (2/4/8/16/32), ``geo``, ``group_id``, ``os`` (``linux``/``windows``),
-        ``windows_release`` (``win10``/``win11``)."""
+        ``windows_release`` (``win10``/``win11``).
+
+        Leave ``gpu_profile``, ``hardware_concurrency`` and ``device_memory`` out to have the server
+        pick them together as a common combo (weighted by GPU class and popularity); the ones you set
+        steer the pick, e.g. ``gpu_profile="rtx-4090"`` alone gets 16-32 threads and 32 GB."""
         body = camelize({"name": name, **fields})
         return self._t.call("POST", "/sessions", json=body, parse=lambda d: self._session(d["session"]))
 
@@ -93,8 +98,8 @@ class SessionsResource:
         """Use a saved proxy (``proxy_id``), a proxy of this session only (``custom``: a share URI
         such as ``"socks5://u:p@1.2.3.4:1080"``, or a dict of ``type``/``host``/``port``/``username``/
         ``password``/``extra``/``via_proxy_id``), or neither for direct. A running browser switches in
-        place; it restarts only when an ``auto`` timezone/language or the WebRTC public IP must follow
-        a new exit."""
+        place; it restarts only when the WebRTC public IP must follow a new exit. Timezone and language
+        do not follow the proxy; set them with ``update``."""
         body: Dict[str, Any] = {"customProxy": camelize(custom)} if custom is not None else {"proxyId": proxy_id}
         return self._t.call(
             "PUT",

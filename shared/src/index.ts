@@ -13,7 +13,6 @@ export * from './osProfiles.js';
 export * from './hardwareProfiles.js';
 export * from './displayLimits.js';
 export * from './region.js';
-export * from './countryLocale.js';
 export * from './clipboardText.js';
 export * from './proxy.js';
 export * from './singboxConfig.js';

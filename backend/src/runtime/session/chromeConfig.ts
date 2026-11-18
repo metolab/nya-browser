@@ -350,10 +350,8 @@ function sessionPublicIp(sessionId: string) {
 
 /** The launch flags that follow the proxy exit; Chrome restarts when this changes under a new proxy. */
 export function chromeExitProfile(sessionId: string, fingerprint: FingerprintConfig | null = null) {
-  const { timezone, language } = sessionLocaleOf(sessionId);
   const webrtcMode = sessionWebrtcMode(sessionId, fingerprint);
-  const publicIp = webrtcNeedsPublicIp(webrtcMode) ? sessionPublicIp(sessionId) : '';
-  return `${timezone}|${language}|${publicIp}`;
+  return webrtcNeedsPublicIp(webrtcMode) ? sessionPublicIp(sessionId) : '';
 }
 
 export function chromeArgs(

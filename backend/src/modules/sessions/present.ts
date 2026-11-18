@@ -4,7 +4,6 @@ import {
   listAccessibleSessions,
   listSessionGrants,
   listSessions,
-  sessionLocaleSettings,
   userCanAccessNotepad,
   type SessionRecord,
 } from '../../store.js';
@@ -42,7 +41,6 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
     fingerprint: session.fingerprint,
     timezone: session.timezone,
     chromeLanguage: session.chromeLanguage,
-    locale: sessionLocaleSettings(session),
     homeUrl: session.homeUrl,
     idleTimeoutMinutes: session.idleTimeoutMinutes,
     createdAt: session.createdAt,

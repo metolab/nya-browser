@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { ProxyRecord, ProxyTestResult, Session, SessionGroup, UserPublic } from '@nya/shared';
-import {
-  DEFAULT_GPU_PROFILE,
-  DEFAULT_IDLE_TIMEOUT_MINUTES,
-  normalizeGeo,
-} from '@nya/shared';
+import { DEFAULT_IDLE_TIMEOUT_MINUTES, normalizeGeo } from '@nya/shared';
 import type { SessionFormValues } from '../../components/SessionFormDialog';
 import { api } from '../../api/client';
 import { SessionTree } from '../../components/SessionTree';
@@ -251,7 +247,7 @@ export default function SessionsPage() {
         initialCustomProxy={cloneFrom?.customProxy}
         initialTimezone={cloneFrom?.timezone}
         initialChromeLanguage={cloneFrom?.chromeLanguage}
-        initialGpuProfile={cloneFrom?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
+        initialGpuProfile={cloneFrom?.fingerprint?.gpuProfile}
         initialWebrtcMode={cloneFrom?.fingerprint?.webrtcMode}
         initialOs={cloneFrom?.fingerprint?.os}
         initialWindowsRelease={cloneFrom?.fingerprint?.windowsRelease}
@@ -318,7 +314,7 @@ export default function SessionsPage() {
         initialCustomProxy={edit?.customProxy}
         initialTimezone={edit?.timezone}
         initialChromeLanguage={edit?.chromeLanguage}
-        initialGpuProfile={edit?.fingerprint?.gpuProfile || DEFAULT_GPU_PROFILE}
+        initialGpuProfile={edit?.fingerprint?.gpuProfile}
         initialWebrtcMode={edit?.fingerprint?.webrtcMode}
         initialOs={edit?.fingerprint?.os}
         initialWindowsRelease={edit?.fingerprint?.windowsRelease}

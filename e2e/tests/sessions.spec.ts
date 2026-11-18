@@ -43,7 +43,9 @@ test('session crud description proxy homeUrl assignments', async () => {
   expect(bare.fingerprint.os).toBe('windows');
   expect(bare.fingerprint.windowsRelease).toBe('win11');
   expect(bare.fingerprint.webrtcMode).toBe('offline');
-  expect(bare.timezone).toBe('auto');
+  expect(bare.timezone).toBe('Asia/Shanghai');
+  expect(bare.chromeLanguage).toBe('zh-CN');
+  expect(bare.fingerprint.gpuProfile).toMatch(/^(gtx|rtx)-/);
   expect(bare.homeUrl).toBe('');
   await admin.delete(`/api/sessions/${bare.id}`);
 

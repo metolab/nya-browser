@@ -6,18 +6,14 @@ import { CPU_CORE_OPTIONS, DEVICE_MEMORY_OPTIONS, isCpuCores, isDeviceMemory } f
 import { WEBRTC_MODES } from './webrtc.js';
 import { CHROME_LANGUAGE_LIST } from './languages.js';
 import { isValidTimezone } from './timezones.js';
-import { AUTO_LOCALE } from './countryLocale.js';
 import { PROXY_TYPES, SS_METHODS, proxyNeedsSecret } from './proxy.js';
 
 const timezoneSchema = z
   .string()
   .min(1)
   .max(80)
-  .refine(
-    (value) => value === AUTO_LOCALE || value === 'UTC' || value === 'GMT' || isValidTimezone(value),
-    'Invalid timezone',
-  );
-const chromeLanguageSchema = z.union([z.literal(AUTO_LOCALE), z.enum(CHROME_LANGUAGE_LIST)]);
+  .refine((value) => value === 'UTC' || value === 'GMT' || isValidTimezone(value), 'Invalid timezone');
+const chromeLanguageSchema = z.enum(CHROME_LANGUAGE_LIST);
 
 export const roleSchema = z.enum(['admin', 'user']);
 

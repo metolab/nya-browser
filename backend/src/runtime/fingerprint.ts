@@ -4,12 +4,13 @@ import {
   coerceOs,
   coerceWindowsRelease,
   coerceWebrtcMode,
-  COMMON_HARDWARE_PROFILES,
   DEFAULT_OS,
   DEFAULT_WEBRTC_MODE,
   isCpuCores,
   isDeviceMemory,
+  isValidGpuProfile,
   normalizeGeo,
+  pickDeviceProfile,
   type FingerprintConfig,
   type GeoConfig,
   type OsType,
@@ -17,9 +18,10 @@ import {
   type WindowsRelease,
 } from '@nya/shared';
 
-function seedToUint32(seed: string) {
+/** A stable number in [0, 1) from the fingerprint seed. */
+function seedRoll(seed: string) {
   const buf = Buffer.from(String(seed || ''), 'hex');
-  if (buf.length >= 4) return buf.readUInt32BE(0);
+  if (buf.length >= 4) return buf.readUInt32BE(0) / 2 ** 32;
   return 0;
 }
 
@@ -33,17 +35,26 @@ type FingerprintExtras = {
   deviceMemory?: unknown;
 };
 
-export function fingerprintFromSeed(seed: string, extras?: FingerprintExtras): FingerprintConfig {
-  const n = seedToUint32(seed);
-  const normalizedSeed = String(seed).toLowerCase();
-  const hardware = COMMON_HARDWARE_PROFILES[n % COMMON_HARDWARE_PROFILES.length];
+/** GPU profile, CPU threads and memory; unset ones get a weighted realistic pick from the seed. */
+function seedDevice(seed: string, extras: FingerprintExtras | undefined, randomGpu: boolean) {
+  const gpu = String(extras?.gpuProfile ?? '').trim().toLowerCase();
+  return pickDeviceProfile(
+    {
+      gpuProfile: isValidGpuProfile(gpu) ? gpu : randomGpu ? undefined : coerceGpuProfile(gpu),
+      cores: isCpuCores(extras?.hardwareConcurrency) ? extras.hardwareConcurrency : undefined,
+      memory: isDeviceMemory(extras?.deviceMemory) ? extras.deviceMemory : undefined,
+    },
+    seedRoll(seed),
+  );
+}
+
+function buildFingerprint(seed: string, extras: FingerprintExtras | undefined, randomGpu: boolean): FingerprintConfig {
+  const device = seedDevice(seed, extras, randomGpu);
   return {
-    seed: normalizedSeed,
-    hardwareConcurrency: isCpuCores(extras?.hardwareConcurrency)
-      ? extras.hardwareConcurrency
-      : hardware.cores,
-    deviceMemory: isDeviceMemory(extras?.deviceMemory) ? extras.deviceMemory : hardware.memory,
-    gpuProfile: coerceGpuProfile(extras?.gpuProfile),
+    seed: String(seed).toLowerCase(),
+    hardwareConcurrency: device.cores,
+    deviceMemory: device.memory,
+    gpuProfile: device.gpuProfile,
     webrtcMode: coerceWebrtcMode(extras?.webrtcMode),
     geo: normalizeGeo(extras?.geo),
     os: coerceOs(extras?.os),
@@ -51,18 +62,30 @@ export function fingerprintFromSeed(seed: string, extras?: FingerprintExtras): F
   };
 }
 
+/** A stored fingerprint: a missing or unknown GPU profile reads as the real GPU. */
+export function fingerprintFromSeed(seed: string, extras?: FingerprintExtras): FingerprintConfig {
+  return buildFingerprint(seed, extras, false);
+}
+
 function randomSeed() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-/** A new session: fields the caller leaves out take the new-session defaults. */
+/**
+ * A new session: fields the caller leaves out take the new-session defaults;
+ * an unset GPU profile, CPU and memory are picked together as a common combo.
+ */
 export function createFingerprint(gpuProfile?: unknown, extras?: FingerprintExtras): FingerprintConfig {
-  return fingerprintFromSeed(randomSeed(), {
-    ...extras,
-    gpuProfile: gpuProfile ?? extras?.gpuProfile,
-    webrtcMode: extras?.webrtcMode ?? DEFAULT_WEBRTC_MODE,
-    os: extras?.os ?? DEFAULT_OS,
-  });
+  return buildFingerprint(
+    randomSeed(),
+    {
+      ...extras,
+      gpuProfile: gpuProfile ?? extras?.gpuProfile,
+      webrtcMode: extras?.webrtcMode ?? DEFAULT_WEBRTC_MODE,
+      os: extras?.os ?? DEFAULT_OS,
+    },
+    true,
+  );
 }
 
 export function fingerprintsEqual(a: FingerprintConfig, b: FingerprintConfig) {
