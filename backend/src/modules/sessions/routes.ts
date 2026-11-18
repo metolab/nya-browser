@@ -9,6 +9,7 @@ import {
   putTargetGrantsSchema,
   startSessionSchema,
   updateSessionSchema,
+  webauthnOptionsProblem,
 } from '@nya/shared';
 import { fingerprintLaunchChanged } from '../../runtime/fingerprint.js';
 import { proxyTestPublicIpChanged } from '../../runtime/proxyLastTest.js';
@@ -35,6 +36,7 @@ import {
 } from '../../store.js';
 import {
   applyProxy,
+  applyWebAuthn,
   canAccessWindow,
   claimMainWindow,
   createSub,
@@ -52,6 +54,7 @@ import {
   takeoverOwnedWindow,
 } from '../../runtime/sessionManager.js';
 import { sessionIoRouter } from './io.js';
+import { passkeysRouter } from '../passkeys/routes.js';
 import { filesRouter } from '../files/routes.js';
 import { cdpRouter } from '../cdp/routes.js';
 import { presentSession, presentSessions, visibleWindows } from './present.js';
@@ -117,7 +120,13 @@ sessionsRouter.post(
         ...pickSessionFingerprint(parsed.data),
         homeUrl: parsed.data.homeUrl,
         idleTimeoutMinutes: parsed.data.idleTimeoutMinutes,
+        webauthn: parsed.data.webauthn,
       });
+      const problem = webauthnOptionsProblem(session.webauthn.options);
+      if (problem) {
+        deleteSession(session.id);
+        throw new Error(problem);
+      }
     } catch (err) {
       return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -149,6 +158,11 @@ sessionsRouter.patch(
         ...rest,
         ...pickSessionFingerprint(parsed.data),
       });
+      const problem = session && webauthnOptionsProblem(session.webauthn.options);
+      if (problem) {
+        updateSession(req.params.id, { webauthn: before.webauthn });
+        throw new Error(problem);
+      }
     } catch (err) {
       return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -171,6 +185,9 @@ sessionsRouter.patch(
     }
     if (parsed.data.idleTimeoutMinutes !== undefined) {
       syncIdleWatch(session.id);
+    }
+    if (parsed.data.webauthn !== undefined && !restarted) {
+      await applyWebAuthn(session.id);
     }
     auditFromReq(req, {
       action: AUDIT_ACTIONS.sessionUpdate,
@@ -586,5 +603,6 @@ sessionsRouter.delete(
 
 sessionsRouter.use('/:id/files', filesRouter);
 sessionsRouter.use('/:id/cdp', cdpRouter);
+sessionsRouter.use('/:id', passkeysRouter);
 sessionsRouter.use('/:id', sessionIoRouter);
 

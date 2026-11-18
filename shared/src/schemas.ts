@@ -7,6 +7,7 @@ import { WEBRTC_MODES } from './webrtc.js';
 import { CHROME_LANGUAGE_LIST } from './languages.js';
 import { isValidTimezone } from './timezones.js';
 import { PROXY_TYPES, SS_METHODS, proxyNeedsSecret } from './proxy.js';
+import { putWebAuthnSchema } from './webauthn.js';
 
 const timezoneSchema = z
   .string()
@@ -235,6 +236,7 @@ export const createSessionSchema = z.object({
   ...sessionFingerprintFields,
   homeUrl: z.string().max(2000).optional(),
   idleTimeoutMinutes: idleTimeoutMinutesSchema.optional().default(DEFAULT_IDLE_TIMEOUT_MINUTES),
+  webauthn: putWebAuthnSchema.optional(),
 });
 
 export const updateSessionSchema = z.object({
@@ -249,6 +251,7 @@ export const updateSessionSchema = z.object({
   ...sessionFingerprintFields,
   homeUrl: z.string().max(2000).optional(),
   idleTimeoutMinutes: idleTimeoutMinutesSchema.optional(),
+  webauthn: putWebAuthnSchema.optional(),
 });
 
 export const createGroupSchema = z.object({

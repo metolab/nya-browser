@@ -60,7 +60,8 @@ class SessionsResource:
         ``gpu_profile`` (``native`` for the real GPU, or an NVIDIA desktop card such as ``gtx-1650``,
         ``rtx-3060``, ``rtx-4090``), ``webrtc_mode``, ``hardware_concurrency`` (2/4/6/8/10/12/16/20/24/32),
         ``device_memory`` (2/4/8/16/32), ``geo``, ``group_id``, ``os`` (``linux``/``windows``),
-        ``windows_release`` (``win10``/``win11``).
+        ``windows_release`` (``win10``/``win11``), ``webauthn`` (``{"enabled": True}`` for server-held
+        passkeys, see ``Session.passkeys``).
 
         Leave ``gpu_profile``, ``hardware_concurrency`` and ``device_memory`` out to have the server
         pick them together as a common combo (weighted by GPU class and popularity); the ones you set

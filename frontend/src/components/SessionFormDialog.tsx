@@ -34,6 +34,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import SearchSelect from '@/components/SearchSelect';
 import ProxyFields, {
@@ -112,6 +113,7 @@ export type SessionFormValues = {
   geoAccuracy: string;
   homeUrl: string;
   idleTimeoutMinutes: number;
+  webauthnEnabled: boolean;
 };
 
 type Props = {
@@ -137,6 +139,7 @@ type Props = {
   initialGeoAccuracy?: number;
   initialHomeUrl?: string;
   initialIdleTimeoutMinutes?: number;
+  initialWebauthnEnabled?: boolean;
   proxies: ProxyRecord[];
   groups?: SessionGroup[];
   submitLabel: string;
@@ -169,6 +172,7 @@ export default function SessionFormDialog({
   initialGeoAccuracy = 100,
   initialHomeUrl = '',
   initialIdleTimeoutMinutes = DEFAULT_IDLE_TIMEOUT_MINUTES,
+  initialWebauthnEnabled = false,
   proxies,
   groups,
   submitLabel,
@@ -196,6 +200,7 @@ export default function SessionFormDialog({
   const [geoLongitude, setGeoLongitude] = useState(initialGeoLongitude == null ? '' : String(initialGeoLongitude));
   const [geoAccuracy, setGeoAccuracy] = useState(String(initialGeoAccuracy ?? 100));
   const [homeUrl, setHomeUrl] = useState(initialHomeUrl);
+  const [webauthnEnabled, setWebauthnEnabled] = useState(initialWebauthnEnabled);
   const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState(
     String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES),
   );
@@ -223,6 +228,7 @@ export default function SessionFormDialog({
     setGeoLongitude(initialGeoLongitude == null ? '' : String(initialGeoLongitude));
     setGeoAccuracy(String(initialGeoAccuracy ?? 100));
     setHomeUrl(initialHomeUrl || '');
+    setWebauthnEnabled(initialWebauthnEnabled);
     setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES));
     setProxyId(initialProxyChoice());
     setCustomDraft(initialCustomDraft());
@@ -251,6 +257,7 @@ export default function SessionFormDialog({
     initialGeoAccuracy,
     initialHomeUrl,
     initialIdleTimeoutMinutes,
+    initialWebauthnEnabled,
   ]);
 
   return (
@@ -282,6 +289,7 @@ export default function SessionFormDialog({
               geoLongitude: geoLongitude.trim(),
               geoAccuracy: geoAccuracy.trim(),
               homeUrl: homeUrl.trim(),
+              webauthnEnabled,
               idleTimeoutMinutes: (() => {
                 const n = Number.parseInt(String(idleTimeoutMinutes), 10);
                 if (!Number.isFinite(n) || n <= 0) return 0;
@@ -444,7 +452,7 @@ export default function SessionFormDialog({
                   className="justify-start gap-1.5 px-0 text-muted-foreground hover:bg-transparent [&[data-state=open]>svg]:rotate-180"
                 >
                   <ChevronDownIcon className="transition-transform" />
-                  高级（操作系统、显卡、CPU / 内存、WebRTC、定位）
+                  高级（操作系统、显卡、CPU / 内存、WebRTC、定位、通行密钥）
                 </Button>
               </CollapsibleTrigger>
               <CollapsibleContent className="grid gap-4">
@@ -578,6 +586,16 @@ export default function SessionFormDialog({
                     <Label>精度 (m)</Label>
                     <Input value={geoAccuracy} onChange={(e) => setGeoAccuracy(e.target.value)} />
                   </div>
+                </div>
+                <div className="grid gap-2">
+                  <div className="flex items-center gap-3">
+                    <Switch id="webauthn-enabled" checked={webauthnEnabled} onCheckedChange={setWebauthnEnabled} />
+                    <Label htmlFor="webauthn-enabled">通行密钥（虚拟认证器）</Label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    服务端给每个标签页挂一个平台认证器，网页创建的通行密钥（含私钥）会保存到会话里。开启后
+                    isUserVerifyingPlatformAuthenticatorAvailable() 返回 true。
+                  </p>
                 </div>
               </CollapsibleContent>
             </Collapsible>

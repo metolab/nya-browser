@@ -3,6 +3,7 @@ import {
   ChevronRightIcon,
   CopyPlusIcon,
   DownloadIcon,
+  FingerprintIcon,
   FolderIcon,
   FolderPlusIcon,
   InboxIcon,
@@ -46,6 +47,7 @@ export type SessionTreeProps = {
   onBatchEditUncategorized?: () => void;
   onAssignSession?: (session: Session) => void;
   onViewPasswords?: (session: Session) => void;
+  onViewPasskeys?: (session: Session) => void;
   onExportSession?: (session: Session) => void;
   onMoveSession?: (sessionId: string, groupId: string | null) => void;
   onCreateSession?: (groupId: string | null) => void;
@@ -100,6 +102,7 @@ function SessionActions({
   onDeleteSession,
   onAssignSession,
   onViewPasswords,
+  onViewPasskeys,
   onExportSession,
   onMoveSession,
 }: {
@@ -111,6 +114,7 @@ function SessionActions({
   | 'onDeleteSession'
   | 'onAssignSession'
   | 'onViewPasswords'
+  | 'onViewPasskeys'
   | 'onExportSession'
   | 'onMoveSession'
 >) {
@@ -144,6 +148,10 @@ function SessionActions({
         <DropdownMenuItem onSelect={() => onViewPasswords?.(session)}>
           <KeyRoundIcon />
           密码
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onViewPasskeys?.(session)}>
+          <FingerprintIcon />
+          通行密钥
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onExportSession?.(session)}>
           <DownloadIcon />
@@ -183,6 +191,7 @@ function SessionRow({
   | 'onDeleteSession'
   | 'onAssignSession'
   | 'onViewPasswords'
+  | 'onViewPasskeys'
   | 'onExportSession'
   | 'onMoveSession'
   | 'proxies'
@@ -266,6 +275,7 @@ function SessionList({
   | 'onDeleteSession'
   | 'onAssignSession'
   | 'onViewPasswords'
+  | 'onViewPasskeys'
   | 'onExportSession'
   | 'onMoveSession'
   | 'proxies'
@@ -385,6 +395,7 @@ function FolderNode({
             onDeleteSession={rest.onDeleteSession}
             onAssignSession={rest.onAssignSession}
             onViewPasswords={rest.onViewPasswords}
+            onViewPasskeys={rest.onViewPasskeys}
             onExportSession={rest.onExportSession}
             onMoveSession={rest.onMoveSession}
             proxies={rest.proxies}
@@ -438,6 +449,7 @@ export function SessionTree(props: SessionTreeProps) {
     onBatchEditUncategorized: props.onBatchEditUncategorized,
     onAssignSession: props.onAssignSession,
     onViewPasswords: props.onViewPasswords,
+    onViewPasskeys: props.onViewPasskeys,
     onExportSession: props.onExportSession,
     onMoveSession: props.onMoveSession,
     onCreateSession: props.onCreateSession,
@@ -553,6 +565,7 @@ export function SessionTree(props: SessionTreeProps) {
                 onDeleteSession={props.onDeleteSession}
                 onAssignSession={props.onAssignSession}
                 onViewPasswords={props.onViewPasswords}
+                onViewPasskeys={props.onViewPasskeys}
                 onExportSession={props.onExportSession}
                 onMoveSession={props.onMoveSession}
                 proxies={props.proxies}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import math
 import os
 import time
 from pathlib import Path
@@ -11,15 +12,22 @@ from urllib.parse import quote
 from ._errors import ServiceUnavailableError, SessionNotRunningError
 from ._models import CdpEndpoint, FileEntry, Record, Window, then
 from ._playwright import BrowserSession, connect_context
+from ._transport import camelize
 
 if TYPE_CHECKING:
     from ._client import _ClientBase
 
 UploadItem = Union[str, os.PathLike, Tuple[str, bytes]]
 
+_WAIT_CHUNK_SECONDS = 25
+
 
 def _q(value: str) -> str:
     return quote(str(value), safe="")
+
+
+def _plain(value: Union[Dict[str, Any], Record]) -> Dict[str, Any]:
+    return value.to_dict() if isinstance(value, Record) else dict(value)
 
 
 class Session(Record):
@@ -34,6 +42,8 @@ class Session(Record):
         self._t = client._transport
         self.files = FilesResource(client, data["id"])
         self.windows = WindowsResource(client, data["id"])
+        self.webauthn = WebAuthnResource(client, data["id"])
+        self.passkeys = PasskeysResource(client, data["id"])
 
     @property
     def running(self) -> bool:
@@ -256,3 +266,209 @@ class FilesResource:
             return target
 
         return run()
+
+
+class WebAuthnResource:
+    """Server-held virtual authenticator of a session (one per tab, kept alive by the server).
+
+    Options are CDP ``WebAuthn.VirtualAuthenticatorOptions`` in snake_case, e.g.
+    ``has_resident_key=True``, ``transport="internal"``, ``ctap2_version="ctap2_1"``.
+    """
+
+    def __init__(self, client: "_ClientBase", session_id: str) -> None:
+        self._t = client._transport
+        self._base = f"/sessions/{_q(session_id)}/webauthn"
+
+    def get(self) -> Record:
+        """``{webauthn: {enabled, options}, runtime: {attached, tabs, armedTabs}}``."""
+        return self._t.call("GET", self._base, parse=Record)
+
+    def configure(self, enabled: Optional[bool] = None, **options: Any) -> Record:
+        body: Dict[str, Any] = {}
+        if enabled is not None:
+            body["enabled"] = enabled
+        if options:
+            body["options"] = camelize(options)
+        return self._t.call("PUT", self._base, json=body, parse=Record)
+
+    def enable(self, **options: Any) -> Record:
+        return self.configure(True, **options)
+
+    def disable(self) -> Record:
+        return self.configure(False)
+
+
+class PasskeysResource:
+    """Passkeys stored for a session, private keys included.
+
+    Binary fields (``credential_id``, ``private_key``, ``user_handle``, ``large_blob``) are
+    standard base64 as in CDP ``WebAuthn.Credential``; ``private_key`` is PKCS#8 DER.
+    """
+
+    def __init__(self, client: "_ClientBase", session_id: str) -> None:
+        self._t = client._transport
+        self._base = f"/sessions/{_q(session_id)}/passkeys"
+
+    def list(self, rp_id: Optional[str] = None, status: Optional[str] = None) -> List[Record]:
+        """All passkeys; ``status`` filters by ``active``, ``replaced`` or ``deleted_by_rp`` (comma list)."""
+        params: Dict[str, Any] = {}
+        if rp_id:
+            params["rpId"] = rp_id
+        if status:
+            params["status"] = status
+        return self._t.call(
+            "GET", self._base, params=params, parse=lambda d: [Record(p) for p in d.get("passkeys", [])]
+        )
+
+    def get(self, passkey_id: str) -> Record:
+        return self._t.call("GET", f"{self._base}/{_q(passkey_id)}", parse=lambda d: Record(d["passkey"]))
+
+    def import_(
+        self, credential: Union[Dict[str, Any], Record, Iterable[Union[Dict[str, Any], Record]]]
+    ) -> Union[Record, List[Record]]:
+        """Store one credential or a list as active, and load it into the running browser.
+
+        Accepts a passkey from another session's ``list()``/``get()``, a CDP ``WebAuthn.getCredentials``
+        item as is (camelCase), or snake_case keys. Re-importing a credential id overwrites it; an
+        older resident credential of the same account becomes ``replaced``.
+        A single credential returns one passkey, a list returns a list.
+        """
+        if isinstance(credential, (dict, Record)):
+            return self._t.call(
+                "POST", self._base, json=camelize(_plain(credential)), parse=lambda d: Record(d["passkey"])
+            )
+        items = [camelize(_plain(c)) for c in credential]
+        return self._t.call(
+            "POST", self._base, json={"passkeys": items}, parse=lambda d: [Record(p) for p in d.get("passkeys", [])]
+        )
+
+    def update(self, passkey_id: str, *, label: Optional[str] = None, sign_count: Optional[int] = None) -> Record:
+        body: Dict[str, Any] = {}
+        if label is not None:
+            body["label"] = label
+        if sign_count is not None:
+            body["signCount"] = sign_count
+        return self._t.call("PATCH", f"{self._base}/{_q(passkey_id)}", json=body, parse=lambda d: Record(d["passkey"]))
+
+    def delete(self, passkey_id: str) -> None:
+        return self._t.call("DELETE", f"{self._base}/{_q(passkey_id)}", parse=lambda _d: None)
+
+    def cursor(self) -> int:
+        """Sequence number of the latest event; pass it as ``after`` to :meth:`wait`."""
+        return self._t.call("GET", f"{self._base}/cursor", parse=lambda d: int(d.get("cursor", 0)))
+
+    def events(self, after: int = 0, limit: int = 200) -> List[Record]:
+        return self._t.call(
+            "GET",
+            f"{self._base}/events",
+            params={"after": after, "limit": limit},
+            parse=lambda d: [Record(e) for e in d.get("events", [])],
+        )
+
+    def expect(
+        self, kind: Optional[str] = "added", *, rp_id: Optional[str] = None, timeout: float = 60
+    ) -> "PasskeyExpectation":
+        """Wait for the event an action triggers: takes the cursor on enter, waits on exit.
+
+        ``with s.passkeys.expect("added", rp_id="example.com") as ev: page.click(...)``, then
+        ``ev.value.passkey``. Use ``async with`` for AsyncNya. Raises TimeoutError on exit.
+        """
+        return PasskeyExpectation(self, kind, rp_id, timeout)
+
+    def wait(
+        self,
+        kind: Optional[str] = "added",
+        *,
+        rp_id: Optional[str] = None,
+        after: Optional[int] = None,
+        timeout: float = 60,
+    ) -> Record:
+        """Block until the first event after ``after`` (events already stored count).
+
+        Without ``after`` only events from now on count; to catch the one a click triggers,
+        take ``after = s.passkeys.cursor()`` before clicking, or use :meth:`expect`.
+        ``kind`` is one of ``added``, ``asserted``, ``updated``, ``deleted``, ``replaced``,
+        ``imported``, ``removed`` (comma list), or None for any. Returns ``{event, passkey}``
+        where ``passkey`` carries the private key. Raises TimeoutError.
+        """
+        if self._t.is_async:
+            return self._wait_async(kind, rp_id, after, timeout)
+        if after is None:
+            after = self.cursor()
+        deadline = time.monotonic() + timeout
+        while True:
+            chunk = self._wait_chunk(deadline)
+            params = self._wait_params(kind, rp_id, after, chunk)
+            r = self._t.call("GET", f"{self._base}/wait", params=params, timeout=chunk + 15, parse=Record)
+            if not r.get("timedOut"):
+                return r
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"no passkey event within {timeout}s")
+
+    async def _wait_async(
+        self, kind: Optional[str], rp_id: Optional[str], after: Optional[int], timeout: float
+    ) -> Record:
+        if after is None:
+            after = await self.cursor()
+        deadline = time.monotonic() + timeout
+        while True:
+            chunk = self._wait_chunk(deadline)
+            params = self._wait_params(kind, rp_id, after, chunk)
+            r = await self._t.call("GET", f"{self._base}/wait", params=params, timeout=chunk + 15, parse=Record)
+            if not r.get("timedOut"):
+                return r
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"no passkey event within {timeout}s")
+
+    @staticmethod
+    def _wait_chunk(deadline: float) -> int:
+        # Short long-polls stay under reverse-proxy idle timeouts and the server's 300s cap.
+        return max(0, min(_WAIT_CHUNK_SECONDS, math.ceil(deadline - time.monotonic())))
+
+    @staticmethod
+    def _wait_params(kind: Optional[str], rp_id: Optional[str], after: int, chunk: int) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"after": after, "timeout": chunk}
+        if kind:
+            params["kind"] = kind
+        if rp_id:
+            params["rpId"] = rp_id
+        return params
+
+
+class PasskeyExpectation:
+    """Returned by :meth:`PasskeysResource.expect`; ``value`` is the ``{event, passkey}`` record."""
+
+    def __init__(self, resource: PasskeysResource, kind: Optional[str], rp_id: Optional[str], timeout: float) -> None:
+        self._resource = resource
+        self._kind = kind
+        self._rp_id = rp_id
+        self._timeout = timeout
+        self._after = 0
+        self._value: Optional[Record] = None
+
+    @property
+    def value(self) -> Record:
+        if self._value is None:
+            raise RuntimeError("the passkey event is available after the with block")
+        return self._value
+
+    def _wait(self) -> Any:
+        return self._resource.wait(self._kind, rp_id=self._rp_id, after=self._after, timeout=self._timeout)
+
+    def __enter__(self) -> "PasskeyExpectation":
+        self._after = self._resource.cursor()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        if exc_type is None:
+            self._value = self._wait()
+        return False
+
+    async def __aenter__(self) -> "PasskeyExpectation":
+        self._after = await self._resource.cursor()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        if exc_type is None:
+            self._value = await self._wait()
+        return False

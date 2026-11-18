@@ -10,3 +10,4 @@ nya/009-x11-display-registry.patch
 nya/010-x11-clipboard.patch
 nya/011-x11-gpu-present.patch
 nya/012-browser-windows.patch
+nya/013-webauthn-env-ownership.patch

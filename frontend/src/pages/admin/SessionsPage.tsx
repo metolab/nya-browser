@@ -8,6 +8,7 @@ import { SessionTree } from '../../components/SessionTree';
 import SessionFormDialog from '../../components/SessionFormDialog';
 import BatchSessionFormDialog, { type BatchSessionPatch } from '../../components/BatchSessionFormDialog';
 import { SessionPasswordsDialog } from '../../components/SessionPasswordsDialog';
+import { SessionPasskeysDialog } from '../../components/SessionPasskeysDialog';
 import { proxyTestLabel } from '../../components/ProxyFields';
 import { UserGrantList } from './GrantEditor';
 import { NONE_KEY, filterSessionsByGroup, groupSelectOptions } from '@/lib/groups';
@@ -79,6 +80,7 @@ function sessionFingerprintPayload(data: SessionFormValues) {
     }),
     homeUrl: data.homeUrl,
     idleTimeoutMinutes: data.idleTimeoutMinutes,
+    webauthn: { enabled: data.webauthnEnabled },
   };
 }
 
@@ -94,6 +96,7 @@ export default function SessionsPage() {
   const [batchTargets, setBatchTargets] = useState<Session[] | null>(null);
   const [edit, setEdit] = useState<Session | null>(null);
   const [passwords, setPasswords] = useState<Session | null>(null);
+  const [passkeys, setPasskeys] = useState<Session | null>(null);
   const [assign, setAssign] = useState<Session | null>(null);
   const [assignFolder, setAssignFolder] = useState<SessionGroup | null>(null);
   const [grantUserIds, setGrantUserIds] = useState<Set<string>>(new Set());
@@ -204,6 +207,7 @@ export default function SessionsPage() {
           onEditSession={setEdit}
           onDeleteSession={setPendingDelete}
           onViewPasswords={setPasswords}
+          onViewPasskeys={setPasskeys}
           onAssignSession={(s) => {
             setAssignFolder(null);
             setAssign(s);
@@ -259,6 +263,7 @@ export default function SessionsPage() {
         initialGeoAccuracy={cloneFrom?.fingerprint?.geo?.accuracy}
         initialHomeUrl={cloneFrom?.homeUrl}
         initialIdleTimeoutMinutes={cloneFrom?.idleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES}
+        initialWebauthnEnabled={cloneFrom?.webauthn?.enabled ?? false}
         onCancel={() => {
           setOpenCreate(false);
           setCloneFrom(null);
@@ -326,6 +331,7 @@ export default function SessionsPage() {
         initialGeoAccuracy={edit?.fingerprint?.geo?.accuracy}
         initialHomeUrl={edit?.homeUrl}
         initialIdleTimeoutMinutes={edit?.idleTimeoutMinutes ?? 0}
+        initialWebauthnEnabled={edit?.webauthn?.enabled ?? false}
         onCancel={() => setEdit(null)}
         onSubmit={async (data) => {
           if (!edit) return;
@@ -454,6 +460,7 @@ export default function SessionsPage() {
       </Dialog>
 
       <SessionPasswordsDialog session={passwords} onClose={() => setPasswords(null)} />
+      <SessionPasskeysDialog session={passkeys} onClose={() => setPasskeys(null)} />
 
       <AlertDialog open={Boolean(pendingDelete)} onOpenChange={(v: boolean) => !v && setPendingDelete(null)}>
         <AlertDialogContent>

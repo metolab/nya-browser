@@ -18,6 +18,9 @@ import {
   type SessionUpload,
   type SessionDownload,
   type UserPublic,
+  type Passkey,
+  type PasskeyEvent,
+  type WebAuthnConfig,
 } from '@nya/shared';
 import { withBase } from '../basePath';
 
@@ -238,6 +241,32 @@ export const api = {
     }),
   listSessionPasswords: (id: string) =>
     request<{ passwords: SessionPassword[] }>(`/api/sessions/${id}/passwords`),
+  getWebAuthn: (id: string) =>
+    request<{ webauthn: WebAuthnConfig; runtime: { attached: boolean; tabs: number; armedTabs: number } }>(
+      `/api/sessions/${id}/webauthn`,
+    ),
+  putWebAuthn: (id: string, body: { enabled?: boolean; options?: Partial<WebAuthnConfig['options']> }) =>
+    request<{ webauthn: WebAuthnConfig; runtime: { attached: boolean; tabs: number; armedTabs: number } }>(
+      `/api/sessions/${id}/webauthn`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  listPasskeys: (id: string) => request<{ passkeys: Passkey[]; cursor: number }>(`/api/sessions/${id}/passkeys`),
+  listPasskeyEvents: (id: string, after = 0, limit = 200) =>
+    request<{ events: PasskeyEvent[]; cursor: number }>(
+      `/api/sessions/${id}/passkeys/events?after=${after}&limit=${limit}`,
+    ),
+  importPasskeys: (id: string, passkeys: unknown[]) =>
+    request<{ passkeys: Passkey[] }>(`/api/sessions/${id}/passkeys`, {
+      method: 'POST',
+      body: JSON.stringify({ passkeys }),
+    }),
+  updatePasskey: (id: string, pid: string, body: { label?: string; signCount?: number }) =>
+    request<{ passkey: Passkey }>(`/api/sessions/${id}/passkeys/${pid}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deletePasskey: (id: string, pid: string) =>
+    request<{ ok: true }>(`/api/sessions/${id}/passkeys/${pid}`, { method: 'DELETE' }),
   createWindow: (id: string, payload?: { url?: string; takeover?: boolean }) =>
     request<{
       window: SessionWindow & { occupancyId?: string | null };

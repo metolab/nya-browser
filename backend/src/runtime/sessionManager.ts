@@ -12,7 +12,13 @@ import {
   sessionProxyTest,
 } from '../store.js';
 import { logChromeCrash } from './chromeCrashLog.js';
-import { hasChromeLifecycle, startChromeLifecycle, stopChromeLifecycle } from './chromeLifecycle.js';
+import {
+  hasChromeLifecycle,
+  refreshChromeLifecycleAutoAttach,
+  startChromeLifecycle,
+  stopChromeLifecycle,
+} from './chromeLifecycle.js';
+import { applyWebAuthnConfig, webauthnWantsPause } from './webauthn.js';
 import { snapshotSessionPasswords } from './sessionPasswords.js';
 import { checkSingboxProxy, startSingboxSidecar, stopSingboxSidecar } from './singbox.js';
 import {
@@ -360,7 +366,7 @@ async function watchChrome(runtime: SessionRuntime) {
       if (runtime.chrome) scheduleChromeRecover(runtime, 'watchdog');
       return;
     }
-    if (totalVncConnections(runtime.id) > 0 && !hasChromeLifecycle(runtime.id)) {
+    if ((totalVncConnections(runtime.id) > 0 || webauthnWantsPause(runtime.id)) && !hasChromeLifecycle(runtime.id)) {
       void startChromeLifecycle(runtime.id, runtime.cdpPort).catch(() => {});
     }
     await ensureAllChromeWindows(runtime);
@@ -583,6 +589,18 @@ export async function stopSession(sessionId: string) {
   await forceCleanupRuntime(runtime);
   releaseSlot(runtime.slot);
   return true;
+}
+
+/** Bring a stored WebAuthn config into the running browser, without a restart. */
+export async function applyWebAuthn(sessionId: string) {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime?.chrome) return;
+  if (!hasChromeLifecycle(sessionId)) {
+    await startChromeLifecycle(sessionId, runtime.cdpPort);
+    return;
+  }
+  refreshChromeLifecycleAutoAttach(sessionId);
+  await applyWebAuthnConfig(sessionId);
 }
 
 export async function restartBrowser(sessionId: string, { url }: { url?: string | null } = {}) {

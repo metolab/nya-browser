@@ -6,6 +6,12 @@ import WebSocket from 'ws';
 import { geoHasCoordinates } from '@nya/shared';
 import { getSession } from '../store.js';
 import { TAMPERMONKEY_ID, isTampermonkeyIntroUrl, resolveTampermonkeyDir } from './tampermonkey.js';
+import {
+  webauthnAttachBrowser,
+  webauthnDetachBrowser,
+  webauthnWantsPause,
+  type SessionWebAuthn,
+} from './webauthn.js';
 
 type TargetInfo = {
   targetId?: string;
@@ -16,11 +22,14 @@ type TargetInfo = {
 type CdpMessage = {
   id?: number;
   method?: string;
+  sessionId?: string;
   error?: { message?: string };
   params?: {
     sessionId?: string;
     targetInfo?: TargetInfo;
     targetId?: string;
+    waitingForDebugger?: boolean;
+    [key: string]: unknown;
   };
   result?: {
     targetInfos?: TargetInfo[];
@@ -40,8 +49,12 @@ type LifecycleState = {
   ws: WebSocket;
   nextId: number;
   sessions: Set<string>;
+  /** Page target id -> CDP sessions attached to it. */
+  pageTargets: Map<string, Set<string>>;
+  sessionTargets: Map<string, string>;
   pending: Map<number, PendingCall>;
   closed: boolean;
+  webauthn: SessionWebAuthn;
 };
 
 const attached = new Map<string, LifecycleState>();
@@ -220,7 +233,7 @@ function maybeCloseIntro(state: LifecycleState, info?: TargetInfo) {
 }
 
 function attachPage(state: LifecycleState, targetId?: string) {
-  if (!targetId) return;
+  if (!targetId || state.pageTargets.has(targetId)) return;
   send(state, {
     method: 'Target.attachToTarget',
     params: { targetId, flatten: true },
@@ -293,25 +306,28 @@ async function enableTampermonkeyUserScripts(state: LifecycleState) {
 function connectBrowser(sessionId: string, url: string) {
   return new Promise<void>((resolve) => {
     const ws = new WebSocket(url);
-    const state: LifecycleState = {
+    const state = {
       ws,
       nextId: 0,
       sessions: new Set(),
+      pageTargets: new Map(),
+      sessionTargets: new Map(),
       pending: new Map(),
       closed: false,
-    };
+    } as unknown as LifecycleState;
+    state.webauthn = webauthnAttachBrowser(sessionId, {
+      call: (method, params, cdpSessionId, timeoutMs) => call(state, method, params, cdpSessionId, timeoutMs),
+    });
     attached.set(sessionId, state);
     const done = () => resolve();
     ws.once('open', () => {
-      send(state, {
-        method: 'Target.setAutoAttach',
-        params: { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
-      });
+      setAutoAttach(state, webauthnWantsPause(sessionId));
       send(state, {
         method: 'Target.setDiscoverTargets',
         params: { discover: true },
       });
-      send(state, { method: 'Target.getTargets' });
+      // Auto-attach covers existing pages; this only catches ones it missed.
+      setTimeout(() => send(state, { method: 'Target.getTargets' }), 1000);
       setTimeout(() => {
         void enableTampermonkeyUserScripts(state).catch((err) => {
           console.warn(`[chrome-lifecycle] session=${sessionId} tampermonkey:`, err.message);
@@ -327,26 +343,53 @@ function connectBrowser(sessionId: string, url: string) {
         return;
       }
       settle(state, msg);
+      if (msg.sessionId && msg.method?.startsWith('WebAuthn.')) {
+        state.webauthn.event(msg.sessionId, msg.method, msg.params || {});
+        return;
+      }
       if (msg.method === 'Target.attachedToTarget') {
         const session = msg.params?.sessionId;
         const info = msg.params?.targetInfo;
-        if (maybeCloseIntro(state, info)) return;
-        if (!session || !isPageTarget(info)) return;
+        const resume = () => {
+          if (session && msg.params?.waitingForDebugger) {
+            send(state, { sessionId: session, method: 'Runtime.runIfWaitingForDebugger' });
+          }
+        };
+        if (maybeCloseIntro(state, info) || !session || !isPageTarget(info) || !info?.targetId) {
+          resume();
+          return;
+        }
         state.sessions.add(session);
+        state.sessionTargets.set(session, info.targetId);
+        let targetSessions = state.pageTargets.get(info.targetId);
+        if (!targetSessions) state.pageTargets.set(info.targetId, (targetSessions = new Set()));
+        targetSessions.add(session);
         activateSession(state, session, sessionId, info?.url);
+        void state.webauthn.pageAttached(info.targetId, session, info.url || '').finally(resume);
         return;
       }
       if (msg.method === 'Target.detachedFromTarget') {
-        if (msg.params?.sessionId) state.sessions.delete(msg.params.sessionId);
+        const session = msg.params?.sessionId;
+        if (session) {
+          state.sessions.delete(session);
+          const targetId = state.sessionTargets.get(session);
+          state.sessionTargets.delete(session);
+          const targetSessions = targetId ? state.pageTargets.get(targetId) : undefined;
+          targetSessions?.delete(session);
+          if (targetId && targetSessions && !targetSessions.size) state.pageTargets.delete(targetId);
+          state.webauthn.detached(session);
+        }
         return;
       }
       if (msg.method === 'Target.targetCreated' || msg.method === 'Target.targetInfoChanged') {
         const info = msg.params?.targetInfo;
         if (maybeCloseIntro(state, info)) return;
         if (msg.method === 'Target.targetCreated' && isPageTarget(info)) {
-          attachPage(state, info?.targetId);
+          // Auto-attach normally gets there first; this only catches a page it missed.
+          setTimeout(() => attachPage(state, info?.targetId), 1000);
         }
         if (msg.method === 'Target.targetInfoChanged' && isPageTarget(info)) {
+          if (info?.targetId) state.webauthn.urlChanged(info.targetId, info.url || '');
           for (const cdpSession of state.sessions) {
             applyGeolocation(state, cdpSession, sessionId, info?.url);
           }
@@ -367,9 +410,24 @@ function connectBrowser(sessionId: string, url: string) {
     });
     ws.on('close', () => {
       rejectAll(state, new Error('cdp closed'));
+      webauthnDetachBrowser(sessionId, state.webauthn);
       if (attached.get(sessionId) === state) attached.delete(sessionId);
     });
   });
+}
+
+function setAutoAttach(state: LifecycleState, pause: boolean) {
+  // Pausing new tabs lets the virtual authenticator exist before the page's first script runs.
+  send(state, {
+    method: 'Target.setAutoAttach',
+    params: { autoAttach: true, flatten: true, waitForDebuggerOnStart: pause },
+  });
+}
+
+/** Re-read whether new tabs should wait for the authenticator. */
+export function refreshChromeLifecycleAutoAttach(sessionId: string) {
+  const state = attached.get(sessionId);
+  if (state && !state.closed) setAutoAttach(state, webauthnWantsPause(sessionId));
 }
 
 export function stopChromeLifecycle(sessionId: string) {
@@ -377,6 +435,7 @@ export function stopChromeLifecycle(sessionId: string) {
   if (!state) return;
   state.closed = true;
   attached.delete(sessionId);
+  webauthnDetachBrowser(sessionId, state.webauthn);
   rejectAll(state, new Error('cdp closed'));
   try {
     state.ws.close();

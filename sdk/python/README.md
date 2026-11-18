@@ -145,6 +145,39 @@ s.windows.list()
 
 浏览器里的下载会落到会话文件夹，用 `s.files` 取回；Playwright 的 `download.save_as()` 在远程连接下不可用。网页上传文件请用 `set_input_files` 的内存文件形式（`{"name", "mimeType", "buffer"}`）。
 
+## 通行密钥（Passkey）
+
+服务端给会话的每个标签页挂一个虚拟平台认证器，网页创建的通行密钥会立刻存进服务端（包括私钥）。客户端断开、浏览器重启都不会丢失；人在网页 VNC 里手动登录也能直接用。
+
+```python
+s = nya.sessions.create("acct-1", webauthn={"enabled": True})   # 或对已有会话 s.webauthn.enable()
+# 默认 ctap2_1 / internal / 可发现凭据 / UV；其他选项同 CDP VirtualAuthenticatorOptions（snake_case）
+
+# 注册：在 with 块里触发，退出时等到对应事件
+with s.passkeys.expect("added", rp_id="aliyun.com") as ev:
+    page.click("text=创建通行密钥")
+cred = ev.value.passkey.to_dict()     # rpId、credentialId、userHandle、privateKey(PKCS#8)、signCount……
+
+# 登录：凭据已在会话里，直接操作页面；需要确认时等 asserted
+with s.passkeys.expect("asserted", rp_id="aliyun.com"):
+    page.click("text=通行密钥登录")
+
+# 迁移到另一个会话（或从自己的库恢复）
+other.passkeys.import_(cred)          # 也接受 list()/get() 的结果、CDP WebAuthn.getCredentials 的条目
+
+s.passkeys.list(status="active")      # 全部凭据，含私钥；不传 status 时包含 replaced / deleted_by_rp
+s.passkeys.delete(cred["id"])
+s.passkeys.events(after=0)            # added / asserted / updated / deleted / replaced / imported / removed
+```
+
+- 不用 `expect` 时：先 `cur = s.passkeys.cursor()` 再操作页面，然后 `s.passkeys.wait("added", after=cur)`。`wait` 返回游标之后第一条匹配的事件，已经发生的也算；不传 `after` 则只等之后的新事件。超时抛 `TimeoutError`。
+- 二进制字段都是标准 base64，和 CDP 一致。只有 `status` 为 `active` 的凭据会加载到浏览器；`replaced`（同一账号重新注册或导入了新凭据）和 `deleted_by_rp`（网站通过 Signal API 删除）留在库里，重新 `import_` 即可恢复成 `active`。
+- `sign_count` 由服务端维护，所有标签页共用一个计数；同一凭据导入多个会话后，各自计数，网站可能认为计数回退。
+- 开启后，CDP 连接里的 `WebAuthn.enable` / `disable` 会被忽略，其他 `WebAuthn.*` 命令会返回错误，请改用上面的接口。
+- 开启后页面里 `isUserVerifyingPlatformAuthenticatorAvailable()` 返回 true，属于指纹面变化，所以默认关闭。开启前已加载的页面需要刷新，网站才会显示通行密钥入口。开关需要管理员权限，凭据读写只需要会话访问权限。
+- 不支持 `has_prf` / `has_cred_blob`：这两类密钥 CDP 无法导出，标签页重建认证器后会变。
+- 克隆会话不复制凭据；导出/导入会话会带上凭据。
+
 ## 行为说明
 
 - 一个会话就是一个 Chrome，CDP 能看到这个会话的所有窗口，人和 Agent 可以同时操作。

@@ -43,6 +43,7 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
     chromeLanguage: session.chromeLanguage,
     homeUrl: session.homeUrl,
     idleTimeoutMinutes: session.idleTimeoutMinutes,
+    webauthn: session.webauthn,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     runtime,

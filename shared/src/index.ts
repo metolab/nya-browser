@@ -16,3 +16,4 @@ export * from './region.js';
 export * from './clipboardText.js';
 export * from './proxy.js';
 export * from './singboxConfig.js';
+export * from './webauthn.js';

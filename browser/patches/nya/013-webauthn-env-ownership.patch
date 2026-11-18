@@ -1,0 +1,202 @@
+diff --git a/content/browser/devtools/protocol/webauthn_handler.cc b/content/browser/devtools/protocol/webauthn_handler.cc
+index 6a047aa..dfd0a8a 100644
+--- a/content/browser/devtools/protocol/webauthn_handler.cc
++++ b/content/browser/devtools/protocol/webauthn_handler.cc
+@@ -18,6 +18,7 @@
+ #include "base/numerics/safe_conversions.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "content/browser/devtools/protocol/web_authn.h"
++#include "content/browser/renderer_host/frame_tree_node.h"
+ #include "content/browser/renderer_host/render_frame_host_impl.h"
+ #include "content/browser/webauth/authenticator_environment.h"
+ #include "content/browser/webauth/virtual_authenticator.h"
+@@ -237,20 +238,45 @@ Response WebAuthnHandler::Enable(std::optional<bool> enable_ui) {
+   if (!frame_host_)
+     return Response::ServerError(kDevToolsNotAttached);
+ 
++  FrameTreeNode* node = frame_host_->frame_tree_node();
++  if (enabled_node_id_ == node->frame_tree_node_id()) {
++    return Response::Success();
++  }
++  ReleaseEnvironment();
+   AuthenticatorEnvironment::GetInstance()->EnableVirtualAuthenticatorFor(
+-      frame_host_->frame_tree_node(),
+-      enable_ui.value_or(/*default_value=*/false));
++      node, enable_ui.value_or(/*default_value=*/false));
++  enabled_node_id_ = node->frame_tree_node_id();
+   return Response::Success();
+ }
+ 
+ Response WebAuthnHandler::Disable() {
+-  if (frame_host_) {
+-    AuthenticatorEnvironment::GetInstance()->DisableVirtualAuthenticatorFor(
+-        frame_host_->frame_tree_node());
+-  }
++  // Runs for every domain when a session detaches; only undo what this
++  // session set up, so other clients keep their authenticators.
++  ReleaseEnvironment();
+   return Response::Success();
+ }
+ 
++void WebAuthnHandler::ReleaseEnvironment() {
++  if (!enabled_node_id_) {
++    return;
++  }
++  FrameTreeNode* node = FrameTreeNode::GloballyFindByID(enabled_node_id_);
++  enabled_node_id_ = FrameTreeNodeId();
++  base::flat_set<std::string> owned = std::move(owned_authenticators_);
++  owned_authenticators_.clear();
++  if (!node) {
++    return;
++  }
++  auto* environment = AuthenticatorEnvironment::GetInstance();
++  if (VirtualAuthenticatorManagerImpl* manager =
++          environment->MaybeGetVirtualAuthenticatorManager(node)) {
++    for (const std::string& id : owned) {
++      manager->RemoveAuthenticator(id);
++    }
++  }
++  environment->ReleaseVirtualAuthenticatorFor(node);
++}
++
+ Response WebAuthnHandler::AddVirtualAuthenticator(
+     std::unique_ptr<WebAuthn::VirtualAuthenticatorOptions> options,
+     String* out_authenticator_id) {
+@@ -355,6 +381,7 @@ Response WebAuthnHandler::AddVirtualAuthenticator(
+   authenticator->set_user_verified(
+       options->GetIsUserVerified(/*defaultValue=*/false));
+   observations_.AddObservation(authenticator);
++  owned_authenticators_.insert(authenticator->unique_id());
+ 
+   *out_authenticator_id = authenticator->unique_id();
+   return Response::Success();
+@@ -371,6 +398,7 @@ Response WebAuthnHandler::RemoveVirtualAuthenticator(
+   if (!authenticator_manager->RemoveAuthenticator(authenticator_id))
+     return Response::InvalidParams(kAuthenticatorNotFound);
+ 
++  owned_authenticators_.erase(authenticator_id);
+   return Response::Success();
+ }
+ 
+diff --git a/content/browser/devtools/protocol/webauthn_handler.h b/content/browser/devtools/protocol/webauthn_handler.h
+index 07b1818..606e2f9 100644
+--- a/content/browser/devtools/protocol/webauthn_handler.h
++++ b/content/browser/devtools/protocol/webauthn_handler.h
+@@ -6,13 +6,16 @@
+ #define CONTENT_BROWSER_DEVTOOLS_PROTOCOL_WEBAUTHN_HANDLER_H_
+ 
+ #include <memory>
++#include <string>
+ 
++#include "base/containers/flat_set.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/scoped_multi_source_observation.h"
+ #include "content/browser/devtools/protocol/devtools_domain_handler.h"
+ #include "content/browser/devtools/protocol/web_authn.h"
+ #include "content/browser/webauth/virtual_authenticator.h"
+ #include "content/common/content_export.h"
++#include "content/public/browser/frame_tree_node_id.h"
+ #include "device/fido/virtual_fido_device.h"
+ 
+ namespace content::protocol {
+@@ -73,6 +76,10 @@ class WebAuthnHandler : public DevToolsDomainHandler,
+   Response FindAuthenticator(const String& id,
+                              VirtualAuthenticator** out_authenticator);
+ 
++  // Drops the authenticators this session added and its share of the
++  // environment. Other sessions' authenticators on the same frame stay.
++  void ReleaseEnvironment();
++
+   // VirtualAuthenticator::Observer:
+   void OnCredentialCreated(
+       VirtualAuthenticator* authenticator,
+@@ -89,6 +96,9 @@ class WebAuthnHandler : public DevToolsDomainHandler,
+       VirtualAuthenticator* authenticator) override;
+ 
+   raw_ptr<RenderFrameHostImpl> frame_host_ = nullptr;
++  // Frame this session enabled the environment for; null when it has not.
++  FrameTreeNodeId enabled_node_id_;
++  base::flat_set<std::string> owned_authenticators_;
+   std::unique_ptr<WebAuthn::Frontend> frontend_;
+   base::ScopedMultiSourceObservation<VirtualAuthenticator,
+                                      VirtualAuthenticator::Observer>
+diff --git a/content/browser/webauth/authenticator_environment.cc b/content/browser/webauth/authenticator_environment.cc
+index 6e2f4a4..596d844 100644
+--- a/content/browser/webauth/authenticator_environment.cc
++++ b/content/browser/webauth/authenticator_environment.cc
+@@ -47,6 +47,7 @@ void AuthenticatorEnvironment::Reset() {
+     pair.first->RemoveObserver(this);
+   }
+   virtual_authenticator_managers_.clear();
++  virtual_authenticator_enablers_.clear();
+ 
+   replaced_discovery_factory_.reset();
+ }
+@@ -54,6 +55,7 @@ void AuthenticatorEnvironment::Reset() {
+ void AuthenticatorEnvironment::EnableVirtualAuthenticatorFor(
+     FrameTreeNode* node,
+     bool enable_ui) {
++  ++virtual_authenticator_enablers_[node];
+   // Do not create a new virtual authenticator if there is one already defined
+   // for the |node|.
+   if (virtual_authenticator_managers_.contains(node)) {
+@@ -68,8 +70,18 @@ void AuthenticatorEnvironment::EnableVirtualAuthenticatorFor(
+       std::move(virtual_authenticator_manager);
+ }
+ 
++void AuthenticatorEnvironment::ReleaseVirtualAuthenticatorFor(
++    FrameTreeNode* node) {
++  auto it = virtual_authenticator_enablers_.find(node);
++  if (it != virtual_authenticator_enablers_.end() && --it->second > 0) {
++    return;
++  }
++  DisableVirtualAuthenticatorFor(node);
++}
++
+ void AuthenticatorEnvironment::DisableVirtualAuthenticatorFor(
+     FrameTreeNode* node) {
++  virtual_authenticator_enablers_.erase(node);
+   if (!virtual_authenticator_managers_.contains(node)) {
+     return;
+   }
+diff --git a/content/browser/webauth/authenticator_environment.h b/content/browser/webauth/authenticator_environment.h
+index be75824..c8760a3 100644
+--- a/content/browser/webauth/authenticator_environment.h
++++ b/content/browser/webauth/authenticator_environment.h
+@@ -36,14 +36,21 @@ class CONTENT_EXPORT AuthenticatorEnvironment : public FrameTreeNode::Observer {
+   void Reset();
+ 
+   // Enables the scoped virtual authenticator environment for the |node| and its
+-  // descendants.
+-  // Does not have any effect if the |node| already has the virtual environment
+-  // enabled.
++  // descendants on behalf of one DevTools session. Calls are counted: the
++  // environment stays until every enabler calls
++  // ReleaseVirtualAuthenticatorFor(), so one client detaching does not tear
++  // down authenticators another client still uses.
++  // Does not create a new environment if the |node| already has one.
+   void EnableVirtualAuthenticatorFor(FrameTreeNode* node, bool enable_ui);
+ 
++  // Undoes one EnableVirtualAuthenticatorFor(); the last release disables the
++  // environment.
++  void ReleaseVirtualAuthenticatorFor(FrameTreeNode* node);
++
+   // Disables the scoped virtual authenticator environment for this |node|,
+-  // resetting the state. If the environment is set on one of the |node|'s
+-  // parents instead, this won't have any effect.
++  // resetting the state regardless of how many sessions enabled it. If the
++  // environment is set on one of the |node|'s parents instead, this won't have
++  // any effect.
+   void DisableVirtualAuthenticatorFor(FrameTreeNode* node);
+ 
+   // Returns whether the virtual authenticator environment is enabled for
+@@ -80,6 +87,9 @@ class CONTENT_EXPORT AuthenticatorEnvironment : public FrameTreeNode::Observer {
+ 
+   std::map<FrameTreeNode*, std::unique_ptr<VirtualAuthenticatorManagerImpl>>
+       virtual_authenticator_managers_;
++
++  // Number of outstanding EnableVirtualAuthenticatorFor() calls per node.
++  std::map<FrameTreeNode*, int> virtual_authenticator_enablers_;
+ };
+ 
+ }  // namespace content

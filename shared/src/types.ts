@@ -155,10 +155,87 @@ export interface Session {
   chromeLanguage: string;
   homeUrl: string;
   idleTimeoutMinutes: number;
+  webauthn: WebAuthnConfig;
   createdAt: string;
   updatedAt: string;
   runtime: RuntimeInfo;
   grants?: AccessGrant[];
+}
+
+export type WebAuthnProtocol = 'ctap2' | 'u2f';
+export type WebAuthnCtap2Version = 'ctap2_0' | 'ctap2_1' | 'ctap2_2';
+export type WebAuthnTransport = 'internal' | 'usb' | 'nfc' | 'ble' | 'cable';
+
+/** CDP `WebAuthn.VirtualAuthenticatorOptions` the server registers on every tab. */
+export interface WebAuthnOptions {
+  protocol: WebAuthnProtocol;
+  ctap2Version: WebAuthnCtap2Version;
+  transport: WebAuthnTransport;
+  hasResidentKey: boolean;
+  hasUserVerification: boolean;
+  isUserVerified: boolean;
+  automaticPresenceSimulation: boolean;
+  hasLargeBlob: boolean;
+  hasCredBlob: boolean;
+  hasMinPinLength: boolean;
+  hasPrf: boolean;
+  defaultBackupEligibility: boolean;
+  defaultBackupState: boolean;
+}
+
+export interface WebAuthnConfig {
+  enabled: boolean;
+  options: WebAuthnOptions;
+}
+
+/**
+ * `active` credentials are loaded into the browser. `replaced`: the site registered
+ * the same user again. `deleted_by_rp`: the site removed it through the Signal API.
+ */
+export type PasskeyStatus = 'active' | 'replaced' | 'deleted_by_rp';
+
+/** A stored credential. Binary fields are standard base64, as in CDP `WebAuthn.Credential`. */
+export interface Passkey {
+  id: string;
+  sessionId: string;
+  rpId: string;
+  credentialId: string;
+  isResidentCredential: boolean;
+  userHandle: string | null;
+  userName: string;
+  userDisplayName: string;
+  /** PKCS#8 DER. */
+  privateKey: string;
+  /** -1: no signature counter; assertions then report 0. */
+  signCount: number;
+  backupEligibility: boolean | null;
+  backupState: boolean | null;
+  largeBlob: string | null;
+  status: PasskeyStatus;
+  label: string;
+  /** Page origin the credential was created on; empty for imports. */
+  origin: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+}
+
+export type PasskeyEventKind = 'added' | 'asserted' | 'updated' | 'deleted' | 'replaced' | 'imported' | 'removed';
+
+export interface PasskeyEvent {
+  /** Monotonic per server; use it as the `after` cursor. */
+  seq: number;
+  sessionId: string;
+  at: string;
+  kind: PasskeyEventKind;
+  passkeyId: string | null;
+  rpId: string;
+  credentialId: string;
+  signCount: number | null;
+  /** Tab URL for browser events. */
+  url: string;
+  /** `browser` for events raised by a page, otherwise the username. */
+  actor: string;
 }
 
 export interface FileEntry {
@@ -295,6 +372,8 @@ export interface BackupManifest {
   };
   customProxy?: SessionProxy | null;
   passwords?: SessionPassword[];
+  webauthn?: WebAuthnConfig;
+  passkeys?: Passkey[];
 }
 
 export interface LiveSession {

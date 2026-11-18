@@ -50,4 +50,8 @@ export const AUDIT_ACTIONS = {
   apiKeyDelete: 'apikey.delete',
   backupExport: 'backup.export',
   backupImport: 'backup.import',
+  webauthnUpdate: 'session.webauthn',
+  passkeyImport: 'passkey.import',
+  passkeyUpdate: 'passkey.update',
+  passkeyDelete: 'passkey.delete',
 } as const;

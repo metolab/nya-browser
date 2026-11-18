@@ -80,6 +80,41 @@ const STATEMENTS = [
     expires_at INTEGER
   )`,
   `CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)`,
+  `CREATE TABLE IF NOT EXISTS session_passkeys (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    rp_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    is_resident INTEGER NOT NULL DEFAULT 0,
+    user_handle TEXT,
+    user_name TEXT NOT NULL DEFAULT '',
+    user_display_name TEXT NOT NULL DEFAULT '',
+    private_key TEXT NOT NULL,
+    sign_count INTEGER NOT NULL DEFAULT 0,
+    backup_eligibility INTEGER,
+    backup_state INTEGER,
+    large_blob TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    label TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_used_at TEXT
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_passkeys_cred ON session_passkeys(session_id, credential_id)`,
+  `CREATE TABLE IF NOT EXISTS passkey_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    passkey_id TEXT,
+    rp_id TEXT NOT NULL DEFAULT '',
+    credential_id TEXT NOT NULL DEFAULT '',
+    sign_count INTEGER,
+    url TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_passkey_events_session ON passkey_events(session_id, seq)`,
 ];
 
 function tableColumns(table: string) {
@@ -106,6 +141,7 @@ export function migrate() {
     ensureColumn('sessions', 'notepad', "TEXT NOT NULL DEFAULT ''");
     ensureColumn('access_grants', 'allow_notepad', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn('sessions', 'custom_proxy', 'TEXT');
+    ensureColumn('sessions', 'webauthn', "TEXT NOT NULL DEFAULT '{}'");
     sqlite.exec('COMMIT');
   } catch (err) {
     sqlite.exec('ROLLBACK');

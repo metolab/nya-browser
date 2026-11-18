@@ -37,6 +37,7 @@ export const sessions = sqliteTable('sessions', {
   homeUrl: text('home_url').notNull(),
   idleTimeoutMinutes: integer('idle_timeout_minutes').notNull().default(0),
   fingerprint: text('fingerprint').notNull(),
+  webauthn: text('webauthn').notNull().default('{}'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -83,4 +84,39 @@ export const auditLogs = sqliteTable('audit_logs', {
   ip: text('ip'),
   success: integer('success').notNull(),
   detail: text('detail'),
+});
+
+export const sessionPasskeys = sqliteTable('session_passkeys', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  rpId: text('rp_id').notNull(),
+  credentialId: text('credential_id').notNull(),
+  isResident: integer('is_resident').notNull(),
+  userHandle: text('user_handle'),
+  userName: text('user_name').notNull(),
+  userDisplayName: text('user_display_name').notNull(),
+  privateKey: text('private_key').notNull(),
+  signCount: integer('sign_count').notNull(),
+  backupEligibility: integer('backup_eligibility'),
+  backupState: integer('backup_state'),
+  largeBlob: text('large_blob'),
+  status: text('status').notNull(),
+  label: text('label').notNull(),
+  origin: text('origin').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  lastUsedAt: text('last_used_at'),
+});
+
+export const passkeyEvents = sqliteTable('passkey_events', {
+  seq: integer('seq').primaryKey({ autoIncrement: true }),
+  sessionId: text('session_id').notNull(),
+  at: text('at').notNull(),
+  kind: text('kind').notNull(),
+  passkeyId: text('passkey_id'),
+  rpId: text('rp_id').notNull(),
+  credentialId: text('credential_id').notNull(),
+  signCount: integer('sign_count'),
+  url: text('url').notNull(),
+  actor: text('actor').notNull(),
 });

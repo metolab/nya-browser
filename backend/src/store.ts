@@ -9,6 +9,7 @@ import {
   emptyProxyExtra,
   isProxyType,
   normalizeChromeLanguage,
+  normalizeWebAuthnConfig,
   normalizeProxyExtra,
   normalizeTimezone,
   parseProxyUri,
@@ -21,12 +22,15 @@ import {
   type ProxyTestResult,
   type SessionGroup,
   type SessionProxy,
+  type WebAuthnConfig,
 } from '@nya/shared';
 import { DATA_DIR } from './config.js';
 import { db } from './db/client.js';
 import {
   proxies as proxiesTable,
   accessGrants,
+  passkeyEvents,
+  sessionPasskeys,
   sessionGroups,
   sessions as sessionsTable,
   users as usersTable,
@@ -540,9 +544,26 @@ export type SessionRecord = {
   chromeLanguage: string;
   homeUrl: string;
   idleTimeoutMinutes: number;
+  webauthn: WebAuthnConfig;
   createdAt: string;
   updatedAt: string;
 };
+
+function parseWebAuthn(raw: string | null | undefined): WebAuthnConfig {
+  try {
+    return normalizeWebAuthnConfig(JSON.parse(raw || '{}'));
+  } catch {
+    return normalizeWebAuthnConfig({});
+  }
+}
+
+function mergeWebAuthn(current: WebAuthnConfig, patch: unknown): WebAuthnConfig {
+  const obj = patch && typeof patch === 'object' ? (patch as Partial<WebAuthnConfig>) : {};
+  return normalizeWebAuthnConfig({
+    enabled: obj.enabled ?? current.enabled,
+    options: { ...current.options, ...(obj.options || {}) },
+  });
+}
 
 function hydrateSession(row: typeof sessionsTable.$inferSelect): SessionRecord {
   const customProxy = parseCustomProxy(row.customProxy);
@@ -560,6 +581,7 @@ function hydrateSession(row: typeof sessionsTable.$inferSelect): SessionRecord {
     chromeLanguage: sessionChromeLanguage(row.chromeLanguage),
     homeUrl: normalizeHomeUrl(row.homeUrl),
     idleTimeoutMinutes: normalizeIdleTimeoutMinutes(row.idleTimeoutMinutes),
+    webauthn: parseWebAuthn(row.webauthn),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -593,6 +615,7 @@ export function createSession(input: {
   homeUrl?: string;
   idleTimeoutMinutes?: number;
   fingerprint?: FingerprintConfig;
+  webauthn?: unknown;
   id?: string;
 }): SessionRecord {
   const all = listSessions();
@@ -631,6 +654,7 @@ export function createSession(input: {
     chromeLanguage: sessionChromeLanguage(input.chromeLanguage),
     homeUrl: normalizeHomeUrl(input.homeUrl),
     idleTimeoutMinutes: normalizeIdleTimeoutMinutes(input.idleTimeoutMinutes),
+    webauthn: mergeWebAuthn(normalizeWebAuthnConfig({}), input.webauthn),
     createdAt: now,
     updatedAt: now,
   };
@@ -649,6 +673,7 @@ export function createSession(input: {
       homeUrl: session.homeUrl,
       idleTimeoutMinutes: session.idleTimeoutMinutes,
       fingerprint: JSON.stringify(session.fingerprint),
+      webauthn: JSON.stringify(session.webauthn),
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
     } as typeof sessionsTable.$inferInsert)
@@ -678,6 +703,7 @@ export function updateSession(
     homeUrl: string;
     idleTimeoutMinutes: number;
     fingerprint: FingerprintConfig;
+    webauthn: unknown;
   }>,
 ): SessionRecord | null {
   const current = getSession(id);
@@ -730,6 +756,9 @@ export function updateSession(
             patch.deviceMemory !== undefined
           ? mergeFingerprintPatch(current.fingerprint, patch)
           : current.fingerprint,
+    ),
+    webauthn: JSON.stringify(
+      patch.webauthn !== undefined ? mergeWebAuthn(current.webauthn, patch.webauthn) : current.webauthn,
     ),
     updatedAt: new Date().toISOString(),
   };
@@ -793,6 +822,8 @@ export function deleteSession(id: string) {
     .where(and(eq(accessGrants.kind, 'session'), eq(accessGrants.targetId, id)))
     .run();
   db.delete(sessionsTable).where(eq(sessionsTable.id, id)).run();
+  db.delete(sessionPasskeys).where(eq(sessionPasskeys.sessionId, id)).run();
+  db.delete(passkeyEvents).where(eq(passkeyEvents.sessionId, id)).run();
   fs.rmSync(sessionDir(id), { recursive: true, force: true });
   return true;
 }

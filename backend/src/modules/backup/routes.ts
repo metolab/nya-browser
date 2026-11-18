@@ -22,6 +22,7 @@ import {
   snapshotSessionPasswords,
   writePasswordOverlay,
 } from '../../runtime/sessionPasswords.js';
+import { listPasskeys, restorePasskeys } from '../passkeys/store.js';
 
 fs.mkdirSync(path.join(os.tmpdir(), 'nya-import'), { recursive: true });
 
@@ -103,6 +104,8 @@ backupRouter.get(
       },
       customProxy: session.customProxy,
       passwords,
+      webauthn: session.webauthn,
+      passkeys: listPasskeys(session.id),
     };
     const home = sessionDir(session.id);
     const manifestPath = path.join(home, 'manifest.json');
@@ -195,6 +198,7 @@ backupRouter.post(
       homeUrl: manifest.homeUrl,
       idleTimeoutMinutes: manifest.idleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES,
       fingerprint: manifest.fingerprint,
+      webauthn: manifest.webauthn,
     };
     let session;
     try {
@@ -218,6 +222,7 @@ backupRouter.post(
     } else if (manifest.passwords?.length) {
       writePasswordOverlay(session.id, manifest.passwords);
     }
+    if (manifest.passkeys?.length) restorePasskeys(session.id, manifest.passkeys);
     fs.rmSync(tmp, { recursive: true, force: true });
     try {
       fs.unlinkSync(file.path);

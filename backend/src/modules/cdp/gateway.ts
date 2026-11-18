@@ -9,6 +9,7 @@ import { writeAudit } from '../audit/service.js';
 import { downloadsDir, getSession, userCanAccessSession } from '../../store.js';
 import { cdpClientCount, getRuntime, registerCdpClient } from '../../runtime/sessionManager.js';
 import { TARGET_ID_RE, browserVersion, sessionCdpPort } from './upstream.js';
+import { nudgeWebAuthn } from '../../runtime/webauthn.js';
 
 const MAX_PAYLOAD = 256 * 1024 * 1024;
 const MAX_CLIENTS_PER_SESSION = 8;
@@ -63,11 +64,14 @@ function clientIp(req: IncomingMessage) {
 
 /**
  * Keep remote agents from tearing down or redirecting the shared session:
- * Browser.close only drops this client, crash commands are refused, and
- * download behavior always points at the session files directory.
+ * Browser.close only drops this client, crash commands are refused, download
+ * behavior always points at the session files directory, and WebAuthn stays
+ * with the server while it holds the session's passkeys.
  */
 function filterCommand(raw: string, ctx: BridgeContext): Filtered {
-  if (!raw.includes('Browser.') && !raw.includes('setDownloadBehavior')) return { forward: raw };
+  if (!raw.includes('Browser.') && !raw.includes('setDownloadBehavior') && !raw.includes('WebAuthn.')) {
+    return { forward: raw };
+  }
   let msg: { id?: number; sessionId?: string; method?: string; params?: Record<string, unknown> };
   try {
     msg = JSON.parse(raw);
@@ -79,6 +83,17 @@ function filterCommand(raw: string, ctx: BridgeContext): Filtered {
     ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
     ...body,
   });
+  if (msg.method?.startsWith('WebAuthn.') && getSession(ctx.sessionId)?.webauthn.enabled) {
+    if (msg.method === 'WebAuthn.enable' || msg.method === 'WebAuthn.disable') return { reply: ack({ result: {} }) };
+    return {
+      reply: ack({
+        error: {
+          code: -32000,
+          message: `WebAuthn is managed by nya-browser for this session; use /api/sessions/${ctx.sessionId}/passkeys`,
+        },
+      }),
+    };
+  }
   switch (msg.method) {
     case 'Browser.close':
       return { reply: ack({ result: {} }), close: true };
@@ -162,6 +177,8 @@ function bridge(client: WebSocket, upstream: WebSocket, ctx: BridgeContext) {
       { sessionId: ctx.sessionId, target: ctx.label, actor: ctx.actor, code, reason, ms: Date.now() - startedAt },
       'cdp.disconnect',
     );
+    // Chrome drops a tab's virtual authenticator when any DevTools session leaves it.
+    nudgeWebAuthn(ctx.sessionId);
   };
 
   const resumeWhenDrained = () => {
@@ -177,6 +194,9 @@ function bridge(client: WebSocket, upstream: WebSocket, ctx: BridgeContext) {
 
   upstream.on('message', (data: RawData, isBinary: boolean) => {
     if (client.readyState !== WebSocket.OPEN) return;
+    if (!isBinary && Buffer.isBuffer(data) && data.length < 4096 && data.includes('Target.detachedFromTarget')) {
+      nudgeWebAuthn(ctx.sessionId);
+    }
     client.send(data, { binary: isBinary });
     if (!paused && client.bufferedAmount > HIGH_WATER) {
       paused = true;
