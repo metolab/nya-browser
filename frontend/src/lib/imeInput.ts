@@ -29,6 +29,7 @@ const COMMIT_CODES = new Set([
 ]);
 
 export type KeyLike = {
+  type?: string;
   isComposing?: boolean;
   key?: string;
   code?: string;
@@ -36,12 +37,17 @@ export type KeyLike = {
   ctrlKey?: boolean;
   metaKey?: boolean;
   altKey?: boolean;
+  shiftKey?: boolean;
 };
 
 export function isPasteKey(e: KeyLike): boolean {
-  if (e.altKey) return false;
+  if (e.altKey || e.shiftKey) return false;
   if (!(e.ctrlKey || e.metaKey)) return false;
   return e.key === 'v' || e.key === 'V' || e.code === 'KeyV';
+}
+
+export function shouldInterceptPaste(e: KeyLike, hasLocalPaste: boolean): boolean {
+  return hasLocalPaste && isPasteKey(e);
 }
 
 export type DedupState = {
@@ -61,13 +67,26 @@ export function isCommitKey(e: KeyLike): boolean {
   return Boolean(e.code && COMMIT_CODES.has(e.code));
 }
 
-export function shouldSuppressCommitKey(now: number, lastCommitAt: number, e: KeyLike): boolean {
+export function shouldSuppressCommitKey(
+  now: number,
+  lastCommitAt: number,
+  e: KeyLike,
+  lastCommitCode?: string | null,
+): boolean {
   if (lastCommitAt <= 0) return false;
   if (now - lastCommitAt >= COMMIT_SUPPRESS_MS) return false;
-  return isCommitKey(e);
+  if (!isCommitKey(e)) return false;
+  // Only suppress the same physical commit key when known so Space-commit + fast
+  // Enter/Digit does not drop either keydown or its matching keyup.
+  if (lastCommitCode && e.code && e.code !== lastCommitCode) {
+    return false;
+  }
+  return true;
 }
 
 export function isCommittedCharKey(e: KeyLike): boolean {
+  // Never swallow Ctrl/Meta shortcuts on non-Latin keyboard layouts (e.g. Cyrillic Ctrl+C).
+  if ((e.ctrlKey && !e.altKey) || e.metaKey) return false;
   const key = e.key || '';
   if (!key || key === 'Unidentified' || key === 'Process' || key === 'Dead') return false;
   return [...key].some((ch) => (ch.codePointAt(0) || 0) > 0x7e);
@@ -78,34 +97,27 @@ export function shouldForwardKey(
   composing: boolean,
   now: number,
   lastCommitAt: number,
+  opts?: { hasLocalPaste?: boolean; lastCommitCode?: string | null },
 ): boolean {
   if (composing) return false;
   if (isComposingKey(e)) return false;
-  if (isPasteKey(e)) return false;
+  if (shouldInterceptPaste(e, opts?.hasLocalPaste ?? true)) return false;
   if (isCommittedCharKey(e)) return false;
-  if (shouldSuppressCommitKey(now, lastCommitAt, e)) return false;
+  if (shouldSuppressCommitKey(now, lastCommitAt, e, opts?.lastCommitCode)) return false;
   return true;
 }
 
-export function shouldPreventDefaultKey(e: KeyLike, composing: boolean): boolean {
+export function shouldPreventDefaultKey(
+  e: KeyLike,
+  composing: boolean,
+  hasLocalPaste = true,
+): boolean {
   if (composing || isComposingKey(e)) return false;
-  if (isPasteKey(e)) return false;
+  if (shouldInterceptPaste(e, hasLocalPaste)) return false;
+  // Let direct non-ASCII keys (e.g. CJK punctuation or dead-key/accented chars)
+  // land in the textarea so the input fallback can inject them via xtype.
+  if (isCommittedCharKey(e)) return false;
   return true;
-}
-
-export function unicodeKeysym(codePoint: number): number {
-  if (codePoint >= 0x20 && codePoint <= 0xff) return codePoint;
-  return 0x01000000 | codePoint;
-}
-
-export function keysymsFromText(text: string): number[] {
-  const out: number[] = [];
-  for (const ch of text) {
-    const cp = ch.codePointAt(0);
-    if (!cp || cp < 0x20) continue;
-    out.push(unicodeKeysym(cp));
-  }
-  return out;
 }
 
 export function commitTextFromEvents(
@@ -133,7 +145,12 @@ export function shouldSendCommit(
 
 export function isFallbackInsert(inputType: string, composing: boolean, value: string): boolean {
   if (composing || !value) return false;
-  return inputType === 'insertText' || inputType === 'insertFromYank';
+  return (
+    inputType === 'insertText' ||
+    inputType === 'insertFromYank' ||
+    inputType === 'insertReplacementText' ||
+    inputType === ''
+  );
 }
 
 export function clampTrapPos(
@@ -166,6 +183,8 @@ export function keyboardEventInit(e: KeyboardEvent): KeyboardEventInit {
     altKey: e.altKey,
     metaKey: e.metaKey,
     repeat: e.repeat,
+    modifierCapsLock: e.getModifierState?.('CapsLock') ?? false,
+    modifierNumLock: e.getModifierState?.('NumLock') ?? false,
     bubbles: true,
     cancelable: true,
   };
@@ -179,14 +198,4 @@ export function canTakeImeFocus(wrap: HTMLElement, trap: HTMLElement): boolean {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false;
   if (el instanceof HTMLElement && el.isContentEditable) return false;
   return true;
-}
-
-export function sendUnicodeKeysyms(
-  sendKey: (keysym: number, code: string | null, down?: boolean) => void,
-  text: string,
-) {
-  for (const keysym of keysymsFromText(text)) {
-    sendKey(keysym, null, true);
-    sendKey(keysym, null, false);
-  }
 }

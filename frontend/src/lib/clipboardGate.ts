@@ -30,15 +30,19 @@ export function shouldPushLocalText(
   now = Date.now(),
   opts?: { pendingFlush?: boolean },
 ): 'push' | 'skip' {
-  const pendingFlush = Boolean(opts?.pendingFlush && (state.remoteKind === 'image' || state.remoteKind === 'files'));
-  if (!pendingFlush && next === state.lastText) return 'skip';
+  const pendingFlush = Boolean(
+    opts?.pendingFlush && (state.remoteKind === 'image' || state.remoteKind === 'files'),
+  );
+  if (mode !== 'manual' && !pendingFlush && next === state.lastText) return 'skip';
   if (mode === 'auto' && now < state.binaryUntil) return 'skip';
-  if (mode === 'auto' && now < (state.emptySettleUntil || 0) && next !== state.lastText) return 'skip';
+  // During the post-write settle window, only suppress empty-clipboard bounce;
+  // genuine new non-empty copies must push immediately.
+  if (mode === 'auto' && now < (state.emptySettleUntil || 0) && next === '') return 'skip';
   if (mode === 'auto' && next === '' && state.remoteKind !== 'text') return 'skip';
   return 'push';
 }
 
-/** Keep a skipped local text queued only while it still needs to reach the remote. */
+/** Keep a skipped local text queued only while a binary lock holds it back. */
 export function keepPendingOnSkip(
   state: GateState,
   next: string,
@@ -46,7 +50,8 @@ export function keepPendingOnSkip(
   opts?: { pendingFlush?: boolean },
 ) {
   if (!next || next === state.lastText) return false;
-  return now < state.binaryUntil || Boolean(opts?.pendingFlush);
+  if (now < state.binaryUntil) return true;
+  return Boolean(opts?.pendingFlush && (state.remoteKind === 'image' || state.remoteKind === 'files'));
 }
 
 export function shouldApplyRemote(

@@ -9,21 +9,27 @@ import {
   isComposingKey,
   isFallbackInsert,
   isPasteKey,
-  keysymsFromText,
+  keyboardEventInit,
   shouldForwardKey,
+  shouldInterceptPaste,
   shouldPreventDefaultKey,
   shouldSendCommit,
   shouldSuppressCommitKey,
-  unicodeKeysym,
-  sendUnicodeKeysyms,
 } from './imeInput';
 
 describe('paste keys', () => {
-  it('holds Ctrl/Cmd+V for the local paste interceptor', () => {
+  it('holds Ctrl/Cmd+V for the local paste interceptor, but passes Ctrl+Shift+V and no-handler mode', () => {
     const paste = { key: 'v', code: 'KeyV', ctrlKey: true };
+    const plainPaste = { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true };
     expect(isPasteKey(paste)).toBe(true);
+    expect(isPasteKey(plainPaste)).toBe(false);
+    expect(shouldInterceptPaste(paste, true)).toBe(true);
+    expect(shouldInterceptPaste(paste, false)).toBe(false);
     expect(shouldForwardKey(paste, false, 0, 0)).toBe(false);
-    expect(shouldPreventDefaultKey(paste, false)).toBe(false);
+    expect(shouldForwardKey(paste, false, 0, 0, { hasLocalPaste: false })).toBe(true);
+    expect(shouldForwardKey(plainPaste, false, 0, 0)).toBe(true);
+    expect(shouldPreventDefaultKey(paste, false, true)).toBe(false);
+    expect(shouldPreventDefaultKey(paste, false, false)).toBe(true);
     expect(isPasteKey({ key: 'v', code: 'KeyV' })).toBe(false);
   });
 });
@@ -47,12 +53,18 @@ describe('commit keys', () => {
     expect(isCommitKey({ key: '0', code: 'Digit0' })).toBe(false);
   });
 
-  it('swallows commit keys only inside the post-commit window', () => {
-    const space = { key: ' ', code: 'Space' };
-    expect(shouldSuppressCommitKey(100, 0, space)).toBe(false);
-    expect(shouldSuppressCommitKey(100, 100, space)).toBe(true);
-    expect(shouldSuppressCommitKey(100 + COMMIT_SUPPRESS_MS, 100, space)).toBe(false);
-    expect(shouldSuppressCommitKey(150, 100, { key: 'a', code: 'KeyA' })).toBe(false);
+  it('swallows commit keys inside the post-commit window without eating fast Enter keydown or keyup after Space', () => {
+    const spaceDown = { type: 'keydown', key: ' ', code: 'Space' };
+    const spaceUp = { type: 'keyup', key: ' ', code: 'Space' };
+    const enterDown = { type: 'keydown', key: 'Enter', code: 'Enter' };
+    const enterUp = { type: 'keyup', key: 'Enter', code: 'Enter' };
+    expect(shouldSuppressCommitKey(100, 0, spaceDown)).toBe(false);
+    expect(shouldSuppressCommitKey(100, 100, spaceDown, 'Space')).toBe(true);
+    expect(shouldSuppressCommitKey(100, 100, spaceUp, 'Space')).toBe(true);
+    expect(shouldSuppressCommitKey(140, 100, enterDown, 'Space')).toBe(false);
+    expect(shouldSuppressCommitKey(180, 100, enterUp, 'Space')).toBe(false);
+    expect(shouldSuppressCommitKey(100 + COMMIT_SUPPRESS_MS, 100, spaceDown, 'Space')).toBe(false);
+    expect(shouldSuppressCommitKey(150, 100, { type: 'keydown', key: 'a', code: 'KeyA' }, 'Space')).toBe(false);
   });
 });
 
@@ -60,24 +72,30 @@ describe('shouldForwardKey', () => {
   it('blocks composing and post-commit keys, forwards the rest', () => {
     expect(shouldForwardKey({ key: 'a', code: 'KeyA' }, true, 200, 0)).toBe(false);
     expect(shouldForwardKey({ keyCode: 229 }, false, 200, 0)).toBe(false);
-    expect(shouldForwardKey({ key: ' ', code: 'Space' }, false, 150, 100)).toBe(false);
-    expect(shouldForwardKey({ key: 'Enter', code: 'Enter' }, false, 150, 100)).toBe(false);
+    expect(shouldForwardKey({ type: 'keyup', key: ' ', code: 'Space' }, false, 150, 100)).toBe(false);
+    expect(shouldForwardKey({ type: 'keydown', key: 'Enter', code: 'Enter' }, false, 150, 100, { lastCommitCode: 'Space' })).toBe(true);
     expect(shouldForwardKey({ key: 'a', code: 'KeyA' }, false, 150, 100)).toBe(true);
     expect(shouldForwardKey({ key: 'Tab', code: 'Tab' }, false, 1000, 0)).toBe(true);
   });
 
-  it('does not also send IME-committed CJK or emoji through VNC keys', () => {
+  it('does not send IME-committed CJK/punctuation via VNC keys, while letting textarea receive them', () => {
     expect(isCommittedCharKey({ key: '你' })).toBe(true);
+    expect(isCommittedCharKey({ key: '，' })).toBe(true);
     expect(isCommittedCharKey({ key: '⬆' })).toBe(true);
     expect(isCommittedCharKey({ key: 'a', code: 'KeyA' })).toBe(false);
     expect(isCommittedCharKey({ key: 'Enter', code: 'Enter' })).toBe(false);
+    expect(isCommittedCharKey({ key: 'с', code: 'KeyC', ctrlKey: true })).toBe(false);
+    expect(isCommittedCharKey({ key: 'с', code: 'KeyC', metaKey: true })).toBe(false);
+    expect(shouldForwardKey({ key: 'с', code: 'KeyC', ctrlKey: true }, false, 200, 0)).toBe(true);
     expect(shouldForwardKey({ key: '你' }, false, 200, 0)).toBe(false);
-    expect(shouldForwardKey({ key: '⬆️' }, false, 200, 0)).toBe(false);
+    expect(shouldForwardKey({ key: '，' }, false, 200, 0)).toBe(false);
+    expect(shouldPreventDefaultKey({ key: '，' }, false)).toBe(false);
+    expect(shouldPreventDefaultKey({ key: 'é' }, false)).toBe(false);
   });
 });
 
 describe('shouldPreventDefaultKey', () => {
-  it('lets the IME handle composing keys and blocks the rest', () => {
+  it('lets the IME and direct non-ASCII keys pass to textarea and blocks the rest', () => {
     expect(shouldPreventDefaultKey({ key: 'a', code: 'KeyA' }, true)).toBe(false);
     expect(shouldPreventDefaultKey({ keyCode: 229 }, false)).toBe(false);
     expect(shouldPreventDefaultKey({ key: ' ', code: 'Space' }, false)).toBe(true);
@@ -85,23 +103,22 @@ describe('shouldPreventDefaultKey', () => {
   });
 });
 
-describe('unicode keysyms', () => {
-  it('maps latin-1 directly and CJK via the 0x01000000 plane', () => {
-    expect(unicodeKeysym(0x41)).toBe(0x41);
-    expect(unicodeKeysym(0xff)).toBe(0xff);
-    expect(unicodeKeysym('你'.codePointAt(0)!)).toBe(0x01000000 | 0x4f60);
-  });
-
-  it('skips control characters and emits down/up pairs', () => {
-    expect(keysymsFromText('\n你好')).toEqual([0x01000000 | 0x4f60, 0x01000000 | 0x597d]);
-    const sent: Array<[number, string | null, boolean | undefined]> = [];
-    sendUnicodeKeysyms((keysym, code, down) => sent.push([keysym, code, down]), 'A你');
-    expect(sent).toEqual([
-      [0x41, null, true],
-      [0x41, null, false],
-      [0x01000000 | 0x4f60, null, true],
-      [0x01000000 | 0x4f60, null, false],
-    ]);
+describe('keyboardEventInit', () => {
+  it('preserves CapsLock and NumLock modifier states', () => {
+    const fake = {
+      key: 'A',
+      code: 'KeyA',
+      location: 0,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      repeat: false,
+      getModifierState: (mod: string) => mod === 'CapsLock' || mod === 'NumLock',
+    } as unknown as KeyboardEvent;
+    const init = keyboardEventInit(fake);
+    expect(init.modifierCapsLock).toBe(true);
+    expect(init.modifierNumLock).toBe(true);
   });
 });
 
@@ -131,9 +148,11 @@ describe('commit text', () => {
     expect(shouldSendCommit('', 10, null)).toBe(false);
   });
 
-  it('only uses input fallback for insertText-like types', () => {
+  it('uses input fallback for insertText-like types including empty inputType', () => {
     expect(isFallbackInsert('insertText', false, '🙂')).toBe(true);
     expect(isFallbackInsert('insertFromYank', false, 'a')).toBe(true);
+    expect(isFallbackInsert('insertReplacementText', false, '，')).toBe(true);
+    expect(isFallbackInsert('', false, '，')).toBe(true);
     expect(isFallbackInsert('insertText', true, 'ni')).toBe(false);
     expect(isFallbackInsert('insertCompositionText', false, 'ni')).toBe(false);
     expect(isFallbackInsert('insertText', false, '')).toBe(false);

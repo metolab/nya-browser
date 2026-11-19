@@ -285,7 +285,8 @@ export default function DeskPage() {
           }}
           onLocalPaste={async (data) => {
             if (uploadOpen) return 'done';
-            const result = await files.ingestPaste(data, !files.transfer.chooser?.open);
+            const policy = files.transfer.chooser?.open ? 'text-only' : true;
+            const result = await files.ingestPaste(data, policy);
             return result.inject ? 'inject' : 'done';
           }}
           onVncFocus={() => {

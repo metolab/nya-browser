@@ -33,17 +33,18 @@ describe('shouldPushLocalText', () => {
     expect(shouldPushLocalText(state, 'world', 'auto', 9_000)).toBe('push');
   });
 
-  it('skips lastText match unless pending flush of binary remote', () => {
+  it('skips lastText match for auto unless pending flush, but always pushes manual', () => {
     const state = base({ remoteKind: 'image', binaryUntil: 0, lastText: 'hello' });
     expect(shouldPushLocalText(state, 'hello', 'auto', 9_000)).toBe('skip');
     expect(shouldPushLocalText(state, 'hello', 'auto', 9_000, { pendingFlush: true })).toBe('push');
+    expect(shouldPushLocalText(state, 'hello', 'manual', 9_000)).toBe('push');
   });
 
-  it('does not PUT empty or leftover during settle after pending 200', () => {
+  it('skips empty bounce during settle window while pushing genuine new text immediately', () => {
     const state = base({ remoteKind: 'text', lastText: 'hello', emptySettleUntil: 8_000 });
     expect(shouldPushLocalText(state, '', 'auto', 7_000)).toBe('skip');
-    expect(shouldPushLocalText(state, 'leftover', 'auto', 7_000)).toBe('skip');
     expect(shouldPushLocalText(state, 'hello', 'auto', 7_000)).toBe('skip');
+    expect(shouldPushLocalText(state, 'new-copy', 'auto', 7_000)).toBe('push');
   });
 });
 
@@ -54,10 +55,10 @@ describe('keepPendingOnSkip', () => {
     expect(keepPendingOnSkip(state, 'hello', 9_000, { pendingFlush: true })).toBe(false);
   });
 
-  it('keeps new text queued during binary lock or settle', () => {
+  it('keeps new text queued during binary lock', () => {
     expect(keepPendingOnSkip(base({ remoteKind: 'image', binaryUntil: 5_000 }), 'new', 1_000)).toBe(true);
     expect(
-      keepPendingOnSkip(base({ emptySettleUntil: 8_000 }), 'new', 7_000, { pendingFlush: true }),
+      keepPendingOnSkip(base({ remoteKind: 'files', binaryUntil: 0 }), 'new', 7_000, { pendingFlush: true }),
     ).toBe(true);
   });
 

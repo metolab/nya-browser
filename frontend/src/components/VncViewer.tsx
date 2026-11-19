@@ -1,51 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import RFB from '@novnc/novnc';
-import { api } from '../api/client';
-import { withBase } from '../basePath';
-import { snapEven } from '../desk/display';
-import {
-  advanceTrapX,
-  canTakeImeFocus,
-  clampTrapPos,
-  commitTextFromEvents,
-  isFallbackInsert,
-  isPasteKey,
-  keyboardEventInit,
-  shouldForwardKey,
-  shouldPreventDefaultKey,
-  shouldSendCommit,
-  TRAP_H,
-  TRAP_MIN_W,
-} from '../lib/imeInput';
-import {
-  attachVncSession,
-  clearHold,
-  hasHold,
-  holdCanvas,
-  hushNovncTlsWarning,
-  installVncCanvasHints,
-  isDocumentVisible,
-  trackVncSocket,
-  VncSession,
-  vncLog,
-  withVncCanvasHints,
-} from '../lib/vncSession';
-
-let metricsCtx: CanvasRenderingContext2D | null = null;
-
-function measureTrapText(text: string) {
-  if (!text) return 0;
-  if (!metricsCtx) {
-    metricsCtx = document.createElement('canvas').getContext('2d');
-  }
-  if (!metricsCtx) return text.length * 8;
-  metricsCtx.font = '16px system-ui, sans-serif';
-  return metricsCtx.measureText(text).width;
-}
+import type RFB from '@novnc/novnc';
+import { TRAP_H } from '../lib/imeInput';
+import { useVncConnection } from '../lib/useVncConnection';
+import { useVncIme } from '../lib/useVncIme';
+import { useVncResize } from '../lib/useVncResize';
+import { hushNovncTlsWarning, type VncSession } from '../lib/vncSession';
 
 hushNovncTlsWarning();
-installVncCanvasHints();
 
 type Props = {
   sessionId: string;
@@ -64,28 +26,6 @@ type Props = {
   onUserGesture?: () => void;
   onLocalPaste?: (data: DataTransfer | null) => Promise<'inject' | 'done'>;
 };
-
-function vncUrl(sessionId: string, subId: string | null, occupancyId: string | null) {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const path = subId
-    ? `/ws/vnc/${encodeURIComponent(sessionId)}/${encodeURIComponent(subId)}`
-    : `/ws/vnc/${encodeURIComponent(sessionId)}`;
-  const occ = occupancyId ? `?occ=${encodeURIComponent(occupancyId)}` : '';
-  return `${proto}//${window.location.host}${withBase(path)}${occ}`;
-}
-
-function mountCanvas(mount: HTMLElement): HTMLCanvasElement | null {
-  const el = mount.querySelector('canvas:not(.vnc-hold)');
-  return el instanceof HTMLCanvasElement ? el : null;
-}
-
-const MAX_RECONNECTS = 3;
-const TAKEN_OVER_CODE = 4000;
-const TAKEN_OVER_REASON = 'taken_over';
-
-function isTakenOverClose(code: number, reason: string) {
-  return code === TAKEN_OVER_CODE || reason === TAKEN_OVER_REASON;
-}
 
 export default function VncViewer({
   sessionId,
@@ -109,580 +49,51 @@ export default function VncViewer({
   const trapRef = useRef<HTMLTextAreaElement>(null);
   const rfbRef = useRef<RFB | null>(null);
   const sessionRef = useRef<VncSession | null>(null);
-  const imeRef = useRef({
-    composing: false,
-    lastCommitAt: 0,
-    lastSent: null as { text: string; at: number } | null,
-    x: 8,
-    y: 8,
-  });
-  const typeChain = useRef<Promise<unknown>>(Promise.resolve());
-  const [imeUi, setImeUi] = useState({ composing: false, x: 8, y: 8, width: TRAP_MIN_W });
-  const applied = useRef({ w: 0, h: 0 });
-  const genRef = useRef(0);
-  const remoteRef = useRef({ w: remoteWidth, h: remoteHeight });
-  const sessionIdRef = useRef(sessionId);
-  const subRef = useRef(subId);
-  const timerRef = useRef<number | null>(null);
-  const inflightRef = useRef(false);
-  const queuedRef = useRef(false);
-  const pendingSizeRef = useRef(false);
-  const viewOnlyRef = useRef(viewOnly);
-  const transferPausedRef = useRef(transferPaused);
-  const resizeRemoteRef = useRef(resizeRemote);
+  const focusTrapRef = useRef<(force?: boolean) => void>(() => undefined);
   const onUserGestureRef = useRef(onUserGesture);
-  const onLocalPasteRef = useRef(onLocalPaste);
-  const [error, setError] = useState<string | null>(null);
-  const onRemoteClipboardRef = useRef(onRemoteClipboard);
-  onRemoteClipboardRef.current = onRemoteClipboard;
-  onLocalPasteRef.current = onLocalPaste;
-
-  remoteRef.current = { w: remoteWidth, h: remoteHeight };
-  sessionIdRef.current = sessionId;
-  subRef.current = subId;
-  viewOnlyRef.current = viewOnly || transferPaused;
-  transferPausedRef.current = transferPaused;
-  resizeRemoteRef.current = resizeRemote;
   onUserGestureRef.current = onUserGesture;
 
-  const autoscale = useCallback(() => {
-    sessionRef.current?.autoscale();
-  }, []);
+  const { syncRemoteSize, flushPendingSize } = useVncResize({
+    sessionId,
+    subId,
+    remoteWidth,
+    remoteHeight,
+    sizeTick,
+    resizeRemote,
+    transferPaused,
+    sessionRef,
+  });
 
-  const focusTrap = useCallback((force = false) => {
-    if (viewOnlyRef.current) return;
-    const trap = trapRef.current;
-    const wrap = wrapRef.current;
-    if (!trap || !wrap) return;
-    if (!force && !canTakeImeFocus(wrap, trap)) return;
-    try {
-      trap.focus({ preventScroll: true });
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  const { error, activeCanvas } = useVncConnection({
+    sessionId,
+    subId,
+    occupancyId,
+    viewOnly,
+    transferPaused,
+    wrapRef,
+    hostRef,
+    rfbRef,
+    sessionRef,
+    onConnected: syncRemoteSize,
+    onVisibleRestore: flushPendingSize,
+    onRemoteClipboard,
+    onInteractiveResume: () => focusTrapRef.current(false),
+  });
 
-  const sendCommit = useCallback((text: string) => {
-    const wrap = wrapRef.current;
-    const ime = imeRef.current;
-    if (viewOnlyRef.current) {
-      if (!ime.composing) setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
-      return;
-    }
-    const now = performance.now();
-    if (!shouldSendCommit(text, now, ime.lastSent)) {
-      if (!ime.composing) setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
-      return;
-    }
-    ime.lastSent = { text, at: now };
-    ime.lastCommitAt = now;
-    if (!ime.composing) {
-      ime.x = advanceTrapX(ime.x, measureTrapText(text), wrap?.clientWidth || 0);
-      setImeUi({ composing: false, x: ime.x, y: ime.y, width: TRAP_MIN_W });
-    }
-    typeChain.current = typeChain.current
-      .then(() => api.typeText(sessionId, text, subId))
-      .catch(() => undefined);
-  }, [sessionId, subId]);
-
-  const pushSize = useCallback((force = false) => {
-    if (transferPausedRef.current) {
-      pendingSizeRef.current = true;
-      return;
-    }
-    if (!resizeRemoteRef.current) return;
-    if (!isDocumentVisible()) {
-      pendingSizeRef.current = true;
-      return;
-    }
-    const w = snapEven(remoteRef.current.w);
-    const h = snapEven(remoteRef.current.h);
-    if (w < 40 || h < 40) return;
-    if (!force && w === applied.current.w && h === applied.current.h) {
-      autoscale();
-      return;
-    }
-    if (inflightRef.current) {
-      queuedRef.current = true;
-      return;
-    }
-    const sid = sessionIdRef.current;
-    const extra = subRef.current;
-    const gen = (genRef.current += 1);
-    inflightRef.current = true;
-    pendingSizeRef.current = false;
-    vncLog('resize-push', { force, wanted: { w, h }, applied: { ...applied.current } });
-    void api
-      .resizeDisplay(sid, w, h, extra)
-      .then((res) => {
-        if (queuedRef.current) return;
-        if (gen !== genRef.current) return;
-        applied.current = res.geometry;
-        autoscale();
-      })
-      .catch(() => {
-        if (gen !== genRef.current) return;
-        applied.current = { w: 0, h: 0 };
-      })
-      .finally(() => {
-        inflightRef.current = false;
-        if (queuedRef.current) {
-          queuedRef.current = false;
-          pushSize(true);
-        }
-      });
-  }, [autoscale]);
-
-  const schedulePush = useCallback(
-    (immediate = false) => {
-      if (!isDocumentVisible()) {
-        pendingSizeRef.current = true;
-        return;
-      }
-      if (timerRef.current) {
-        window.clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      if (immediate) {
-        pushSize(true);
-        return;
-      }
-      timerRef.current = window.setTimeout(() => {
-        timerRef.current = null;
-        pushSize(false);
-      }, 180);
-    },
-    [pushSize],
-  );
-  const schedulePushRef = useRef(schedulePush);
-  schedulePushRef.current = schedulePush;
-
-  const syncRemoteSize = () => {
-    if (!resizeRemoteRef.current) {
-      sessionRef.current?.autoscale();
-      return;
-    }
-    const w = snapEven(remoteRef.current.w);
-    const h = snapEven(remoteRef.current.h);
-    if (w === applied.current.w && h === applied.current.h) {
-      sessionRef.current?.autoscale();
-      return;
-    }
-    schedulePushRef.current(true);
-  };
-  const syncRemoteSizeRef = useRef(syncRemoteSize);
-  syncRemoteSizeRef.current = syncRemoteSize;
-
-  useEffect(() => {
-    const host = hostRef.current;
-    const wrap = wrapRef.current;
-    if (!host || !wrap) return undefined;
-
-    applied.current = { w: 0, h: 0 };
-    let disposed = false;
-    let retries = 0;
-    let retryTimer: number | null = null;
-    let takenOver = false;
-    let reconnectOnFocus = false;
-    let live: { rfb: RFB; mount: HTMLElement; session: VncSession } | null = null;
-    let pending: { rfb: RFB; mount: HTMLElement; session: VncSession } | null = null;
-    const ignoreDisconnect = new WeakSet<RFB>();
-
-    const drop = (slot: { rfb: RFB; mount: HTMLElement; session: VncSession } | null) => {
-      if (!slot) return;
-      ignoreDisconnect.add(slot.rfb);
-      slot.session.dispose();
-      try {
-        slot.rfb.disconnect();
-      } catch {
-        /* ignore */
-      }
-      slot.mount.remove();
-    };
-
-    const bindCanvasRestore = (mount: HTMLElement, session: VncSession) => {
-      const canvas = mountCanvas(mount);
-      if (!canvas) return;
-      const restore = () => {
-        if (disposed) return;
-        session.restoreSurface();
-        session.setVisible(isDocumentVisible());
-      };
-      canvas.addEventListener('contextlost', restore);
-      canvas.addEventListener('contextrestored', restore);
-    };
-
-    const clearRetryTimer = () => {
-      if (!retryTimer) return;
-      window.clearTimeout(retryTimer);
-      retryTimer = null;
-    };
-
-    const failReconnect = () => {
-      reconnectOnFocus = false;
-      clearRetryTimer();
-      setError('画面连接中断，请刷新');
-    };
-
-    const scheduleReconnect = (immediate = false) => {
-      if (disposed || takenOver || pending || live) return;
-      if (retries >= MAX_RECONNECTS) {
-        failReconnect();
-        return;
-      }
-      if (!isDocumentVisible()) {
-        reconnectOnFocus = true;
-        clearRetryTimer();
-        return;
-      }
-      reconnectOnFocus = false;
-      clearRetryTimer();
-      const delay = immediate ? 0 : 400 * (retries + 1);
-      retryTimer = window.setTimeout(() => {
-        retryTimer = null;
-        if (disposed || takenOver || pending || live) return;
-        if (!isDocumentVisible()) {
-          reconnectOnFocus = true;
-          return;
-        }
-        if (retries >= MAX_RECONNECTS) {
-          failReconnect();
-          return;
-        }
-        retries += 1;
-        connect('retry');
-      }, delay);
-    };
-
-    const connect = (reason: 'mount' | 'retry') => {
-      if (disposed || takenOver || !hostRef.current || !wrapRef.current) return;
-      if (wrapRef.current.clientWidth < 40 || wrapRef.current.clientHeight < 40) {
-        requestAnimationFrame(() => connect(reason));
-        return;
-      }
-
-      setError(null);
-      if (pending) {
-        drop(pending);
-        pending = null;
-      }
-
-      try {
-        const hide = Boolean(live) || hasHold(hostRef.current);
-        const mount = document.createElement('div');
-        mount.className = hide ? 'vnc-mount is-pending' : 'vnc-mount';
-        hostRef.current.appendChild(mount);
-
-        const ws = new WebSocket(vncUrl(sessionId, subId, occupancyId));
-        ws.binaryType = 'arraybuffer';
-        trackVncSocket(ws);
-        vncLog('construct', { reason, sessionId, hide });
-        let wsClose = { code: 0, reason: '' };
-        ws.addEventListener(
-          'close',
-          (ev) => {
-            wsClose = { code: ev.code, reason: String(ev.reason || '') };
-            vncLog('disconnect', { clean: ev.wasClean, code: ev.code, reason: ev.reason });
-            if (pending?.mount === mount && live) return;
-            const canvas = mountCanvas(mount);
-            if (canvas && hostRef.current) holdCanvas(hostRef.current, canvas);
-          },
-          true,
-        );
-
-        const rfb = withVncCanvasHints(() => new RFB(mount, ws, { shared: true }));
-        rfb.scaleViewport = true;
-        rfb.clipViewport = false;
-        rfb.resizeSession = false;
-        rfb.focusOnClick = false;
-        rfb.viewOnly = viewOnlyRef.current;
-        rfb.qualityLevel = 8;
-        rfb.compressionLevel = 0;
-
-        const session = attachVncSession(rfb, ws, {
-          wrap: () => wrapRef.current,
-          onSettledFrame: () => {
-            if (disposed) return;
-            if (live && live.rfb !== rfb) drop(live);
-            live = { rfb, mount, session };
-            pending = pending?.rfb === rfb ? null : pending;
-            mount.classList.remove('is-pending');
-            rfbRef.current = rfb;
-            sessionRef.current = session;
-            if (hostRef.current) clearHold(hostRef.current);
-            vncLog('swap', { sessionId });
-          },
-        });
-        pending = { rfb, mount, session };
-        session.setVisible(isDocumentVisible());
-
-        rfb.addEventListener('connect', () => {
-          if (disposed) return;
-          retries = 0;
-          reconnectOnFocus = false;
-          session.onConnected();
-          session.setTransferPaused(transferPausedRef.current);
-          if (!live) {
-            rfbRef.current = rfb;
-            sessionRef.current = session;
-          }
-          bindCanvasRestore(mount, session);
-          syncRemoteSizeRef.current();
-        });
-        rfb.addEventListener('disconnect', () => {
-          if (disposed || ignoreDisconnect.has(rfb)) return;
-          session.dispose();
-          if (pending?.rfb === rfb) pending = null;
-          if (live?.rfb === rfb) {
-            const canvas = mountCanvas(live.mount);
-            if (canvas && hostRef.current) holdCanvas(hostRef.current, canvas);
-            live.mount.remove();
-            live = null;
-            if (sessionRef.current === session) sessionRef.current = null;
-            if (rfbRef.current === rfb) rfbRef.current = null;
-          }
-          if (occupancyId && isTakenOverClose(wsClose.code, wsClose.reason)) {
-            takenOver = true;
-            reconnectOnFocus = false;
-            clearRetryTimer();
-            setError('会话已被接管');
-            return;
-          }
-          scheduleReconnect();
-        });
-        rfb.addEventListener('credentialsrequired', () => {
-          rfb.sendCredentials({ password: '' });
-        });
-        rfb.addEventListener('clipboard', () => {
-          onRemoteClipboardRef.current?.();
-        });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '画面连接失败');
-      }
-    };
-
-    connect('mount');
-
-    const flushReconnectOnFocus = () => {
-      if (!reconnectOnFocus || takenOver || !isDocumentVisible()) return;
-      scheduleReconnect(true);
-    };
-
-    const onVisibility = () => {
-      if (disposed) return;
-      const visible = isDocumentVisible();
-      sessionRef.current?.setVisible(visible);
-      pending?.session.setVisible(visible);
-      if (visible && pendingSizeRef.current) schedulePushRef.current(true);
-      if (!visible && retryTimer && !pending && !live) {
-        clearRetryTimer();
-        reconnectOnFocus = true;
-        return;
-      }
-      flushReconnectOnFocus();
-    };
-    const onPageShow = () => {
-      if (disposed) return;
-      sessionRef.current?.restoreSurface();
-      sessionRef.current?.setVisible(isDocumentVisible());
-      if (isDocumentVisible() && pendingSizeRef.current) schedulePushRef.current(true);
-      flushReconnectOnFocus();
-    };
-
-    document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('pageshow', onPageShow);
-    window.addEventListener('focus', onPageShow);
-
-    return () => {
-      disposed = true;
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('pageshow', onPageShow);
-      window.removeEventListener('focus', onPageShow);
-      if (retryTimer) window.clearTimeout(retryTimer);
-      if (timerRef.current) window.clearTimeout(timerRef.current);
-      drop(pending);
-      drop(live);
-      pending = null;
-      live = null;
-      rfbRef.current = null;
-      sessionRef.current = null;
-    };
-  }, [sessionId, subId, occupancyId]);
-
-  useEffect(() => {
-    schedulePush(false);
-  }, [remoteWidth, remoteHeight, schedulePush]);
-
-  useEffect(() => {
-    if (!sizeTick) return;
-    applied.current = { w: 0, h: 0 };
-    schedulePush(true);
-  }, [sizeTick, schedulePush]);
-
-  useEffect(() => {
-    const trap = trapRef.current;
-    if (!trap) return undefined;
-
-    const canvas = () => {
-      const host = hostRef.current;
-      return host ? mountCanvas(host) : null;
-    };
-
-    const onKey = (e: KeyboardEvent) => {
-      if (viewOnlyRef.current) return;
-      const ime = imeRef.current;
-      const now = performance.now();
-      e.stopPropagation();
-      if (shouldPreventDefaultKey(e, ime.composing)) e.preventDefault();
-      if (!shouldForwardKey(e, ime.composing, now, ime.lastCommitAt)) return;
-      const target = canvas();
-      if (!target) return;
-      target.dispatchEvent(new KeyboardEvent(e.type, keyboardEventInit(e)));
-    };
-
-    const grow = () => {
-      const w = Math.max(TRAP_MIN_W, measureTrapText(trap.value) + 8);
-      setImeUi((ui) => ({ ...ui, composing: true, width: w }));
-    };
-
-    const onCompositionStart = () => {
-      imeRef.current.composing = true;
-      setImeUi((ui) => ({ ...ui, composing: true }));
-    };
-
-    const onCompositionUpdate = () => {
-      grow();
-    };
-
-    const onCompositionEnd = (e: CompositionEvent) => {
-      const snapshot = { data: e.data, value: trap.value };
-      imeRef.current.composing = false;
-      window.queueMicrotask(() => {
-        const chained = imeRef.current.composing;
-        const text = commitTextFromEvents(snapshot.data, snapshot.value, chained);
-        if (!chained) trap.value = '';
-        if (text) sendCommit(text);
-        else if (!chained) {
-          setImeUi({
-            composing: false,
-            x: imeRef.current.x,
-            y: imeRef.current.y,
-            width: TRAP_MIN_W,
-          });
-        }
-      });
-    };
-
-    const onInput = (e: Event) => {
-      const ime = imeRef.current;
-      if (ime.composing) {
-        grow();
-        return;
-      }
-      const inputType = e instanceof InputEvent ? e.inputType : '';
-      if (!isFallbackInsert(inputType, false, trap.value)) return;
-      const text = trap.value;
-      trap.value = '';
-      sendCommit(text);
-    };
-
-    const sendCtrlV = () => {
-      const rfb = rfbRef.current;
-      if (!rfb) return;
-      rfb.sendKey(0xffe3, 'ControlLeft', true);
-      rfb.sendKey(0x0076, 'KeyV', true);
-      rfb.sendKey(0x0076, 'KeyV', false);
-      rfb.sendKey(0xffe3, 'ControlLeft', false);
-    };
-
-    const onClipboard = (e: Event) => {
-      if (viewOnly) return;
-      e.preventDefault();
-    };
-
-    const onPaste = (e: ClipboardEvent) => {
-      if (viewOnly) return;
-      if (imeRef.current.composing) return;
-      const target = e.target;
-      if (target instanceof HTMLInputElement) return;
-      if (target instanceof HTMLTextAreaElement && target !== trap) return;
-      e.preventDefault();
-      e.stopPropagation();
-      void Promise.resolve(onLocalPasteRef.current?.(e.clipboardData)).then((result) => {
-        if (result === 'inject') sendCtrlV();
-      });
-    };
-
-    const onPasteKeyCapture = (e: KeyboardEvent) => {
-      if (viewOnlyRef.current) return;
-      if (!isPasteKey(e)) return;
-      e.stopPropagation();
-    };
-
-    const wrap = wrapRef.current;
-    wrap?.addEventListener('keydown', onPasteKeyCapture, true);
-    wrap?.addEventListener('keyup', onPasteKeyCapture, true);
-    trap.addEventListener('keydown', onKey);
-    trap.addEventListener('keyup', onKey);
-    trap.addEventListener('compositionstart', onCompositionStart);
-    trap.addEventListener('compositionupdate', onCompositionUpdate);
-    trap.addEventListener('compositionend', onCompositionEnd);
-    trap.addEventListener('input', onInput);
-    trap.addEventListener('copy', onClipboard);
-    trap.addEventListener('cut', onClipboard);
-    trap.addEventListener('paste', onPaste);
-    wrap?.addEventListener('paste', onPaste);
-    return () => {
-      wrap?.removeEventListener('keydown', onPasteKeyCapture, true);
-      wrap?.removeEventListener('keyup', onPasteKeyCapture, true);
-      trap.removeEventListener('keydown', onKey);
-      trap.removeEventListener('keyup', onKey);
-      trap.removeEventListener('compositionstart', onCompositionStart);
-      trap.removeEventListener('compositionupdate', onCompositionUpdate);
-      trap.removeEventListener('compositionend', onCompositionEnd);
-      trap.removeEventListener('input', onInput);
-      trap.removeEventListener('copy', onClipboard);
-      trap.removeEventListener('cut', onClipboard);
-      trap.removeEventListener('paste', onPaste);
-      wrap?.removeEventListener('paste', onPaste);
-    };
-  }, [sendCommit, viewOnly]);
-
-  useEffect(() => {
-    const session = sessionRef.current;
-    session?.setTransferPaused(transferPaused);
-    const host = hostRef.current;
-    const canvas = host ? mountCanvas(host) : null;
-    if (transferPaused && canvas && host) holdCanvas(host, canvas);
-    if (!transferPaused && host) clearHold(host);
-    const rfb = rfbRef.current;
-    if (!rfb) return;
-    rfb.viewOnly = viewOnly || transferPaused;
-    rfb.focusOnClick = false;
-    if (!viewOnly && !transferPaused) focusTrap(false);
-  }, [viewOnly, transferPaused, focusTrap]);
-
-  useEffect(() => {
-    if (!focused || viewOnly || transferPaused) return;
-    focusTrap(false);
-  }, [focused, viewOnly, transferPaused, focusTrap]);
-
-  const placeTrap = (e: PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || viewOnlyRef.current) return;
-    const wrap = wrapRef.current;
-    if (!wrap) return;
-    const rect = wrap.getBoundingClientRect();
-    const next = clampTrapPos(
-      e.clientX - rect.left,
-      e.clientY - rect.top,
-      wrap.clientWidth,
-      wrap.clientHeight,
-    );
-    imeRef.current.x = next.x;
-    imeRef.current.y = next.y;
-    setImeUi((ui) => ({ ...ui, x: next.x, y: next.y, width: ui.composing ? ui.width : TRAP_MIN_W }));
-    focusTrap(true);
-  };
+  const { imeUi, focusTrap, placeTrap } = useVncIme({
+    sessionId,
+    subId,
+    focused,
+    viewOnly,
+    transferPaused,
+    wrapRef,
+    trapRef,
+    rfbRef,
+    sessionRef,
+    activeCanvas,
+    onLocalPaste,
+  });
+  focusTrapRef.current = focusTrap;
 
   return (
     <div
@@ -696,7 +107,7 @@ export default function VncViewer({
       onPointerUp={(e) => {
         if (e.button !== 0) return;
         onUserGestureRef.current?.();
-        if (viewOnlyRef.current) return;
+        if (viewOnly || transferPaused) return;
         focusTrap(true);
       }}
     >
@@ -712,7 +123,7 @@ export default function VncViewer({
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
-        disabled={viewOnly}
+        disabled={viewOnly || transferPaused}
         style={{ left: imeUi.x, top: imeUi.y, width: imeUi.width, height: TRAP_H }}
       />
       {error && (

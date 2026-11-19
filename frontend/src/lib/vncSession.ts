@@ -1,9 +1,10 @@
 import RFB from '@novnc/novnc';
+import { shouldCloseForStall } from './vnc';
 
-// Visible canvas shows only a settled framebuffer. Same-size remote
-// resizes never recreate the Chrome window. Click slop is swallowed so
-// scaleViewport does not turn a click into a remote drag; a button-up is
-// always sent on blur / pointerup so a lost VNC mouseup cannot pin Chrome.
+// Visible canvas shows only a settled framebuffer (with a short fallback so
+// solid dark/white pages never deadlock behind the hold frame). Click slop
+// prevents tiny pointer jitter from turning a click into a drag; lost mouseup
+// and intra-page focus changes release remote pointer/keyboard state safely.
 
 type Sock = object;
 
@@ -23,23 +24,32 @@ type DisplayHandle = {
   _flushResolve?: (() => void) | null;
 };
 
+type KeyboardHandle = {
+  _allKeysUp?: () => void;
+};
+
 type RfbHandle = RFB & {
   _sock?: Sock;
+  _canvas?: HTMLCanvasElement;
+  _keyboard?: KeyboardHandle;
   _fbWidth?: number;
   _fbHeight?: number;
   _display?: DisplayHandle;
   _eventHandlers?: { handleResize: () => void };
   _flushing?: boolean;
   _mouseButtonMask?: number;
-  _mousePos?: { x: number; y: number };
+  _mousePos?: { x?: number; y?: number };
   _mouseMoveTimer?: number | null;
   _accumulatedWheelDeltaX?: number;
   _accumulatedWheelDeltaY?: number;
   _handleMouseButton?: (x: number, y: number, bmask: number) => void;
   _handleMouseMove?: (x: number, y: number) => void;
+  _enabledContinuousUpdates?: boolean;
+  _updateContinuousUpdates?: () => void;
 };
 
-const CLICK_SLOP_PX = 12;
+const CLICK_SLOP_PX = 6;
+const SETTLE_FALLBACK_MS = 600;
 
 type Messages = {
   fbUpdateRequest?: (
@@ -49,6 +59,14 @@ type Messages = {
     y?: number,
     w?: number,
     h?: number,
+  ) => void;
+  enableContinuousUpdates?: (
+    sock: Sock,
+    enable: boolean,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
   ) => void;
   pointerEvent?: (sock: Sock, x: number, y: number, mask: number) => void;
 };
@@ -97,9 +115,9 @@ function wrapFramebufferRequests() {
     if ((sock as PausedSock | undefined)?.__nyaPaused) return;
     origFb(sock, incremental, x, y, w, h);
   };
-  const origCu = RFB.messages.enableContinuousUpdates;
+  const origCu = messages.enableContinuousUpdates;
   if (origCu) {
-    RFB.messages.enableContinuousUpdates = (sock, enable, x, y, w, h) => {
+    messages.enableContinuousUpdates = (sock, enable, x, y, w, h) => {
       if ((sock as PausedSock | undefined)?.__nyaPaused && enable) return;
       origCu(sock, enable, x, y, w, h);
     };
@@ -166,7 +184,9 @@ export function vncLog(event: string, data?: Record<string, unknown>) {
 /** E2E and nyaVncDebug inspect live RFB sockets via window.__nyaVncSockets. */
 export function trackVncSocket(ws: WebSocket) {
   const bag = window as Window & { __nyaVncSockets?: WebSocket[] };
-  bag.__nyaVncSockets = (bag.__nyaVncSockets || []).filter((s) => s.readyState === WebSocket.OPEN);
+  bag.__nyaVncSockets = (bag.__nyaVncSockets || []).filter(
+    (s) => s.readyState === WebSocket.OPEN || s.readyState === WebSocket.CONNECTING,
+  );
   bag.__nyaVncSockets.push(ws);
 }
 
@@ -184,14 +204,19 @@ export function hushNovncTlsWarning() {
   console.warn = hush(console.warn.bind(console));
 }
 
-let canvasHinted = false;
-
-export function installVncCanvasHints() {
-  if (canvasHinted || typeof HTMLCanvasElement === 'undefined') return;
-  canvasHinted = true;
+/**
+ * Temporarily apply 2D canvas hints only while constructing RFB so noVNC gets
+ * opaque, readback-friendly canvases without mutating HTMLCanvasElement globally.
+ */
+export function withVncCanvasHints<T>(fn: () => T): T {
+  if (typeof HTMLCanvasElement === 'undefined') return fn();
   const proto = HTMLCanvasElement.prototype;
   const orig = proto.getContext;
-  proto.getContext = function (this: HTMLCanvasElement, type: string, attrs?: CanvasRenderingContext2DSettings) {
+  proto.getContext = function (
+    this: HTMLCanvasElement,
+    type: string,
+    attrs?: CanvasRenderingContext2DSettings,
+  ) {
     if (type === '2d') {
       attrs = {
         alpha: false,
@@ -202,11 +227,11 @@ export function installVncCanvasHints() {
     }
     return orig.call(this, type, attrs);
   } as typeof orig;
-}
-
-export function withVncCanvasHints<T>(fn: () => T): T {
-  installVncCanvasHints();
-  return fn();
+  try {
+    return fn();
+  } finally {
+    proto.getContext = orig;
+  }
 }
 
 let sampleCtx: CanvasRenderingContext2D | null = null;
@@ -255,6 +280,13 @@ function dirtySize(display: DisplayHandle) {
   };
 }
 
+function validPos(pos?: { x?: number; y?: number } | null): { x: number; y: number } | null {
+  if (!pos) return null;
+  if (typeof pos.x !== 'number' || typeof pos.y !== 'number') return null;
+  if (!Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return null;
+  return { x: pos.x, y: pos.y };
+}
+
 export function requestPointerRelease() {
   window.dispatchEvent(new Event('nya-pointer-release'));
 }
@@ -287,10 +319,13 @@ export function hasHold(host: HTMLElement) {
   return Boolean(host.querySelector('canvas.vnc-hold'));
 }
 
+export { shouldCloseForStall };
+
 export class VncSession {
   readonly rfb: RfbHandle;
   private readonly ws: WebSocket;
   private readonly wrap: () => HTMLElement | null;
+  private readonly onSettledFrame?: () => void;
   private disposed = false;
   private visible = isDocumentVisible();
   private tierName: TierName = 'lan';
@@ -298,23 +333,39 @@ export class VncSession {
   private origHandleResize: (() => void) | null = null;
   private origFlip: DisplayHandle['flip'] | null = null;
   private committed = false;
+  private settleTimer: number | null = null;
   private qualityTimer: number | null = null;
+  private lastActiveAt = 0;
   private lastFlipAt = 0;
-  private connectedAt = 0;
+  private unstickAt = 0;
   private flipCount = 0;
   private stuckArmed = false;
-  private readonly onBlur = () => this.releasePointer();
-  private readonly onHidden = () => {
-    if (document.visibilityState === 'hidden') this.releasePointer();
-  };
   private transferPaused = false;
   private clickAnchor: { x: number; y: number } | null = null;
   private origHandleMouseButton: RfbHandle['_handleMouseButton'] | null = null;
   private origHandleMouseMove: RfbHandle['_handleMouseMove'] | null = null;
   private releaseTimers: number[] = [];
-  private readonly onPointerUp = (ev: PointerEvent) => {
-    if (ev.buttons === 0) this.releasePointer();
+
+  private readonly onBlur = () => {
+    this.releasePointer();
+    this.releaseKeyboard();
   };
+
+  private readonly onHidden = () => {
+    if (document.visibilityState === 'hidden') {
+      this.releasePointer();
+      this.releaseKeyboard();
+    }
+  };
+
+  private readonly onPointerUp = (ev: PointerEvent) => {
+    if (ev.buttons !== 0) return;
+    // Let noVNC + click slop handle normal pointerup inside our own canvas.
+    if (ev.type === 'pointerup' && ev.target === this.canvas) return;
+    this.releasePointer();
+  };
+
+  private readonly onRelease = () => this.schedulePointerRelease();
 
   constructor(
     rfb: RFB,
@@ -327,6 +378,7 @@ export class VncSession {
     this.rfb = rfb as RfbHandle;
     this.ws = ws;
     this.wrap = opts.wrap;
+    this.onSettledFrame = opts.onSettledFrame;
 
     const display = this.rfb._display;
     if (display?.flip) {
@@ -344,9 +396,10 @@ export class VncSession {
         }
         const sample = sampleDisplay(display);
         vncLog('flip', { kind: 'full', ...sample, committed: this.committed });
-        if (!this.committed && sample.settled) {
-          this.committed = true;
-          opts.onSettledFrame?.();
+        if (sample.settled) {
+          this.commitFrame();
+        } else if (sample.width >= 8 && sample.height >= 8) {
+          this.armSettleFallback();
         }
       };
     }
@@ -361,13 +414,47 @@ export class VncSession {
     }
 
     window.addEventListener('blur', this.onBlur);
-    window.addEventListener('focus', this.onBlur);
     document.addEventListener('visibilitychange', this.onHidden);
-    window.addEventListener('pointerup', this.onPointerUp, true);
-    window.addEventListener('pointercancel', this.onPointerUp, true);
+    window.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('pointercancel', this.onPointerUp);
     window.addEventListener('nya-pointer-release', this.onRelease as EventListener);
     this.installClickSlop();
     wrapFramebufferRequests();
+  }
+
+  get canvas(): HTMLCanvasElement | null {
+    return this.rfb._canvas instanceof HTMLCanvasElement ? this.rfb._canvas : null;
+  }
+
+  get hasCommitted() {
+    return this.committed;
+  }
+
+  private clearSettleTimer() {
+    if (this.settleTimer !== null) {
+      window.clearTimeout(this.settleTimer);
+      this.settleTimer = null;
+    }
+  }
+
+  private commitFrame() {
+    if (this.committed || this.disposed) return;
+    this.clearSettleTimer();
+    this.committed = true;
+    this.onSettledFrame?.();
+  }
+
+  private armSettleFallback() {
+    if (this.committed || this.disposed || this.settleTimer !== null) return;
+    this.settleTimer = window.setTimeout(() => {
+      this.settleTimer = null;
+      const display = this.rfb._display;
+      if (this.disposed || this.committed) return;
+      if (display && display.width >= 8 && display.height >= 8) {
+        vncLog('settle-fallback', { width: display.width, height: display.height });
+        this.commitFrame();
+      }
+    }, SETTLE_FALLBACK_MS);
   }
 
   private installClickSlop() {
@@ -410,22 +497,22 @@ export class VncSession {
     };
   }
 
-  get hasCommitted() {
-    return this.committed;
-  }
-
   dispose() {
     if (this.disposed) return;
+    this.clearSettleTimer();
     this.clearReleaseTimers();
     this.releasePointer();
+    this.releaseKeyboard();
     this.disposed = true;
     window.removeEventListener('blur', this.onBlur);
-    window.removeEventListener('focus', this.onBlur);
     document.removeEventListener('visibilitychange', this.onHidden);
-    window.removeEventListener('pointerup', this.onPointerUp, true);
-    window.removeEventListener('pointercancel', this.onPointerUp, true);
+    window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('pointercancel', this.onPointerUp);
     window.removeEventListener('nya-pointer-release', this.onRelease as EventListener);
-    if (this.qualityTimer !== null) window.clearInterval(this.qualityTimer);
+    if (this.qualityTimer !== null) {
+      window.clearInterval(this.qualityTimer);
+      this.qualityTimer = null;
+    }
     if (this.origHandleResize && this.rfb._eventHandlers) {
       this.rfb._eventHandlers.handleResize = this.origHandleResize;
     }
@@ -442,30 +529,41 @@ export class VncSession {
 
   onConnected() {
     if (this.disposed) return;
-    this.connectedAt = performance.now();
+    const now = performance.now();
+    this.lastActiveAt = now;
+    this.unstickAt = 0;
     this.stuckArmed = false;
-    this.schedulePointerRelease();
     this.applyTier(true);
     if (this.qualityTimer === null) {
       this.qualityTimer = window.setInterval(() => {
         this.applyTier(false);
-        const now = performance.now();
-        const idleMs = this.lastFlipAt ? now - this.lastFlipAt : now - this.connectedAt;
+        const tickNow = performance.now();
+        const idleMs = tickNow - this.lastActiveAt;
         const queued = Boolean(this.rfb._display?.pending());
         vncLog('tick', {
           committed: this.committed,
           flips: this.flipCount,
-          msSinceFlip: this.lastFlipAt ? Math.round(now - this.lastFlipAt) : null,
+          msSinceFlip: this.lastFlipAt ? Math.round(tickNow - this.lastFlipAt) : null,
           bufferedAmount: this.ws.bufferedAmount,
           readyState: this.ws.readyState,
           flushing: Boolean(this.rfb._flushing),
           queued,
         });
         if (!this.visible || this.transferPaused || this.ws.readyState !== WebSocket.OPEN) return;
-        if (queued && idleMs > 1000) this.unstickDisplay();
-        if (idleMs > 8000 && !this.stuckArmed) {
+        const action = shouldCloseForStall({
+          flipCount: this.flipCount,
+          queued,
+          idleMs,
+          unstickAt: this.unstickAt,
+          now: tickNow,
+        });
+        if (action === 'unstick') {
+          this.unstickAt = this.unstickAt || tickNow;
+          this.unstickDisplay();
+          this.requestKeyframe();
+        } else if (action === 'close' && !this.stuckArmed) {
           this.stuckArmed = true;
-          vncLog('stuck', { idleMs, bufferedAmount: this.ws.bufferedAmount });
+          vncLog('stuck', { idleMs, queued, flips: this.flipCount, bufferedAmount: this.ws.bufferedAmount });
           this.ws.close();
         }
       }, 1000);
@@ -479,14 +577,18 @@ export class VncSession {
     if (sock) sock.__nyaPaused = paused;
     if (paused) {
       this.releasePointer();
+      this.releaseKeyboard();
       const messages = rfbMessages();
       const w = this.rfb._fbWidth || 0;
       const h = this.rfb._fbHeight || 0;
-      if (messages && sock && RFB.messages.enableContinuousUpdates && w > 0 && h > 0) {
-        RFB.messages.enableContinuousUpdates(sock, false, 0, 0, w, h);
+      if (messages?.enableContinuousUpdates && sock && w > 0 && h > 0) {
+        messages.enableContinuousUpdates(sock, false, 0, 0, w, h);
       }
       return;
     }
+    this.lastActiveAt = performance.now();
+    this.unstickAt = 0;
+    this.rfb._updateContinuousUpdates?.();
     this.requestKeyframe();
   }
 
@@ -495,8 +597,11 @@ export class VncSession {
     this.visible = visible;
     if (!visible) {
       this.releasePointer();
+      this.releaseKeyboard();
       return;
     }
+    this.lastActiveAt = performance.now();
+    this.unstickAt = 0;
     this.releasePointer();
     this.restoreSurface();
     this.requestKeyframe();
@@ -517,8 +622,7 @@ export class VncSession {
     if (this.disposed) return;
     const display = this.rfb._display;
     if (display && display.width > 0 && display.height > 0 && this.origFlip) {
-      const sample = sampleDisplay(display);
-      if (sample.settled) {
+      if (this.committed || sampleDisplay(display).settled) {
         display._damage(0, 0, display.width, display.height);
         this.origFlip();
       }
@@ -526,34 +630,43 @@ export class VncSession {
     this.origHandleResize?.();
   }
 
-  private readonly onRelease = () => this.schedulePointerRelease();
-
   private clearReleaseTimers() {
     for (const id of this.releaseTimers) window.clearTimeout(id);
     this.releaseTimers = [];
   }
 
   schedulePointerRelease() {
-    this.releasePointer();
+    this.releasePointer(true);
     this.clearReleaseTimers();
-    for (const ms of [50, 250, 800]) {
-      this.releaseTimers.push(window.setTimeout(() => this.releasePointer(), ms));
+    for (const ms of [50, 250]) {
+      this.releaseTimers.push(window.setTimeout(() => this.releasePointer(true), ms));
     }
   }
 
-  releasePointer() {
+  releaseKeyboard() {
+    if (this.disposed) return;
+    try {
+      this.rfb._keyboard?._allKeysUp?.();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  releasePointer(force = false) {
     if (this.disposed) return;
     const rfb = this.rfb;
     if (rfb._mouseMoveTimer != null) {
       window.clearTimeout(rfb._mouseMoveTimer);
       rfb._mouseMoveTimer = null;
     }
-    const dest = this.clickAnchor || rfb._mousePos || { x: 0, y: 0 };
     const hadPointer = Boolean(this.clickAnchor) || (rfb._mouseButtonMask || 0) !== 0;
+    const dest = validPos(this.clickAnchor) || validPos(rfb._mousePos);
     this.clickAnchor = null;
     rfb._mouseButtonMask = 0;
     rfb._accumulatedWheelDeltaX = 0;
     rfb._accumulatedWheelDeltaY = 0;
+    if (!hadPointer && !force) return;
+    if (!dest) return;
     if (this.origHandleMouseButton) {
       this.origHandleMouseButton(dest.x, dest.y, 0);
       if (hadPointer) vncLog('pointer-up', dest);
@@ -593,7 +706,10 @@ export class VncSession {
   }
 
   private noteFlip() {
-    this.lastFlipAt = performance.now();
+    const now = performance.now();
+    this.lastFlipAt = now;
+    this.lastActiveAt = now;
+    this.unstickAt = 0;
     this.flipCount += 1;
   }
 

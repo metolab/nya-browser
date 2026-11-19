@@ -8,7 +8,9 @@ export function isScreenshotName(name: string) {
   const value = name || 'image.png';
   return GENERIC_IMAGE_NAME.test(value) || OS_SCREENSHOT_NAME.test(value);
 }
+
 const FRESH_IMAGE_MS = 5000;
+const FUTURE_CLOCK_SLACK_MS = 1000;
 
 export type TransferSource = 'clipboard' | 'picker';
 export type TransferMode = 'files' | 'image' | 'text' | 'empty';
@@ -36,11 +38,23 @@ export function dedupeFiles(files: File[]) {
   return out;
 }
 
-/** Fresh named screenshots only. OS screenshots older than 5s stay files. */
+function isFreshTimestamp(lastModified: number, now = Date.now()) {
+  const age = now - lastModified;
+  return age >= -FUTURE_CLOCK_SLACK_MS && age < FRESH_IMAGE_MS;
+}
+
+/** Fresh generic or OS screenshot bitmaps only. Older files stay real files. */
 export function isGenericImageFile(file: File) {
   if (!file.type.startsWith('image/')) return false;
   if (!isScreenshotName(file.name || 'image.png')) return false;
-  return Date.now() - file.lastModified < FRESH_IMAGE_MS;
+  return isFreshTimestamp(file.lastModified);
+}
+
+/** Synthesized OS icon/bitmap companion attached alongside copied file paths (e.g. image.png). */
+function isCompanionBitmapFile(file: File) {
+  if (!file.type.startsWith('image/')) return false;
+  if (!GENERIC_IMAGE_NAME.test(file.name || 'image.png')) return false;
+  return isFreshTimestamp(file.lastModified);
 }
 
 export function filesFromClipboard(data: DataTransfer | null | undefined) {
@@ -68,7 +82,12 @@ export function classifyTransfer(opts: {
   }
   const real = files.filter((file) => !isGenericImageFile(file));
   const images = files.filter((file) => isGenericImageFile(file));
-  if (real.length) return { mode: 'files', files: real, images: [], text: '' };
+  if (real.length) {
+    // Drop synthesized OS companion bitmaps (like Finder/Explorer image.png),
+    // but keep genuine named screenshots copied alongside other real files.
+    const kept = files.filter((file) => !isCompanionBitmapFile(file));
+    return { mode: 'files', files: kept.length ? kept : real, images: [], text: '' };
+  }
   if (images.length) return { mode: 'image', files: [], images, text: '' };
   if (text.trim()) return { mode: 'text', files: [], images: [], text };
   return { mode: 'empty', files: [], images: [], text: '' };

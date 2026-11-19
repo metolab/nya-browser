@@ -38,9 +38,13 @@ export function useClipboardSync(opts: {
   const [busy, setBusy] = useState(false);
   const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const [status, setStatus] = useState('未同步');
+
   const lastRef = useRef('');
+  const lastLocalReadRef = useRef<string | null>(null);
   const textRef = useRef('');
   const autoRef = useRef(true);
+  const permissionRef = useRef<'unknown' | 'granted' | 'denied'>('unknown');
+  const localReadDisabledRef = useRef(false);
   const typingRef = useRef(false);
   const pushTimer = useRef(0);
   const unlockTimer = useRef(0);
@@ -49,7 +53,10 @@ export function useClipboardSync(opts: {
   const remoteKindRef = useRef<ClipboardKind>('text');
   const binaryUntilRef = useRef(0);
   const emptySettleUntilRef = useRef(0);
-  const writeEpochRef = useRef(0);
+  // cancelEpoch invalidates queued text pushes (session switch or binary write).
+  const cancelEpochRef = useRef(0);
+  // syncEpoch invalidates in-flight GET responses whenever any write or reset occurs.
+  const syncEpochRef = useRef(0);
   const pendingLocalRef = useRef<string | null>(null);
   const pushChain = useRef(Promise.resolve());
 
@@ -57,6 +64,12 @@ export function useClipboardSync(opts: {
   subRef.current = subId;
   autoRef.current = auto;
   textRef.current = text;
+  permissionRef.current = permission;
+
+  const updatePermission = useCallback((next: 'unknown' | 'granted' | 'denied') => {
+    permissionRef.current = next;
+    setPermission(next);
+  }, []);
 
   const gateState = (): GateState => ({
     lastText: lastRef.current,
@@ -76,7 +89,8 @@ export function useClipboardSync(opts: {
 
   const scheduleUnlock = useCallback(() => {
     window.clearTimeout(unlockTimer.current);
-    const wait = Math.max(0, binaryUntilRef.current - Date.now());
+    // Add a small slack so Date.now() >= binaryUntil when the timer fires.
+    const wait = Math.max(0, binaryUntilRef.current - Date.now()) + 20;
     unlockTimer.current = window.setTimeout(() => {
       void onLockExpiredRef.current().catch(() => undefined);
     }, wait);
@@ -89,7 +103,9 @@ export function useClipboardSync(opts: {
       remoteKindRef.current = kind;
       if (kind === 'image' || kind === 'files') {
         binaryUntilRef.current = Date.now() + BINARY_HOLD_MS;
-        writeEpochRef.current += 1;
+        cancelEpochRef.current += 1;
+        syncEpochRef.current += 1;
+        pendingLocalRef.current = null;
         setStatus(kind === 'image' ? '远程剪贴板：图片' : '远程剪贴板：文件');
         scheduleUnlock();
       }
@@ -101,11 +117,11 @@ export function useClipboardSync(opts: {
     (value: string, mode: 'auto' | 'manual', opts?: { pendingFlush?: boolean }) => {
       const queuedSid = sessionRef.current;
       const queuedSub = subRef.current;
-      const queuedEpoch = writeEpochRef.current;
+      const queuedCancelEpoch = cancelEpochRef.current;
       const run = async () => {
         if (!queuedSid) return;
         if (sessionRef.current !== queuedSid || !sameSub(subRef.current, queuedSub)) return;
-        if (writeEpochRef.current !== queuedEpoch) return;
+        if (cancelEpochRef.current !== queuedCancelEpoch) return;
         const next = normalizeClip(value, lastRef.current);
         if (next == null) return;
         const state = gateState();
@@ -117,11 +133,32 @@ export function useClipboardSync(opts: {
           return;
         }
         pendingLocalRef.current = next;
-        const data = await api.setClipboard(queuedSid, next, queuedSub);
+        syncEpochRef.current += 1;
+        let data: { kind?: string; text?: string };
+        try {
+          data = await api.setClipboard(queuedSid, next, queuedSub);
+        } catch (err) {
+          if (pendingLocalRef.current === next) pendingLocalRef.current = null;
+          throw err;
+        }
         if (sessionRef.current !== queuedSid || !sameSub(subRef.current, queuedSub)) return;
-        if (writeEpochRef.current !== queuedEpoch) return;
+        if (cancelEpochRef.current !== queuedCancelEpoch) {
+          if (pendingLocalRef.current === next) pendingLocalRef.current = null;
+          return;
+        }
         if (pendingLocalRef.current !== next) return;
-        if (data.kind !== 'text') return;
+        if (data.kind && data.kind !== 'text') {
+          const kind = (data.kind === 'files' ? 'files' : 'image') as ClipboardKind;
+          remoteKindRef.current = kind;
+          setStatus(kind === 'image' ? '远程剪贴板：图片' : '远程剪贴板：文件');
+          if (mode === 'manual') {
+            pendingLocalRef.current = null;
+          } else if (binaryUntilRef.current <= Date.now()) {
+            binaryUntilRef.current = Date.now() + BINARY_HOLD_MS;
+            scheduleUnlock();
+          }
+          return;
+        }
         lastRef.current = next;
         remoteKindRef.current = 'text';
         binaryUntilRef.current = 0;
@@ -129,8 +166,9 @@ export function useClipboardSync(opts: {
         emptySettleUntilRef.current = Date.now() + EMPTY_SETTLE_MS;
         applyText(next, true);
         try {
-          await writeLocalClipboard(next);
-          setPermission('granted');
+          if (await writeLocalClipboard(next)) {
+            lastLocalReadRef.current = next;
+          }
         } catch {
           /* local write optional after a successful remote text apply */
         }
@@ -143,7 +181,7 @@ export function useClipboardSync(opts: {
       );
       return queued;
     },
-    [applyText],
+    [applyText, scheduleUnlock, updatePermission],
   );
 
   const ingestRemote = useCallback(
@@ -163,25 +201,35 @@ export function useClipboardSync(opts: {
         setStatus(kind === 'image' ? '远程剪贴板：图片' : '远程剪贴板：文件');
         return;
       }
-      if (writeEpochRef.current !== epoch) return;
-      if (pendingLocalRef.current) return;
+      if (source === 'auto') {
+        if (syncEpochRef.current !== epoch) return;
+        if (pendingLocalRef.current) return;
+      } else {
+        pendingLocalRef.current = null;
+      }
       const next = normalizeClip(remote.text, lastRef.current);
-      if (next == null || next === lastRef.current) {
+      if (next == null) {
         remoteKindRef.current = 'text';
         binaryUntilRef.current = 0;
+        if (source === 'manual') setStatus('已读取远程');
         return;
       }
+      const unchanged = next === lastRef.current;
       lastRef.current = next;
       remoteKindRef.current = 'text';
       binaryUntilRef.current = 0;
-      if (!typingRef.current) applyText(next, true);
+      if (unchanged && source === 'auto') return;
+      if (!typingRef.current || source === 'manual') applyText(next, true);
       try {
-        await writeLocalClipboard(next);
-        setPermission('granted');
-        setStatus('已同步到本地');
+        if (await writeLocalClipboard(next)) {
+          lastLocalReadRef.current = next;
+          setStatus('已同步到本地');
+          return;
+        }
       } catch {
-        setStatus('已读取远程');
+        /* fall through to read-only status */
       }
+      setStatus('已读取远程');
     },
     [applyText],
   );
@@ -190,7 +238,7 @@ export function useClipboardSync(opts: {
     async (source: 'auto' | 'manual') => {
       const sid = sessionRef.current;
       const sub = subRef.current;
-      const epoch = writeEpochRef.current;
+      const epoch = syncEpochRef.current;
       if (!sid) return;
       const data = await api.getClipboard(sid, sub);
       await ingestRemote(data, source, epoch, sid, sub || null);
@@ -198,26 +246,35 @@ export function useClipboardSync(opts: {
     [ingestRemote],
   );
 
-  const flushLocal = useCallback(async () => {
-    if (!sessionRef.current) return;
-    if (pendingLocalRef.current) {
-      await pushRemote(pendingLocalRef.current, autoRef.current ? 'auto' : 'manual', {
-        pendingFlush: true,
-      });
-      return;
-    }
-    if (!autoRef.current) return;
-    try {
-      const local = await readLocalClipboard();
-      setPermission('granted');
-      const next = normalizeClip(local, lastRef.current);
-      if (next == null) return;
-      applyText(next, false);
-      await pushRemote(next, 'auto');
-    } catch {
-      if (permission === 'unknown') setPermission('denied');
-    }
-  }, [applyText, permission, pushRemote]);
+  const flushLocal = useCallback(
+    async (opts?: { forceRead?: boolean; ignoreLastLocal?: boolean }) => {
+      if (!sessionRef.current) return;
+      if (pendingLocalRef.current) {
+        await pushRemote(pendingLocalRef.current, autoRef.current ? 'auto' : 'manual', {
+          pendingFlush: true,
+        });
+        return;
+      }
+      if (!autoRef.current) return;
+      if (localReadDisabledRef.current && !opts?.forceRead) return;
+      try {
+        const local = await readLocalClipboard();
+        localReadDisabledRef.current = false;
+        updatePermission('granted');
+        // Ignore unchanged OS clipboard on polls/focus so failed local writeback never overwrites a manual remote write.
+        if (!opts?.ignoreLastLocal && lastLocalReadRef.current === local) return;
+        lastLocalReadRef.current = local;
+        const next = normalizeClip(local, lastRef.current);
+        if (next == null || next === lastRef.current) return;
+        applyText(next, false);
+        await pushRemote(next, 'auto');
+      } catch {
+        localReadDisabledRef.current = true;
+        if (permissionRef.current === 'unknown') updatePermission('denied');
+      }
+    },
+    [applyText, pushRemote, updatePermission],
+  );
 
   const onLockExpired = useCallback(async () => {
     await flushRemote('auto');
@@ -254,7 +311,9 @@ export function useClipboardSync(opts: {
   const requestPermission = useCallback(async () => {
     try {
       const local = await readLocalClipboard();
-      setPermission('granted');
+      localReadDisabledRef.current = false;
+      updatePermission('granted');
+      lastLocalReadRef.current = local;
       if (autoRef.current) {
         const next = normalizeClip(local, lastRef.current);
         if (next == null) return;
@@ -262,9 +321,10 @@ export function useClipboardSync(opts: {
         await pushRemote(next, 'auto');
       }
     } catch {
-      setPermission('denied');
+      localReadDisabledRef.current = true;
+      updatePermission('denied');
     }
-  }, [applyText, pushRemote]);
+  }, [applyText, pushRemote, updatePermission]);
 
   const onTextChange = useCallback(
     (next: string) => {
@@ -282,16 +342,21 @@ export function useClipboardSync(opts: {
 
   useEffect(() => {
     lastRef.current = '';
+    lastLocalReadRef.current = null;
+    localReadDisabledRef.current = false;
+    typingRef.current = false;
     remoteKindRef.current = 'text';
     binaryUntilRef.current = 0;
     emptySettleUntilRef.current = 0;
     pendingLocalRef.current = null;
-    writeEpochRef.current += 1;
+    cancelEpochRef.current += 1;
+    syncEpochRef.current += 1;
+    window.clearTimeout(pushTimer.current);
     window.clearTimeout(unlockTimer.current);
     applyText('', false);
     setStatus(enabled ? '等待同步' : '未同步');
-    setPermission('unknown');
-  }, [applyText, enabled, sessionId, subId]);
+    updatePermission('unknown');
+  }, [applyText, enabled, sessionId, subId, updatePermission]);
 
   useEffect(() => {
     if (!enabled || !sessionId || !auto) return undefined;
@@ -308,26 +373,33 @@ export function useClipboardSync(opts: {
 
     const tickLocal = () => {
       if (cancelled || document.visibilityState !== 'visible') return;
-      void flushLocal();
+      void flushLocal().catch(() => undefined);
     };
 
     void tickRemote();
-    void flushLocal();
+    void flushLocal({ forceRead: true }).catch(() => undefined);
     const remoteTimer = window.setInterval(() => void tickRemote(), 700);
     const localTimer = window.setInterval(tickLocal, 450);
 
     const onCopy = (event: ClipboardEvent) => {
       const copied = clipText(event.clipboardData?.getData('text/plain') || '');
       if (!copied) {
-        window.setTimeout(() => void flushLocal(), 40);
+        window.setTimeout(
+          () => void flushLocal({ forceRead: true, ignoreLastLocal: true }).catch(() => undefined),
+          40,
+        );
         return;
       }
+      lastLocalReadRef.current = copied;
       const next = normalizeClip(copied, lastRef.current);
       if (next == null) return;
       applyText(next, false);
       void pushRemote(next, 'auto').catch(() => undefined);
     };
-    const onFocus = () => void flushLocal();
+    const onFocus = () => {
+      if (document.visibilityState !== 'visible') return;
+      void flushLocal({ forceRead: true }).catch(() => undefined);
+    };
 
     document.addEventListener('copy', onCopy);
     document.addEventListener('cut', onCopy);

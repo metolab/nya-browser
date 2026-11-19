@@ -313,7 +313,8 @@ export const api = {
     }),
   setClipboardImage: (id: string, image: Blob, subId?: string | null) => {
     const form = new FormData();
-    form.append('image', image, 'image.webp');
+    const filename = image.type === 'image/png' ? 'image.png' : 'image.webp';
+    form.append('image', image, filename);
     return request<{ ok: boolean; file: { name: string; path: string; size: number } }>(
       sessionIoPath(id, subId, '/clipboard/image'),
       { method: 'POST', body: form },

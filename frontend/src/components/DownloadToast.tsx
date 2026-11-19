@@ -16,6 +16,7 @@ const HOLD_MS = 8000;
 
 export default function DownloadToast({ sessionId, ready, downloads, onOpen, onSave }: Props) {
   const [held, setHeld] = useState<Record<string, number>>({});
+  const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
   const seen = useRef(new Set<string>());
   const primed = useRef(false);
 
@@ -23,10 +24,11 @@ export default function DownloadToast({ sessionId, ready, downloads, onOpen, onS
     primed.current = false;
     seen.current.clear();
     setHeld({});
+    setDismissed({});
   }, [sessionId]);
 
   useEffect(() => {
-    if (!ready) return undefined;
+    if (!ready) return;
     const now = Date.now();
     if (!primed.current) {
       for (const row of downloads) {
@@ -35,41 +37,71 @@ export default function DownloadToast({ sessionId, ready, downloads, onOpen, onS
       primed.current = true;
     }
     setHeld((prev) => {
-      const next = { ...prev };
+      let changed = false;
+      let next = prev;
+      const ensureClone = () => {
+        if (!changed) {
+          next = { ...prev };
+          changed = true;
+        }
+      };
       for (const row of downloads) {
         if ((row.state === 'completed' || row.state === 'failed') && !seen.current.has(row.id)) {
           seen.current.add(row.id);
+          ensureClone();
           next[row.id] = now + HOLD_MS;
         }
-        if (row.state === 'in_progress') seen.current.add(row.id);
       }
       for (const id of Object.keys(next)) {
-        if (next[id] < now) delete next[id];
+        if (next[id] < now) {
+          ensureClone();
+          delete next[id];
+        }
       }
-      return next;
+      return changed ? next : prev;
     });
+  }, [downloads, ready]);
+
+  const hasHeld = Object.keys(held).length > 0;
+  useEffect(() => {
+    if (!hasHeld) return undefined;
     const timer = window.setInterval(() => {
       setHeld((prev) => {
         const nowTick = Date.now();
-        const next = { ...prev };
         let changed = false;
-        for (const id of Object.keys(next)) {
-          if (next[id] < nowTick) {
+        let next = prev;
+        for (const id of Object.keys(prev)) {
+          if (prev[id] < nowTick) {
+            if (!changed) {
+              next = { ...prev };
+              changed = true;
+            }
             delete next[id];
-            changed = true;
           }
         }
         return changed ? next : prev;
       });
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [downloads, ready]);
+  }, [hasHeld]);
 
-  const visible = downloads.filter(
-    (row) =>
+  const dismiss = (id: string) => {
+    setDismissed((prev) => (prev[id] ? prev : { ...prev, [id]: true }));
+    setHeld((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const visible = downloads.filter((row) => {
+    if (dismissed[row.id]) return false;
+    return (
       row.state === 'in_progress' ||
-      ((row.state === 'completed' || row.state === 'failed') && held[row.id]),
-  );
+      ((row.state === 'completed' || row.state === 'failed') && Boolean(held[row.id]))
+    );
+  });
   if (!visible.length) return null;
 
   return (
@@ -99,7 +131,7 @@ export default function DownloadToast({ sessionId, ready, downloads, onOpen, onS
                 size="icon-xs"
                 variant="ghost"
                 aria-label="关闭"
-                onClick={() => setHeld((prev) => ({ ...prev, [row.id]: 0 }))}
+                onClick={() => dismiss(row.id)}
               >
                 <XIcon />
               </Button>
