@@ -74,6 +74,204 @@ index 742a7f0..f4e5d76 100644
  #endif  // BUILDFLAG(IS_ANDROID)
  
    InitializeDawnProcs();
+diff --git a/third_party/angle/src/libANGLE/Shader.cpp b/third_party/angle/src/libANGLE/Shader.cpp
+index a833d82..b13a174 100644
+--- a/third_party/angle/src/libANGLE/Shader.cpp
++++ b/third_party/angle/src/libANGLE/Shader.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include <functional>
+ #include <sstream>
++#include <string_view>
+ 
+ #include "GLSLANG/ShaderLang.h"
+ #include "common/angle_version_info.h"
+@@ -64,6 +65,31 @@ std::string GetShaderDumpFilePath(size_t shaderHash, const char *suffix)
+     return path.str();
+ }
+ 
++bool ShouldEmulateWindowsHlslDebugInfo(const Context *context)
++{
++    static const std::string mode = angle::GetEnvironmentVar("NYA_WEBGL_HLSL");
++    if (mode.empty() || mode == "0")
++    {
++        return false;
++    }
++    if (mode == "force")
++    {
++        return context != nullptr;
++    }
++    if (!context)
++    {
++        return false;
++    }
++    const char *renderer = context->getRendererString();
++    if (!renderer)
++    {
++        return false;
++    }
++    std::string_view rendererView(renderer);
++    return rendererView.find("NVIDIA") != std::string_view::npos &&
++           rendererView.find("SwiftShader") == std::string_view::npos;
++}
++
+ void GetSourceImpl(const std::string &source, GLsizei bufSize, GLsizei *length, char *buffer)
+ {
+     int index = 0;
+@@ -567,10 +593,97 @@ int Shader::getTranslatedSourceLength(const Context *context)
+     return static_cast<int>(mState.mCompiledState->translatedSource->length()) + 1;
+ }
+ 
++const std::string &Shader::getNyaHlslDebugInfo(const Context *context)
++{
++    if (mNyaHlslDebugInfoCached)
++    {
++        return mNyaHlslDebugInfo;
++    }
++    mNyaHlslDebugInfoCached = true;
++    mNyaHlslDebugInfo.clear();
++
++    if (mState.mCompileStatus != CompileStatus::COMPILED || mState.mSource->empty())
++    {
++        return mNyaHlslDebugInfo;
++    }
++    Compiler *angleCompiler = context->getCompiler();
++    if (!angleCompiler)
++    {
++        return mNyaHlslDebugInfo;
++    }
++
++    ShBuiltInResources resources           = angleCompiler->getBuiltInResources();
++    resources.MaxVertexUniformVectors      = 4095;
++    resources.MaxVaryingVectors            = 30;
++    resources.MaxVertexTextureImageUnits   = 16;
++    resources.MaxCombinedTextureImageUnits = 32;
++    resources.MaxTextureImageUnits         = 16;
++    resources.MaxFragmentUniformVectors    = 1024;
++    resources.MaxVertexOutputVectors       = 30;
++    resources.MaxFragmentInputVectors      = 30;
++    resources.MaxFragmentUniformBlocks     = 12;
++    resources.MaxVertexUniformBlocks       = 12;
++    resources.HashFunction                 = nullptr;
++
++    ShShaderSpec spec     = Compiler::SelectShaderSpec(context->getState());
++    ShHandle hlslCompiler = sh::ConstructCompiler(ToGLenum(mState.getShaderType()), spec,
++                                                  SH_HLSL_4_1_OUTPUT, &resources);
++    if (!hlslCompiler)
++    {
++        return mNyaHlslDebugInfo;
++    }
++
++    ShCompileOptions options        = {};
++    options.objectCode              = true;
++    options.removeInactiveVariables = true;
++    options.emulateGLDrawID         = true;
++    options.validateAST             = false;
++    if (context->isHardenedContext())
++    {
++        options.initGLPosition                          = true;
++        options.limitCallStackDepth                     = true;
++        options.limitExpressionComplexity               = true;
++        options.initSharedVariables                     = true;
++        options.rejectWebglShadersWithLargeVariables    = true;
++        options.rejectWebglShadersWithUndefinedBehavior = true;
++        options.expandFragmentOutputsToVec4             = true;
++        options.clampIndirectArrayBounds                = true;
++        if (context->getFrontendFeatures().allowExtensionDisableAfterNonPpTokens.enabled)
++        {
++            options.allowExtensionDisableAfterNonPPTokensInWebGL = true;
++        }
++    }
++    if (context->getFrontendFeatures().forceInitShaderVariables.enabled)
++    {
++        options.initOutputVariables           = true;
++        options.initializeUninitializedLocals = true;
++    }
++
++    const char *source = mState.mSource->c_str();
++    if (sh::Compile(hlslCompiler, &source, 1, options))
++    {
++        const std::string &hlsl = sh::GetObjectCode(hlslCompiler);
++        if (!hlsl.empty())
++        {
++            mNyaHlslDebugInfo = "// INITIAL HLSL BEGIN\n\n" + hlsl +
++                                "\n// INITIAL HLSL END\n\n\n\n// " +
++                                GetShaderTypeString(mState.getShaderType()) + " SHADER END\n";
++        }
++    }
++    sh::Destruct(hlslCompiler);
++    return mNyaHlslDebugInfo;
++}
++
+ int Shader::getTranslatedSourceWithDebugInfoLength(const Context *context)
+ {
+     resolveCompile(context);
+ 
++    if (ShouldEmulateWindowsHlslDebugInfo(context))
++    {
++        const std::string &debugInfo = getNyaHlslDebugInfo(context);
++        return debugInfo.empty() ? 0 : static_cast<int>(debugInfo.length()) + 1;
++    }
++
+     const std::string &debugInfo = mImplementation->getDebugInfo();
+     if (debugInfo.empty())
+     {
+@@ -611,6 +724,11 @@ void Shader::getTranslatedSourceWithDebugInfo(const Context *context,
+                                               char *buffer)
+ {
+     resolveCompile(context);
++    if (ShouldEmulateWindowsHlslDebugInfo(context))
++    {
++        GetSourceImpl(getNyaHlslDebugInfo(context), bufSize, length, buffer);
++        return;
++    }
+     const std::string &debugInfo = mImplementation->getDebugInfo();
+     GetSourceImpl(debugInfo, bufSize, length, buffer);
+ }
+@@ -619,6 +737,9 @@ void Shader::compile(const Context *context, angle::JobResultExpectancy resultEx
+ {
+     resolveCompile(context);
+ 
++    mNyaHlslDebugInfoCached = false;
++    mNyaHlslDebugInfo.clear();
++
+     // Create a new compiled shader state.  If any programs are currently linking using this shader,
+     // they would use the old compiled state, and this shader is free to recompile in the meantime.
+     mState.mCompiledState = std::make_shared<CompiledShaderState>(mState.getShaderType());
+@@ -914,6 +1035,9 @@ bool Shader::loadBinaryImpl(const Context *context,
+     BinaryInputStream stream(
+         ANGLE_UNSAFE_TODO(angle::Span(static_cast<const uint8_t *>(binary), length)));
+ 
++    mNyaHlslDebugInfoCached = false;
++    mNyaHlslDebugInfo.clear();
++
+     mState.mCompiledState = std::make_shared<CompiledShaderState>(mState.getShaderType());
+ 
+     // Shader binaries generated with offline compiler have additional fields
+diff --git a/third_party/angle/src/libANGLE/Shader.h b/third_party/angle/src/libANGLE/Shader.h
+index 45f37c6..2e2fc86 100644
+--- a/third_party/angle/src/libANGLE/Shader.h
++++ b/third_party/angle/src/libANGLE/Shader.h
+@@ -211,6 +211,10 @@ class Shader final : angle::NonCopyable, public LabeledObject
+                       const ShShaderOutput &outputType,
+                       const ShBuiltInResources &resources);
+ 
++    // Lazily translate the compiled shader to HLSL for WEBGL_debug_shaders
++    // under Nya Windows D3D11 emulation.
++    const std::string &getNyaHlslDebugInfo(const Context *context);
++
+     ShaderState mState;
+     std::unique_ptr<rx::ShaderImpl> mImplementation;
+     const gl::Limitations mRendererLimitations;
+@@ -218,6 +222,8 @@ class Shader final : angle::NonCopyable, public LabeledObject
+     unsigned int mRefCount;  // Number of program objects this shader is attached to
+     bool mDeleteStatus;  // Flag to indicate that the shader can be deleted when no longer in use
+     std::string mInfoLog;
++    bool mNyaHlslDebugInfoCached = false;
++    std::string mNyaHlslDebugInfo;
+ 
+     // We keep a reference to the translator in order to defer compiles while preserving settings.
+     BindingPointer<Compiler> mBoundCompiler;
 diff --git a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
 index 9eb36fe..65208b3 100644
 --- a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
@@ -107,7 +305,7 @@ index 9eb36fe..65208b3 100644
  
  bool WebGL2RenderingContextBase::ValidateCapability(const char* function_name,
 diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-index e9348c2..aece7fb 100644
+index e9348c2..ff29185 100644
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 @@ -24,6 +24,7 @@
@@ -252,17 +450,7 @@ index e9348c2..aece7fb 100644
    return MakeGarbageCollected<WebGLShaderPrecisionFormat>(range[0], range[1],
                                                            precision);
  }
-@@ -5380,6 +5472,9 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
-     }
-     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
-   }
-+  if (data && buffer_size.IsValid()) {
-+    nya::FarbleBytes(data, static_cast<size_t>(buffer_size.ValueOrDie()));
-+  }
- }
- 
- void WebGLRenderingContextBase::RenderbufferStorageImpl(
-@@ -7964,6 +8059,9 @@ ScriptValue WebGLRenderingContextBase::GetFloatParameter(
+@@ -7964,6 +8056,9 @@ ScriptValue WebGLRenderingContextBase::GetFloatParameter(
    GLfloat value = 0;
    if (!isContextLost()) {
      ContextGL()->GetFloatv(pname, &value);
@@ -272,7 +460,7 @@ index e9348c2..aece7fb 100644
    }
    return WebGLAny(script_state, value);
  }
-@@ -7986,6 +8084,10 @@ ScriptValue WebGLRenderingContextBase::GetIntParameter(
+@@ -7986,6 +8081,10 @@ ScriptValue WebGLRenderingContextBase::GetIntParameter(
        default:
          break;
      }
@@ -283,7 +471,7 @@ index e9348c2..aece7fb 100644
    }
    return WebGLAny(script_state, value);
  }
-@@ -7994,8 +8096,16 @@ ScriptValue WebGLRenderingContextBase::GetInt64Parameter(
+@@ -7994,8 +8093,16 @@ ScriptValue WebGLRenderingContextBase::GetInt64Parameter(
      ScriptState* script_state,
      GLenum pname) {
    GLint64 value = 0;
@@ -301,7 +489,7 @@ index e9348c2..aece7fb 100644
    return WebGLAny(script_state, value);
  }
  
-@@ -8012,8 +8122,18 @@ ScriptValue WebGLRenderingContextBase::GetWebGLFloatArrayParameter(
+@@ -8012,8 +8119,18 @@ ScriptValue WebGLRenderingContextBase::GetWebGLFloatArrayParameter(
      ScriptState* script_state,
      GLenum pname) {
    std::array<GLfloat, 4> value = {0};
@@ -321,7 +509,7 @@ index e9348c2..aece7fb 100644
    unsigned length = 0;
    switch (pname) {
      case GL_ALIASED_POINT_SIZE_RANGE:
-@@ -8036,8 +8156,13 @@ ScriptValue WebGLRenderingContextBase::GetWebGLIntArrayParameter(
+@@ -8036,8 +8153,13 @@ ScriptValue WebGLRenderingContextBase::GetWebGLIntArrayParameter(
      ScriptState* script_state,
      GLenum pname) {
    std::array<GLint, 4> value = {0};

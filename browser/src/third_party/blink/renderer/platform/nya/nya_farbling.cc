@@ -11,7 +11,6 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
-#include <limits>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -293,47 +292,7 @@ std::string HexId(uint64_t seed, uint64_t salt) {
   return std::string(buf, 32);
 }
 
-uint32_t Lcg(uint32_t& state) {
-  state = static_cast<uint32_t>(static_cast<uint64_t>(state) * 1664525u +
-                                1013904223u);
-  return state;
-}
-
 }  // namespace
-
-bool HasSeed() {
-  return GetConfig().has_seed;
-}
-
-void FarbleBytes(uint8_t* data, size_t size) {
-  if (!data || size == 0 || !HasSeed()) {
-    return;
-  }
-  const size_t flips = std::min<size_t>(64, std::max<size_t>(8, size / 256));
-  uint32_t state = static_cast<uint32_t>(GetConfig().seed);
-  for (size_t i = 0; i < flips; ++i) {
-    const uint32_t r = Lcg(state);
-    data[r % size] ^= 1u;
-  }
-}
-
-void FarbleBytes(base::span<uint8_t> data) {
-  FarbleBytes(data.data(), data.size());
-}
-
-void FarbleAudio(float* data, size_t count) {
-  if (!data || count == 0 || !HasSeed()) {
-    return;
-  }
-  // Brave BALANCED: scale by 0.99 + seed_fraction / 100.
-  const double max_u64 =
-      static_cast<double>(std::numeric_limits<uint64_t>::max());
-  const double fudge =
-      0.99 + (static_cast<double>(GetConfig().seed) / max_u64) / 100.0;
-  for (size_t i = 0; i < count; ++i) {
-    data[i] = static_cast<float>(data[i] * fudge);
-  }
-}
 
 std::optional<unsigned> HardwareConcurrency() {
   return GetConfig().hardware_concurrency;

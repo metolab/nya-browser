@@ -526,6 +526,10 @@ function envRows(add, main, base, allow, media) {
   const hashes = main.hashes || {};
   const missing = Object.keys(base.hashes || {}).filter((k) => typeof hashes[k] !== 'string' || !hashes[k]);
   add('HASH-01', 'present', !missing.length, { missing, note: allow.hashes });
+  const pi = main.pixelIntegrity || {};
+  const piKeys = ['solidBlack', 'solidRed', 'putGet', 'toDataUrlRoundtrip', 'webglReadPixels', 'audioExact'];
+  const piBad = Object.fromEntries(piKeys.filter((k) => pi[k] !== true).map((k) => [k, pi[k]]));
+  add('HASH-02', 'policy', !Object.keys(piBad).length, { bad: piBad });
 }
 
 /** Every identity field in every context, version-normalized. */
@@ -623,7 +627,7 @@ function headerRows(add, report, baseReport, allow, cross) {
 const OWNED_SECTIONS = new Set([
   'fonts', 'localFonts', 'fontMetrics', 'genericFamilies', 'emoji', 'glyphAdvances', 'systemColors', 'scrollbars',
   'formControls', 'screen', 'mediaQueries', 'keyboard', 'codecs', 'decoding', 'eme', 'voices', 'rtc', 'audio', 'api',
-  'permissions', 'devices', 'misc', 'env', 'hashes', 'elapsedMs',
+  'permissions', 'devices', 'misc', 'env', 'hashes', 'pixelIntegrity', 'elapsedMs',
 ]);
 
 function catchAllRows(add, main, base, allow, media) {
@@ -708,6 +712,8 @@ function gfxRows(add, report, baseReport, allow, spec) {
     }
     add('GFX-07', 'exact', !Object.keys(bad).length, { bad });
   }
+  const shaderIsHlsl = report.main?.pixelIntegrity?.shaderIsHlsl;
+  add('GFX-08', 'policy', shaderIsHlsl === true, { shaderIsHlsl });
 }
 
 function windowsMetricRows(name, spec, sample, baseline, allow) {

@@ -11,7 +11,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/span.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 
 namespace nya {
@@ -37,16 +36,6 @@ struct MediaDeviceSpoof {
   std::string group_id;
   std::string kind;  // audioinput | audiooutput | videoinput
 };
-
-// True when --nya-fp-seed is set on this process.
-PLATFORM_EXPORT bool HasSeed();
-
-// Brave BALANCED-style LSB perturbation. No-op without a seed.
-PLATFORM_EXPORT void FarbleBytes(uint8_t* data, size_t size);
-PLATFORM_EXPORT void FarbleBytes(base::span<uint8_t> data);
-
-// Brave BALANCED-style amplitude fudge. No-op without a seed.
-PLATFORM_EXPORT void FarbleAudio(float* data, size_t count);
 
 PLATFORM_EXPORT std::optional<unsigned> HardwareConcurrency();
 PLATFORM_EXPORT std::optional<float> DeviceMemory();

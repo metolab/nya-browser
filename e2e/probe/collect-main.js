@@ -789,6 +789,103 @@
     return hash(s);
   }
 
+  async function pixelIntegrity() {
+    const out = {};
+    for (const [name, style, exp] of [
+      ['solidBlack', '#000000', [0, 0, 0, 255]],
+      ['solidRed', 'rgb(255,0,0)', [255, 0, 0, 255]],
+    ]) {
+      const c = document.createElement('canvas');
+      c.width = 8;
+      c.height = 8;
+      const g = c.getContext('2d');
+      g.fillStyle = style;
+      g.fillRect(0, 0, 8, 8);
+      const d = g.getImageData(0, 0, 8, 8).data;
+      let ok = true;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i] !== exp[0] || d[i + 1] !== exp[1] || d[i + 2] !== exp[2] || d[i + 3] !== exp[3]) {
+          ok = false;
+          break;
+        }
+      }
+      out[name] = ok;
+    }
+    const c2 = document.createElement('canvas');
+    c2.width = 16;
+    c2.height = 16;
+    const g2 = c2.getContext('2d');
+    const src = g2.createImageData(16, 16);
+    for (let i = 0; i < src.data.length; i += 4) {
+      src.data[i] = (i * 37) & 255;
+      src.data[i + 1] = (i * 73) & 255;
+      src.data[i + 2] = (i * 109) & 255;
+      src.data[i + 3] = 255;
+    }
+    g2.putImageData(src, 0, 0);
+    const full = g2.getImageData(0, 0, 16, 16).data;
+    let putGet = true;
+    for (let i = 0; i < full.length; i += 1) {
+      if (full[i] !== src.data[i]) {
+        putGet = false;
+        break;
+      }
+    }
+    out.putGet = putGet;
+    const url = c2.toDataURL('image/png');
+    out.toDataUrlRoundtrip = await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c3 = document.createElement('canvas');
+        c3.width = 16;
+        c3.height = 16;
+        const g3 = c3.getContext('2d');
+        g3.drawImage(img, 0, 0);
+        const back = g3.getImageData(0, 0, 16, 16).data;
+        for (let i = 0; i < back.length; i += 1) {
+          if (back[i] !== src.data[i]) return resolve(false);
+        }
+        resolve(true);
+      };
+      img.onerror = () => resolve(false);
+      img.src = url;
+    });
+    const cw = document.createElement('canvas');
+    cw.width = 16;
+    cw.height = 16;
+    const gl = cw.getContext('webgl');
+    if (gl) {
+      gl.clearColor(0, 1, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      const px = new Uint8Array(16 * 16 * 4);
+      gl.readPixels(0, 0, 16, 16, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let glOk = true;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i] !== 0 || px[i + 1] !== 255 || px[i + 2] !== 0 || px[i + 3] !== 255) {
+          glOk = false;
+          break;
+        }
+      }
+      out.webglReadPixels = glOk;
+      const dbg = gl.getExtension('WEBGL_debug_shaders');
+      if (dbg) {
+        const fs = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fs, 'precision mediump float; void main() { gl_FragColor = vec4(1.0); }');
+        gl.compileShader(fs);
+        const translated = dbg.getTranslatedShaderSource(fs) || '';
+        out.shaderIsHlsl = translated.includes('// INITIAL HLSL BEGIN') && translated.includes('// FRAGMENT SHADER END');
+      }
+    }
+    if (typeof OfflineAudioContext !== 'undefined') {
+      const ac = new OfflineAudioContext(1, 64, 44100);
+      const buf = ac.createBuffer(1, 64, 44100);
+      buf.getChannelData(0).fill(0.5);
+      const ch = buf.getChannelData(0);
+      out.audioExact = ch[0] === 0.5 && ch[63] === 0.5;
+    }
+    return out;
+  }
+
   async function collectMain() {
     const started = Date.now();
     const out = {};
@@ -818,6 +915,7 @@
     out.misc = await safe(async () => misc());
     out.env = await safe(env);
     out.glyphAdvances = await safe(async () => glyphAdvances());
+    out.pixelIntegrity = await safe(pixelIntegrity);
     out.hashes = { canvas: await safe(async () => canvasHash()), webgl: await safe(async () => webglHash()), audio: out.audio && out.audio.offlineHash };
     out.elapsedMs = Date.now() - started;
     return plain(out);

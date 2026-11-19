@@ -152,6 +152,9 @@ function applyWindowsFontPrefs(prefs: ChromePrefs, fingerprint: FingerprintConfi
 export function chromeFontEnv(sessionId: string, fingerprint: FingerprintConfig): NodeJS.ProcessEnv {
   const windows = coerceOs(fingerprint.os) === 'windows';
   const env: NodeJS.ProcessEnv = windows ? { NYA_FONT_RASTER: 'dwrite' } : {};
+  if (windows && gpuBackend() !== 'swiftshader') {
+    env.NYA_WEBGL_HLSL = '1';
+  }
   const fontconfigDir = path.join(sessionDir(sessionId), '.config', 'nya');
   if (windows && hasWindowsFonts()) {
     env.FONTCONFIG_FILE = writeWindowsFontconfig(

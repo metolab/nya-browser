@@ -1,6 +1,5 @@
 nya/001-build-switches.patch
 nya/002-identity.patch
-nya/003-canvas-audio.patch
 nya/004-fonts.patch
 nya/005-system-ui-input.patch
 nya/006-webgl-webgpu.patch

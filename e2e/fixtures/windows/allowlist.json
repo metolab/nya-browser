@@ -33,7 +33,6 @@
     "reason": "Network voices depend on the browser vendor and connectivity."
   },
   "audio": {
-    "offlineHash": "Audio output is farbled per session seed.",
     "context.state": "An AudioContext starts running only after user activation (autoplay policy); the baseline page had been clicked."
   },
   "devices": {
