@@ -23,7 +23,9 @@ type WindowType = 'normal' | 'dialog' | 'utility' | 'dock' | 'desktop' | 'popup'
 
 const CHROME_WM_CLASSES = ['chromium', 'Chromium', 'chromium-browser', 'Chromium-browser'];
 
-/** Bottom work-area inset per X display (Windows taskbar height for emulated sessions). */
+export const DEFAULT_TASKBAR_PX = 36;
+
+/** Bottom work-area inset per X display (taskbar height for the session OS). */
 export const displayInsets = new Map<number, number>();
 
 export function bottomInset(display: number, panelH = 0) {
@@ -33,7 +35,7 @@ export function bottomInset(display: number, panelH = 0) {
 export function sessionTaskbarPx(sessionId: string) {
   const fp = getSession(sessionId)?.fingerprint;
   const win = fp ? windowsIdentity(coerceOs(fp.os), coerceWindowsRelease(fp.windowsRelease)) : null;
-  return win ? win.taskbarPx : 0;
+  return win ? win.taskbarPx : DEFAULT_TASKBAR_PX;
 }
 
 async function xdotoolChromeIds(display: number, timeoutMs = 2500) {

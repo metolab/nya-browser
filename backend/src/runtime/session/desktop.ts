@@ -3,35 +3,38 @@ import path from 'path';
 import { sessionDir } from '../../store.js';
 import { clampDisplayGeom } from '@nya/shared';
 import { runXtype, TYPE_TEXT_MAX } from '../xtype.js';
-import { bottomInset, chromeFits, displayInsets, findMainChromeWindow, listDesktopWindows, maximizeChrome, readChromeWindowGeom, sessionTaskbarPx, windowHidden } from './desktopWindows.js';
+import { bottomInset, chromeFits, DEFAULT_TASKBAR_PX, displayInsets, maximizeChrome, readChromeWindowGeom, sessionTaskbarPx } from './desktopWindows.js';
 import { gpuBackend } from './gpu.js';
 import { runAsSession, runOnDisplay, sessionEnv } from './isolation.js';
-import { childPidAlive, envOn, killTree, parseWh, sleep } from './proc.js';
-import { getSubOrThrow, runtimes, SCREEN_INIT, SCREEN_MAX } from './state.js';
+import { childPidAlive, envOn, killTree, sleep } from './proc.js';
+import { getSubOrThrow, runtimes, SCREEN_MAX } from './state.js';
 import type { DisplayHolder, Geom, SessionRuntime, SubDesktop } from './types.js';
 
 const TASKBAR_BIN = '/usr/bin/tint2';
-const TASKBAR_H = 36;
 
 export const DESKTOP_COLORS = ['#0f3d4c', '#3d1f4c', '#1f4c2e', '#4c2e1f', '#1f2e4c', '#4c1f2e'];
 
 const openboxInsets = new Map<string, number>();
 
-/** Keep openbox margins (_NET_WORKAREA -> screen.availHeight) in step with the session OS. */
+/** Keep openbox margins (_NET_WORKAREA -> screen.availHeight) and tint2 height in step with the session OS. */
 export async function applyOsTaskbar(runtime: SessionRuntime) {
   const px = sessionTaskbarPx(runtime.id);
-  const displays = [runtime.display, ...runtime.subs.map((sub) => sub.display)];
-  for (const display of displays) displayInsets.set(Number(display), px);
+  const holders: DisplayHolder[] = [runtime, ...runtime.subs];
+  for (const holder of holders) displayInsets.set(Number(holder.display), px);
   runtime.osTaskbarPx = px;
   const home = sessionDir(runtime.id);
-  if (openboxInsets.get(home) === px) return;
-  writeOpenboxConfig(home, px);
-  for (const display of displays) {
+  if (openboxInsets.get(home) === px) {
+    for (const holder of holders) ensureTaskbar(runtime, holder);
+    return;
+  }
+  writeDesktopConfig(home, px);
+  for (const holder of holders) {
     try {
-      await runOnDisplay(display, 'openbox', ['--reconfigure'], 3000);
+      await runOnDisplay(holder.display, 'openbox', ['--reconfigure'], 3000);
     } catch {
       /* openbox not up yet; it reads rc.xml on start */
     }
+    restartTaskbar(runtime, holder);
   }
 }
 
@@ -141,12 +144,14 @@ function taskbarAvailable() {
   }
 }
 
-function writeTint2Config(home: string) {
+function writeTint2Config(home: string, height = DEFAULT_TASKBAR_PX) {
   const dest = tint2ConfigPath(home);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const vPad = height >= 48 ? 6 : height >= 40 ? 5 : 4;
+  const taskH = Math.max(24, height - vPad * 2);
   fs.writeFileSync(
     dest,
-    `# nya taskbar: extra windows, or the only window when minimized
+    `# nya taskbar
 rounded = 0
 border_width = 0
 background_color = #1f2937 100
@@ -161,14 +166,14 @@ border_width = 0
 background_color = #334155 100
 
 panel_items = T
-panel_size = 100% ${TASKBAR_H}
+panel_size = 100% ${height}
 panel_margin = 0 0
-panel_padding = 6 3 6
+panel_padding = 6 ${vPad} 6
 panel_background_id = 1
 panel_position = bottom center horizontal
 panel_layer = top
 panel_dock = 0
-strut_policy = follow_size
+strut_policy = none
 autohide = 0
 wm_menu = 0
 panel_window_name = tint2
@@ -183,7 +188,7 @@ task_align = left
 task_text = 1
 task_icon = 1
 task_centered = 0
-task_maximum_size = 220 28
+task_maximum_size = 220 ${taskH}
 task_padding = 8 3 6
 task_font = Noto Sans CJK SC 9
 task_font_color = #f8fafc 100
@@ -200,9 +205,9 @@ clock_size_font = 0
   );
 }
 
-export function writeDesktopConfig(home: string, bottomMargin = 0) {
+export function writeDesktopConfig(home: string, bottomMargin = DEFAULT_TASKBAR_PX) {
   writeOpenboxConfig(home, bottomMargin);
-  writeTint2Config(home);
+  writeTint2Config(home, bottomMargin);
 }
 
 export function spawnXvfb(runtime: SessionRuntime, display: number, logFile: string) {
@@ -309,70 +314,34 @@ function logVncResize(payload: Record<string, unknown>) {
   console.log(`[vnc.resize] ${JSON.stringify(payload)}`);
 }
 
-function startTaskbar(runtime: SessionRuntime, holder: DisplayHolder) {
-  if (!taskbarAvailable()) return false;
-  if (holder.tint2 && childPidAlive(holder.tint2)) {
-    holder.taskbarOn = true;
-    return true;
-  }
+export function ensureTaskbar(runtime: SessionRuntime, holder: DisplayHolder) {
+  if (runtime.stopping || !taskbarAvailable()) return false;
+  if (holder.tint2 && childPidAlive(holder.tint2)) return true;
   const home = sessionDir(runtime.id);
-  writeTint2Config(home);
+  const height = runtime.osTaskbarPx ?? sessionTaskbarPx(runtime.id);
+  writeTint2Config(home, height);
   const logName = holder === runtime ? 'tint2.log' : `tint2-sub-${(holder as SubDesktop).id}.log`;
   holder.tint2 = runAsSession(runtime, TASKBAR_BIN, ['-c', tint2ConfigPath(home)], {
     env: { DISPLAY: `:${holder.display}` },
     logFile: path.join(home, logName),
   });
-  holder.taskbarOn = true;
   return true;
 }
 
-function stopTaskbar(holder: DisplayHolder) {
+function restartTaskbar(runtime: SessionRuntime, holder: DisplayHolder) {
   if (holder.tint2) {
     killTree(holder.tint2, 'SIGTERM');
     holder.tint2 = null;
   }
-  holder.taskbarOn = false;
+  ensureTaskbar(runtime, holder);
 }
 
-/** Show the taskbar while a desktop has more than one window (or a minimized one), and refit Chrome. */
-async function syncDesktop(runtime: SessionRuntime, holder: DisplayHolder) {
+export function syncSessionDesktops(runtime: SessionRuntime) {
   if (runtime.stopping) return;
-  const display = holder.display;
-  const wins = await listDesktopWindows(display).catch(() => []);
-  const switchable = wins.filter((w) => w.switchable);
-  const hidden = switchable.filter((w) => w.hidden);
-  const needBar = switchable.length > 1 || hidden.length > 0;
-  const geom = holder.lastGeom || parseWh(SCREEN_INIT);
-  if (needBar) {
-    const alive = childPidAlive(holder.tint2);
-    if (!alive) holder.taskbarOn = false;
-    if (taskbarAvailable() && !holder.taskbarOn) {
-      startTaskbar(runtime, holder);
-      holder.taskbarFitted = false;
-    }
-    const mainId = await findMainChromeWindow(display);
-    const mainHidden = Boolean(mainId && (await windowHidden(display, mainId)));
-    if (holder.taskbarOn && !holder.taskbarFitted && !mainHidden) {
-      await sleep(120);
-      await maximizeChrome(display, geom.w, geom.h, { panelH: TASKBAR_H, keepStack: true });
-      holder.taskbarFitted = true;
-    }
-    return;
-  }
-  if (holder.taskbarOn || holder.tint2) {
-    stopTaskbar(holder);
-    holder.taskbarFitted = false;
-    await sleep(80);
-    await maximizeChrome(display, geom.w, geom.h);
-  }
-}
-
-export async function syncSessionDesktops(runtime: SessionRuntime) {
-  if (runtime.stopping) return;
-  await syncDesktop(runtime, runtime);
+  ensureTaskbar(runtime, runtime);
   for (const sub of runtime.subs) {
     if (runtime.stopping) return;
-    await syncDesktop(runtime, sub);
+    ensureTaskbar(runtime, sub);
   }
 }
 
@@ -532,7 +501,7 @@ async function applyDesiredGeom(holder: DisplayHolder): Promise<Geom | undefined
   const actual = await readFramebuffer(display);
   const chrome = await readChromeWindowGeom(display);
   const fbMatch = actual.w === want.w && actual.h === want.h;
-  const panelH = bottomInset(display, holder.taskbarOn ? TASKBAR_H : 0);
+  const panelH = bottomInset(display);
   if (fbMatch && chromeFits(chrome, want.w, want.h, panelH)) {
     holder.lastGeom = { w: want.w, h: want.h };
     logVncResize({
@@ -546,10 +515,7 @@ async function applyDesiredGeom(holder: DisplayHolder): Promise<Geom | undefined
     return holder.lastGeom;
   }
   if (fbMatch) {
-    await maximizeChrome(display, want.w, want.h, {
-      panelH,
-      keepStack: Boolean(holder.taskbarOn),
-    });
+    await maximizeChrome(display, want.w, want.h, { panelH });
     holder.lastGeom = { w: want.w, h: want.h };
     logVncResize({
       result: 'maximize',
@@ -560,10 +526,7 @@ async function applyDesiredGeom(holder: DisplayHolder): Promise<Geom | undefined
     });
   } else {
     await setFramebuffer(display, want.w, want.h);
-    await maximizeChrome(display, want.w, want.h, {
-      panelH,
-      keepStack: Boolean(holder.taskbarOn),
-    });
+    await maximizeChrome(display, want.w, want.h, { panelH });
     holder.lastGeom = { w: want.w, h: want.h };
     logVncResize({
       result: 'fb',

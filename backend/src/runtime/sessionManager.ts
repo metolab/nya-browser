@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { AUDIT_ACTIONS, coerceOs, coerceWebrtcMode, webrtcNeedsPublicIp, type ProxyConfig } from '@nya/shared';
+import { AUDIT_ACTIONS, coerceWebrtcMode, webrtcNeedsPublicIp, type ProxyConfig } from '@nya/shared';
 import { writeAudit } from '../modules/audit/service.js';
 import {
   ensureSessionDirs,
@@ -42,6 +42,7 @@ import {
   applyOsTaskbar,
   DESKTOP_COLORS,
   disableDisplaySleep,
+  ensureTaskbar,
   setFramebuffer,
   spawnX11vnc,
   spawnXvfb,
@@ -185,8 +186,6 @@ async function killDesktop(holder: DisplayHolder, graceMs: number, extra: Sessio
     killTree(holder.tint2, 'SIGKILL');
     holder.tint2 = null;
   }
-  holder.taskbarOn = false;
-  holder.taskbarFitted = false;
   const kids = [...extra, holder.x11vnc, holder.openbox, holder.xvfb];
   for (const child of kids) killTree(child, 'SIGTERM');
   await sleep(graceMs);
@@ -303,16 +302,14 @@ async function startChrome(runtime: SessionRuntime) {
   void startChromeLifecycle(runtime.id, cdpPort).catch((err) => {
     console.warn(`[chrome-lifecycle] session=${runtime.id} attach failed:`, errMsg(err));
   });
-  if (coerceOs(fingerprint.os) === 'windows') {
-    // Windows Chrome runs maximized: no resize borders, inner == outer width.
-    // openbox ignores --start-maximized, so maximize once the window maps.
-    const deadline = Date.now() + 10000;
-    while (Date.now() < deadline && runtime.chrome && !(await displayHasBrowserWindow(runtime.display))) {
-      await sleep(250);
-    }
-    const geom = runtime.lastGeom || parseWh(SCREEN_INIT);
-    await maximizeChrome(runtime.display, geom.w, geom.h).catch(() => undefined);
+  // Chrome runs maximized to the work area above the taskbar: openbox ignores
+  // --start-maximized, so maximize once the window maps.
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline && runtime.chrome && !(await displayHasBrowserWindow(runtime.display))) {
+    await sleep(250);
   }
+  const geom = runtime.lastGeom || parseWh(SCREEN_INIT);
+  await maximizeChrome(runtime.display, geom.w, geom.h).catch(() => undefined);
 }
 
 async function stopChrome(runtime: SessionRuntime) {
@@ -370,7 +367,7 @@ async function watchChrome(runtime: SessionRuntime) {
       void startChromeLifecycle(runtime.id, runtime.cdpPort).catch(() => {});
     }
     await ensureAllChromeWindows(runtime);
-    await syncSessionDesktops(runtime);
+    syncSessionDesktops(runtime);
   } catch (err) {
     console.warn(`[chrome-watch] session=${runtime.id}`, errMsg(err));
   } finally {
@@ -414,19 +411,6 @@ function startChromeWatchdog() {
   watchTimer.unref();
 }
 
-let desktopWatchTimer: ReturnType<typeof setInterval> | null = null;
-
-function startDesktopWatch() {
-  if (desktopWatchTimer) return;
-  desktopWatchTimer = setInterval(() => {
-    for (const runtime of runtimes.values()) {
-      if (runtime.stopping) continue;
-      void syncSessionDesktops(runtime).catch(() => {});
-    }
-  }, 1500);
-  desktopWatchTimer.unref();
-}
-
 /**
  * Start the full desktop stack for a session: slot user, Xvfb, openbox,
  * local proxy and network filter, x11vnc, then Chrome.
@@ -455,7 +439,8 @@ export async function startSession(
     ensureSessionDirs(sessionId);
     ensureSessionFingerprint(sessionId);
     writeChromePreferences(sessionId, launchUrl);
-    writeDesktopConfig(home, sessionTaskbarPx(sessionId));
+    const taskbarPx = sessionTaskbarPx(sessionId);
+    writeDesktopConfig(home, taskbarPx);
     hardenSessionDirs(sessionId, user);
     const authFile = writeXauth(home, display, user.uid, user.gid);
     const vncSock = path.join(home, 'vnc.sock');
@@ -479,8 +464,7 @@ export async function startSession(
       chrome: null,
       x11vnc: null,
       tint2: null,
-      taskbarOn: false,
-      taskbarFitted: false,
+      osTaskbarPx: taskbarPx,
       clipboardText: undefined,
       clipboardKind: 'text',
       clipboardFiles: [],
@@ -541,6 +525,8 @@ export async function startSession(
 
     // Distinct root color helps confirm desktops are truly separate.
     runAsSession(rt, 'xsetroot', ['-solid', DESKTOP_COLORS[slot % DESKTOP_COLORS.length]]);
+    displayInsets.set(display, taskbarPx);
+    ensureTaskbar(rt, rt);
 
     writeActiveDisplay(rt, display);
     await startChrome(rt);
@@ -697,7 +683,7 @@ async function spawnSubDesktop(runtime: SessionRuntime, sub: SubDesktop) {
     console.warn(`[sub ${runtime.id}/${sub.id}] X not ready:`, errMsg(err));
   });
 
-  displayInsets.set(display, runtime.osTaskbarPx || 0);
+  displayInsets.set(display, runtime.osTaskbarPx ?? sessionTaskbarPx(runtime.id));
   sub.openbox = runAsSession(runtime, 'openbox', ['--sm-disable'], {
     logFile: path.join(home, `openbox-sub-${sub.id}.log`),
     env: { DISPLAY: `:${display}` },
@@ -728,6 +714,7 @@ async function spawnSubDesktop(runtime: SessionRuntime, sub: SubDesktop) {
   runAsSession(runtime, 'xsetroot', ['-solid', DESKTOP_COLORS[(runtime.slot + 1) % DESKTOP_COLORS.length]], {
     env: { DISPLAY: `:${display}` },
   });
+  ensureTaskbar(runtime, sub);
 }
 
 async function respawnSubDesktop(runtime: SessionRuntime, sub: SubDesktop) {
@@ -770,8 +757,6 @@ export async function createSub(
     clipboardLockUntil: 0,
     holdGen: 0,
     tint2: null,
-    taskbarOn: false,
-    taskbarFitted: false,
     ownerUserId: ownerUserId || null,
     occupancyId: ownerUserId ? newOccupancy() : null,
   };
@@ -941,7 +926,6 @@ export async function stopAllSessions() {
 onConnectionsChanged(syncIdleWatch);
 writeChromePolicies();
 startChromeWatchdog();
-startDesktopWatch();
 
 export { detectFileDialog, getChromeTitle } from './session/desktopWindows.js';
 export { resizeDisplay, typeText } from './session/desktop.js';

@@ -12,8 +12,6 @@ export type DisplayHolder = {
   openbox: ChildProcess | null;
   x11vnc: ChildProcess | null;
   tint2: ChildProcess | null;
-  taskbarOn: boolean;
-  taskbarFitted: boolean;
   lastGeom?: Geom;
   desiredGeom?: Geom | null;
   resizeTail?: Promise<unknown>;
