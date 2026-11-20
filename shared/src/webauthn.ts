@@ -1,11 +1,21 @@
 import { z } from 'zod';
-import type { WebAuthnConfig, WebAuthnOptions } from './types.js';
+import type { WebAuthnConfig, WebAuthnOptions, WebAuthnProvider } from './types.js';
 
 export const WEBAUTHN_PROTOCOLS = ['ctap2', 'u2f'] as const;
 export const WEBAUTHN_CTAP2_VERSIONS = ['ctap2_0', 'ctap2_1', 'ctap2_2'] as const;
 export const WEBAUTHN_TRANSPORTS = ['internal', 'usb', 'nfc', 'ble', 'cable'] as const;
+export const WEBAUTHN_PROVIDERS = ['google', 'apple', 'windows', '1password', 'yubikey'] as const;
+export const DEFAULT_WEBAUTHN_PROVIDER: WebAuthnProvider = 'google';
 
-export const DEFAULT_WEBAUTHN_OPTIONS: WebAuthnOptions = {
+export const WEBAUTHN_PROVIDER_LABELS: Record<WebAuthnProvider, string> = {
+  google: 'Google 密码管理器',
+  apple: 'Apple iCloud 钥匙串',
+  windows: 'Windows Hello',
+  '1password': '1Password',
+  yubikey: 'YubiKey 5 系列',
+};
+
+const BASE_WEBAUTHN_OPTIONS: WebAuthnOptions = {
   protocol: 'ctap2',
   ctap2Version: 'ctap2_1',
   transport: 'internal',
@@ -17,9 +27,41 @@ export const DEFAULT_WEBAUTHN_OPTIONS: WebAuthnOptions = {
   hasCredBlob: false,
   hasMinPinLength: false,
   hasPrf: false,
-  defaultBackupEligibility: false,
-  defaultBackupState: false,
+  defaultBackupEligibility: true,
+  defaultBackupState: true,
 };
+
+export function webauthnOptionsForProvider(provider: WebAuthnProvider): WebAuthnOptions {
+  switch (provider) {
+    case 'windows':
+      return {
+        ...BASE_WEBAUTHN_OPTIONS,
+        transport: 'internal',
+        defaultBackupEligibility: false,
+        defaultBackupState: false,
+      };
+    case 'yubikey':
+      return {
+        ...BASE_WEBAUTHN_OPTIONS,
+        transport: 'usb',
+        defaultBackupEligibility: false,
+        defaultBackupState: false,
+      };
+    case 'apple':
+    case '1password':
+    case 'google':
+    default:
+      return { ...BASE_WEBAUTHN_OPTIONS };
+  }
+}
+
+export const DEFAULT_WEBAUTHN_OPTIONS: WebAuthnOptions = webauthnOptionsForProvider(DEFAULT_WEBAUTHN_PROVIDER);
+
+export function coerceWebAuthnProvider(input: unknown): WebAuthnProvider {
+  return typeof input === 'string' && (WEBAUTHN_PROVIDERS as readonly string[]).includes(input)
+    ? (input as WebAuthnProvider)
+    : DEFAULT_WEBAUTHN_PROVIDER;
+}
 
 export const webauthnOptionsSchema = z.object({
   protocol: z.enum(WEBAUTHN_PROTOCOLS).optional(),
@@ -39,6 +81,7 @@ export const webauthnOptionsSchema = z.object({
 
 export const putWebAuthnSchema = z.object({
   enabled: z.boolean().optional(),
+  provider: z.enum(WEBAUTHN_PROVIDERS).optional(),
   options: webauthnOptionsSchema.optional(),
 });
 
@@ -70,14 +113,18 @@ export const patchPasskeySchema = z.object({
   signCount: z.number().int().min(-1).max(0xffffffff).optional(),
 });
 
-export function normalizeWebAuthnOptions(input: unknown): WebAuthnOptions {
+export function normalizeWebAuthnOptions(
+  input: unknown,
+  provider: WebAuthnProvider = DEFAULT_WEBAUTHN_PROVIDER,
+): WebAuthnOptions {
   const parsed = webauthnOptionsSchema.safeParse(input && typeof input === 'object' ? input : {});
-  return { ...DEFAULT_WEBAUTHN_OPTIONS, ...(parsed.success ? stripUndefined(parsed.data) : {}) };
+  return { ...webauthnOptionsForProvider(provider), ...(parsed.success ? stripUndefined(parsed.data) : {}) };
 }
 
 export function normalizeWebAuthnConfig(input: unknown): WebAuthnConfig {
   const obj = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
-  return { enabled: obj.enabled === true, options: normalizeWebAuthnOptions(obj.options) };
+  const provider = coerceWebAuthnProvider(obj.provider);
+  return { enabled: obj.enabled === true, provider, options: normalizeWebAuthnOptions(obj.options, provider) };
 }
 
 /** Combinations Chrome's `addVirtualAuthenticator` rejects; null when the options are usable. */
@@ -97,7 +144,11 @@ export function webauthnOptionsProblem(o: WebAuthnOptions): string | null {
 }
 
 export function defaultWebAuthnConfig(): WebAuthnConfig {
-  return { enabled: false, options: { ...DEFAULT_WEBAUTHN_OPTIONS } };
+  return {
+    enabled: false,
+    provider: DEFAULT_WEBAUTHN_PROVIDER,
+    options: webauthnOptionsForProvider(DEFAULT_WEBAUTHN_PROVIDER),
+  };
 }
 
 function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {

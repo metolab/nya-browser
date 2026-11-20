@@ -5,7 +5,6 @@ import {
   patchPasskeySchema,
   putWebAuthnSchema,
   webauthnOptionsProblem,
-  normalizeWebAuthnConfig,
   type PasskeyEventKind,
   type PasskeyStatus,
 } from '@nya/shared';
@@ -13,8 +12,8 @@ import { z } from 'zod';
 import { asyncHandler } from '../../http/util.js';
 import { HttpError, assertSessionAccess, handleHttpError } from '../../http/access.js';
 import { auditFromReq } from '../audit/service.js';
-import { getSession, updateSession } from '../../store.js';
-import { applyWebAuthn } from '../../runtime/sessionManager.js';
+import { getSession, mergeWebAuthn, updateSession } from '../../store.js';
+import { applyWebAuthn, getRuntimePublic, restartBrowser } from '../../runtime/sessionManager.js';
 import { webauthnPasskeyRemoved, webauthnPasskeyUpserted, webauthnStatus } from '../../runtime/webauthn.js';
 import {
   appendPasskeyEvent,
@@ -84,22 +83,25 @@ passkeysRouter.put(
       const parsed = putWebAuthnSchema.safeParse(req.body || {});
       if (!parsed.success) throw new HttpError(400, parsed.error.issues[0]?.message || 'Invalid');
       const current = getSession(id)!.webauthn;
-      const next = normalizeWebAuthnConfig({
-        enabled: parsed.data.enabled ?? current.enabled,
-        options: { ...current.options, ...parsed.data.options },
-      });
+      const next = mergeWebAuthn(current, parsed.data);
       const problem = webauthnOptionsProblem(next.options);
       if (problem) throw new HttpError(400, problem);
       const session = updateSession(id, { webauthn: next })!;
-      await applyWebAuthn(id);
+      let restarted = false;
+      if (current.provider !== session.webauthn.provider && getRuntimePublic(id)) {
+        await restartBrowser(id);
+        restarted = true;
+      } else {
+        await applyWebAuthn(id);
+      }
       auditFromReq(req, {
         action: AUDIT_ACTIONS.webauthnUpdate,
         resourceType: 'session',
         resourceId: id,
         success: true,
-        detail: { enabled: session.webauthn.enabled },
+        detail: { enabled: session.webauthn.enabled, provider: session.webauthn.provider },
       });
-      res.json({ webauthn: session.webauthn, runtime: webauthnStatus(id) });
+      res.json({ webauthn: session.webauthn, runtime: webauthnStatus(id), restarted });
     } catch (err) {
       handleHttpError(err, res);
     }

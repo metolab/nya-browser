@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { ChevronDownIcon } from 'lucide-react';
-import type { ProxyRecord, SessionGroup, SessionProxy } from '@nya/shared';
+import type { ProxyRecord, SessionGroup, SessionProxy, WebAuthnProvider } from '@nya/shared';
 import {
   COMMON_TIMEZONES,
   DEFAULT_CHROME_LANGUAGE,
   DEFAULT_TIMEZONE,
   DEFAULT_WEBRTC_MODE,
+  DEFAULT_WEBAUTHN_PROVIDER,
+  WEBAUTHN_PROVIDERS,
+  WEBAUTHN_PROVIDER_LABELS,
+  coerceWebAuthnProvider,
   GPU_PROFILES,
   WEBRTC_MODES,
   WEBRTC_MODE_LABELS,
@@ -114,6 +118,7 @@ export type SessionFormValues = {
   homeUrl: string;
   idleTimeoutMinutes: number;
   webauthnEnabled: boolean;
+  webauthnProvider: WebAuthnProvider;
 };
 
 type Props = {
@@ -140,6 +145,7 @@ type Props = {
   initialHomeUrl?: string;
   initialIdleTimeoutMinutes?: number;
   initialWebauthnEnabled?: boolean;
+  initialWebauthnProvider?: WebAuthnProvider;
   proxies: ProxyRecord[];
   groups?: SessionGroup[];
   submitLabel: string;
@@ -173,6 +179,7 @@ export default function SessionFormDialog({
   initialHomeUrl = '',
   initialIdleTimeoutMinutes = DEFAULT_IDLE_TIMEOUT_MINUTES,
   initialWebauthnEnabled = false,
+  initialWebauthnProvider = DEFAULT_WEBAUTHN_PROVIDER,
   proxies,
   groups,
   submitLabel,
@@ -201,6 +208,9 @@ export default function SessionFormDialog({
   const [geoAccuracy, setGeoAccuracy] = useState(String(initialGeoAccuracy ?? 100));
   const [homeUrl, setHomeUrl] = useState(initialHomeUrl);
   const [webauthnEnabled, setWebauthnEnabled] = useState(initialWebauthnEnabled);
+  const [webauthnProvider, setWebauthnProvider] = useState<WebAuthnProvider>(
+    coerceWebAuthnProvider(initialWebauthnProvider),
+  );
   const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState(
     String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES),
   );
@@ -229,6 +239,7 @@ export default function SessionFormDialog({
     setGeoAccuracy(String(initialGeoAccuracy ?? 100));
     setHomeUrl(initialHomeUrl || '');
     setWebauthnEnabled(initialWebauthnEnabled);
+    setWebauthnProvider(coerceWebAuthnProvider(initialWebauthnProvider));
     setIdleTimeoutMinutes(String(initialIdleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES));
     setProxyId(initialProxyChoice());
     setCustomDraft(initialCustomDraft());
@@ -258,6 +269,7 @@ export default function SessionFormDialog({
     initialHomeUrl,
     initialIdleTimeoutMinutes,
     initialWebauthnEnabled,
+    initialWebauthnProvider,
   ]);
 
   return (
@@ -290,6 +302,7 @@ export default function SessionFormDialog({
               geoAccuracy: geoAccuracy.trim(),
               homeUrl: homeUrl.trim(),
               webauthnEnabled,
+              webauthnProvider,
               idleTimeoutMinutes: (() => {
                 const n = Number.parseInt(String(idleTimeoutMinutes), 10);
                 if (!Number.isFinite(n) || n <= 0) return 0;
@@ -590,11 +603,30 @@ export default function SessionFormDialog({
                 <div className="grid gap-2">
                   <div className="flex items-center gap-3">
                     <Switch id="webauthn-enabled" checked={webauthnEnabled} onCheckedChange={setWebauthnEnabled} />
-                    <Label htmlFor="webauthn-enabled">通行密钥（虚拟认证器）</Label>
+                    <Label htmlFor="webauthn-enabled">通行密钥</Label>
                   </div>
+                  {webauthnEnabled ? (
+                    <div className="grid gap-1.5">
+                      <Label>验证器类型</Label>
+                      <Select
+                        value={webauthnProvider}
+                        onValueChange={(v: string) => setWebauthnProvider(coerceWebAuthnProvider(v))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {WEBAUTHN_PROVIDERS.map((p) => (
+                            <SelectItem key={p} value={p}>
+                              {WEBAUTHN_PROVIDER_LABELS[p]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
                   <p className="text-xs text-muted-foreground">
-                    服务端给每个标签页挂一个平台认证器，网页创建的通行密钥（含私钥）会保存到会话里。开启后
-                    isUserVerifyingPlatformAuthenticatorAvailable() 返回 true。
+                    开启后，网页创建的通行密钥会自动保存到会话中，导出/导入会话时一并带走。
                   </p>
                 </div>
               </CollapsibleContent>

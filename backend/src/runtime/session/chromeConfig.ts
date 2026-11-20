@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { chromeProfileDir, downloadsDir, getSession, normalizeHomeUrl, sessionDir, sessionProxyTest } from '../../store.js';
 import type { FingerprintConfig, WebrtcMode } from '@nya/shared';
-import { acceptLanguageHeader, chromeAudioDevicePrefixes, chromeDefaultAcceptLanguages, coerceOs, coerceWebrtcMode, coerceWindowsRelease, gpuProfileById, NEW_TAB_URL, sessionMediaDevices, webrtcLocksUdp, webrtcNeedsPublicIp, windowsFontNames, windowsIdentity, windowsUiFont, windowsVoices } from '@nya/shared';
+import { acceptLanguageHeader, chromeAudioDevicePrefixes, chromeDefaultAcceptLanguages, coerceOs, coerceWebrtcMode, coerceWindowsRelease, DEFAULT_WEBAUTHN_PROVIDER, gpuProfileById, NEW_TAB_URL, sessionMediaDevices, webrtcLocksUdp, webrtcNeedsPublicIp, windowsFontNames, windowsIdentity, windowsUiFont, windowsVoices } from '@nya/shared';
 import { resolveTampermonkeyDir, TAMPERMONKEY_ID } from '../tampermonkey.js';
 import { writeWidevineHint } from '../widevine.js';
 import {
@@ -567,6 +567,8 @@ export function chromeArgs(
       if (deviceId && backend !== 'swiftshader') args.push(`--nya-gpu-device-id=${deviceId}`);
     }
   }
+  const webauthnProvider = getSession(sessionId)?.webauthn.provider || DEFAULT_WEBAUTHN_PROVIDER;
+  args.push(`--nya-webauthn-provider=${webauthnProvider}`);
   if (cdpPort) {
     args.push(`--remote-debugging-port=${cdpPort}`);
     args.push('--remote-debugging-address=127.0.0.1');

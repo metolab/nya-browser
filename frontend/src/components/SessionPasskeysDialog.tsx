@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { CopyIcon, DownloadIcon, RefreshCwIcon, Trash2Icon, UploadIcon } from 'lucide-react';
-import type { Passkey, PasskeyEvent, PasskeyStatus, Session, WebAuthnConfig } from '@nya/shared';
+import {
+  DEFAULT_WEBAUTHN_PROVIDER,
+  WEBAUTHN_PROVIDERS,
+  WEBAUTHN_PROVIDER_LABELS,
+  coerceWebAuthnProvider,
+  type Passkey,
+  type PasskeyEvent,
+  type PasskeyStatus,
+  type Session,
+  type WebAuthnConfig,
+  type WebAuthnProvider,
+} from '@nya/shared';
 import { api } from '../api/client';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -23,6 +34,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
@@ -139,6 +151,23 @@ export function SessionPasskeysDialog({
       setConfig(r.webauthn);
       setRuntime(r.runtime);
       toast.success(enabled ? '已开启通行密钥' : '已关闭通行密钥');
+      onChange?.();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changeProvider = async (provider: WebAuthnProvider) => {
+    if (!session || provider === config?.provider) return;
+    setSaving(true);
+    try {
+      const r = await api.putWebAuthn(session.id, { provider });
+      setConfig(r.webauthn);
+      setRuntime(r.runtime);
+      toast.success(r.restarted ? '已切换验证器类型并重启浏览器' : '已切换验证器类型');
+      onChange?.();
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -189,21 +218,34 @@ export function SessionPasskeysDialog({
           <DialogHeader>
             <DialogTitle>通行密钥 · {session?.name || ''}</DialogTitle>
             <DialogDescription>
-              开启后，服务端会给这个会话的每个标签页挂一个虚拟认证器。网页创建的通行密钥会立即保存在这里（包括私钥），导出/导入会话时一并带走。
+              开启后，网页创建的通行密钥会自动保存在这里，导出/导入会话时一并带走。
             </DialogDescription>
           </DialogHeader>
 
           <div className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-2 text-sm">
             <Switch checked={Boolean(config?.enabled)} disabled={!config || saving} onCheckedChange={(v: boolean) => void toggle(v)} />
             <span>{config?.enabled ? '已开启' : '未开启'}</span>
+            <Select
+              value={config?.provider ?? DEFAULT_WEBAUTHN_PROVIDER}
+              disabled={!config || saving}
+              onValueChange={(v: string) => void changeProvider(coerceWebAuthnProvider(v))}
+            >
+              <SelectTrigger className="h-8 w-44 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {WEBAUTHN_PROVIDERS.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {WEBAUTHN_PROVIDER_LABELS[p]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             {config?.enabled && runtime ? (
-              <span className="text-muted-foreground">
-                {runtime.attached ? `已挂载 ${runtime.armedTabs}/${runtime.tabs} 个标签页` : '会话未运行，启动后自动挂载'}
+              <span className="text-xs text-muted-foreground">
+                {runtime.attached ? `已就绪（${runtime.armedTabs}/${runtime.tabs} 个标签页）` : '会话未运行，启动后自动启用'}
               </span>
             ) : null}
-            <span className="text-xs text-muted-foreground">
-              开启后页面里 isUserVerifyingPlatformAuthenticatorAvailable() 会返回 true。
-            </span>
             <div className="ml-auto flex gap-2">
               <Button variant="outline" size="sm" onClick={() => void reload()} disabled={loading}>
                 <RefreshCwIcon />
@@ -279,7 +321,12 @@ export function SessionPasskeysDialog({
                       <TableCell>
                         <Badge variant={row.status === 'active' ? 'secondary' : 'outline'}>{STATUS_LABEL[row.status]}</Badge>
                       </TableCell>
-                      <TableCell className="font-mono text-xs">{row.signCount}</TableCell>
+                      <TableCell
+                        className="font-mono text-xs"
+                        title={row.signCount < 0 ? '无签名计数器（始终上报 0）' : undefined}
+                      >
+                        {row.signCount < 0 ? '0' : row.signCount}
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         <div>{fmtTime(row.createdAt)}</div>
                         <div>{fmtTime(row.lastUsedAt)}</div>
@@ -319,7 +366,9 @@ export function SessionPasskeysDialog({
                         <TableCell className="w-20 text-xs">{EVENT_LABEL[e.kind]}</TableCell>
                         <TableCell className="text-xs">{e.rpId}</TableCell>
                         <TableCell className="font-mono text-xs">{e.credentialId.slice(0, 8)}</TableCell>
-                        <TableCell className="text-xs">{e.signCount ?? ''}</TableCell>
+                        <TableCell className="text-xs">
+                          {e.signCount == null ? '' : e.signCount < 0 ? '0' : e.signCount}
+                        </TableCell>
                         <TableCell className="max-w-64 truncate text-xs text-muted-foreground" title={e.url}>
                           {e.url || e.actor}
                         </TableCell>

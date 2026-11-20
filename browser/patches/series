@@ -10,3 +10,4 @@ nya/010-x11-clipboard.patch
 nya/011-x11-gpu-present.patch
 nya/012-browser-windows.patch
 nya/013-webauthn-env-ownership.patch
+nya/014-webauthn-gpm-identity.patch

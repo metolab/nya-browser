@@ -142,6 +142,41 @@ export function migrate() {
     ensureColumn('access_grants', 'allow_notepad', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn('sessions', 'custom_proxy', 'TEXT');
     ensureColumn('sessions', 'webauthn', "TEXT NOT NULL DEFAULT '{}'");
+    const userVersion =
+      (sqlite.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0;
+    if (userVersion < 1) {
+      // Preserve existing passkeys' BE/BS flags before raising authenticator defaults to synced (GPM).
+      sqlite.exec('UPDATE session_passkeys SET backup_eligibility = 0 WHERE backup_eligibility IS NULL');
+      sqlite.exec('UPDATE session_passkeys SET backup_state = 0 WHERE backup_state IS NULL');
+      // Migrate existing sessions still using the legacy non-synced defaults so new passkeys match GPM.
+      const rows = sqlite.prepare('SELECT id, webauthn FROM sessions').all() as { id: string; webauthn: string }[];
+      const update = sqlite.prepare('UPDATE sessions SET webauthn = ? WHERE id = ?');
+      for (const row of rows) {
+        try {
+          const cfg = JSON.parse(row.webauthn || '{}') as { provider?: string; options?: Record<string, unknown> };
+          let changed = false;
+          if (!cfg.provider) {
+            cfg.provider = 'google';
+            changed = true;
+          }
+          const opts = cfg.options;
+          if (
+            opts &&
+            opts.protocol !== 'u2f' &&
+            opts.defaultBackupEligibility === false &&
+            opts.defaultBackupState === false
+          ) {
+            opts.defaultBackupEligibility = true;
+            opts.defaultBackupState = true;
+            changed = true;
+          }
+          if (changed) update.run(JSON.stringify(cfg), row.id);
+        } catch {
+          // Ignore malformed JSON; store.ts falls back to defaults.
+        }
+      }
+      sqlite.exec('PRAGMA user_version = 1');
+    }
     sqlite.exec('COMMIT');
   } catch (err) {
     sqlite.exec('ROLLBACK');

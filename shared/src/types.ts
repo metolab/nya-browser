@@ -167,6 +167,7 @@ export interface Session {
 export type WebAuthnProtocol = 'ctap2' | 'u2f';
 export type WebAuthnCtap2Version = 'ctap2_0' | 'ctap2_1' | 'ctap2_2';
 export type WebAuthnTransport = 'internal' | 'usb' | 'nfc' | 'ble' | 'cable';
+export type WebAuthnProvider = 'google' | 'apple' | 'windows' | '1password' | 'yubikey';
 
 /** CDP `WebAuthn.VirtualAuthenticatorOptions` the server registers on every tab. */
 export interface WebAuthnOptions {
@@ -187,6 +188,7 @@ export interface WebAuthnOptions {
 
 export interface WebAuthnConfig {
   enabled: boolean;
+  provider: WebAuthnProvider;
   options: WebAuthnOptions;
 }
 

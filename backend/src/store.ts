@@ -9,7 +9,9 @@ import {
   emptyProxyExtra,
   isProxyType,
   normalizeChromeLanguage,
+  coerceWebAuthnProvider,
   normalizeWebAuthnConfig,
+  webauthnOptionsForProvider,
   normalizeProxyExtra,
   normalizeTimezone,
   parseProxyUri,
@@ -557,11 +559,15 @@ function parseWebAuthn(raw: string | null | undefined): WebAuthnConfig {
   }
 }
 
-function mergeWebAuthn(current: WebAuthnConfig, patch: unknown): WebAuthnConfig {
+export function mergeWebAuthn(current: WebAuthnConfig, patch: unknown): WebAuthnConfig {
   const obj = patch && typeof patch === 'object' ? (patch as Partial<WebAuthnConfig>) : {};
+  const provider = obj.provider !== undefined ? coerceWebAuthnProvider(obj.provider) : current.provider;
+  const baseOptions =
+    provider !== current.provider ? webauthnOptionsForProvider(provider) : current.options;
   return normalizeWebAuthnConfig({
     enabled: obj.enabled ?? current.enabled,
-    options: { ...current.options, ...(obj.options || {}) },
+    provider,
+    options: { ...baseOptions, ...(obj.options || {}) },
   });
 }
 

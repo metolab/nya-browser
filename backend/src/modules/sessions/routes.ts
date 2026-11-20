@@ -178,6 +178,7 @@ sessionsRouter.patch(
       getRuntimePublic(session.id) &&
       ((parsed.data.timezone && parsed.data.timezone !== before.timezone) ||
         (parsed.data.chromeLanguage && parsed.data.chromeLanguage !== before.chromeLanguage) ||
+        before.webauthn.provider !== session.webauthn.provider ||
         fingerprintLaunchChanged(before.fingerprint, session.fingerprint))
     ) {
       await restartBrowser(session.id);

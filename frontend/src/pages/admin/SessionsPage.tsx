@@ -80,7 +80,7 @@ function sessionFingerprintPayload(data: SessionFormValues) {
     }),
     homeUrl: data.homeUrl,
     idleTimeoutMinutes: data.idleTimeoutMinutes,
-    webauthn: { enabled: data.webauthnEnabled },
+    webauthn: { enabled: data.webauthnEnabled, provider: data.webauthnProvider },
   };
 }
 
@@ -264,6 +264,7 @@ export default function SessionsPage() {
         initialHomeUrl={cloneFrom?.homeUrl}
         initialIdleTimeoutMinutes={cloneFrom?.idleTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MINUTES}
         initialWebauthnEnabled={cloneFrom?.webauthn?.enabled ?? false}
+        initialWebauthnProvider={cloneFrom?.webauthn?.provider}
         onCancel={() => {
           setOpenCreate(false);
           setCloneFrom(null);
@@ -332,6 +333,7 @@ export default function SessionsPage() {
         initialHomeUrl={edit?.homeUrl}
         initialIdleTimeoutMinutes={edit?.idleTimeoutMinutes ?? 0}
         initialWebauthnEnabled={edit?.webauthn?.enabled ?? false}
+        initialWebauthnProvider={edit?.webauthn?.provider}
         onCancel={() => setEdit(null)}
         onSubmit={async (data) => {
           if (!edit) return;

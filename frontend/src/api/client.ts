@@ -21,6 +21,7 @@ import {
   type Passkey,
   type PasskeyEvent,
   type WebAuthnConfig,
+  type WebAuthnProvider,
 } from '@nya/shared';
 import { withBase } from '../basePath';
 
@@ -245,8 +246,15 @@ export const api = {
     request<{ webauthn: WebAuthnConfig; runtime: { attached: boolean; tabs: number; armedTabs: number } }>(
       `/api/sessions/${id}/webauthn`,
     ),
-  putWebAuthn: (id: string, body: { enabled?: boolean; options?: Partial<WebAuthnConfig['options']> }) =>
-    request<{ webauthn: WebAuthnConfig; runtime: { attached: boolean; tabs: number; armedTabs: number } }>(
+  putWebAuthn: (
+    id: string,
+    body: { enabled?: boolean; provider?: WebAuthnProvider; options?: Partial<WebAuthnConfig['options']> },
+  ) =>
+    request<{
+      webauthn: WebAuthnConfig;
+      runtime: { attached: boolean; tabs: number; armedTabs: number };
+      restarted?: boolean;
+    }>(
       `/api/sessions/${id}/webauthn`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),

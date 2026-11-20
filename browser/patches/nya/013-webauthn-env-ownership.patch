@@ -1,8 +1,15 @@
 diff --git a/content/browser/devtools/protocol/webauthn_handler.cc b/content/browser/devtools/protocol/webauthn_handler.cc
-index 6a047aa..dfd0a8a 100644
+index 6a047aa..16e8a41 100644
 --- a/content/browser/devtools/protocol/webauthn_handler.cc
 +++ b/content/browser/devtools/protocol/webauthn_handler.cc
-@@ -18,6 +18,7 @@
+@@ -12,12 +12,14 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/functional/callback.h"
+ #include "base/memory/ref_counted.h"
+ #include "base/memory/scoped_refptr.h"
  #include "base/numerics/safe_conversions.h"
  #include "base/strings/string_number_conversions.h"
  #include "content/browser/devtools/protocol/web_authn.h"
@@ -10,7 +17,24 @@ index 6a047aa..dfd0a8a 100644
  #include "content/browser/renderer_host/render_frame_host_impl.h"
  #include "content/browser/webauth/authenticator_environment.h"
  #include "content/browser/webauth/virtual_authenticator.h"
-@@ -237,20 +238,45 @@ Response WebAuthnHandler::Enable(std::optional<bool> enable_ui) {
+@@ -161,6 +163,16 @@ std::vector<uint8_t> CopyBinaryToVector(const Binary& binary) {
+   return std::vector<uint8_t>(binary.begin(), binary.end());
+ }
+ 
++bool DefaultBackupForTransport(device::FidoTransportProtocol transport) {
++  if (transport != device::FidoTransportProtocol::kInternal) {
++    return false;
++  }
++  const std::string provider =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          "nya-webauthn-provider");
++  return provider != "windows" && provider != "yubikey";
++}
++
+ bool IsValidSignCount(double sign_count) {
+   return sign_count >= -1 &&
+          sign_count <= std::numeric_limits<uint32_t>::max() &&
+@@ -237,20 +249,45 @@ Response WebAuthnHandler::Enable(std::optional<bool> enable_ui) {
    if (!frame_host_)
      return Response::ServerError(kDevToolsNotAttached);
  
@@ -62,7 +86,21 @@ index 6a047aa..dfd0a8a 100644
  Response WebAuthnHandler::AddVirtualAuthenticator(
      std::unique_ptr<WebAuthn::VirtualAuthenticatorOptions> options,
      String* out_authenticator_id) {
-@@ -355,6 +381,7 @@ Response WebAuthnHandler::AddVirtualAuthenticator(
+@@ -336,9 +373,11 @@ Response WebAuthnHandler::AddVirtualAuthenticator(
+       virt_auth_options.has_hmac_secret_mc = has_hmac_secret_mc;
+       virt_auth_options.has_cmtg_key = has_cmtg_key;
+       virt_auth_options.default_backup_eligibility =
+-          options->GetDefaultBackupEligibility(/*defaultValue=*/false);
++          options->GetDefaultBackupEligibility(
++              /*defaultValue=*/DefaultBackupForTransport(*transport));
+       virt_auth_options.default_backup_state =
+-          options->GetDefaultBackupState(/*defaultValue=*/false);
++          options->GetDefaultBackupState(
++              /*defaultValue=*/DefaultBackupForTransport(*transport));
+       break;
+     case device::ProtocolVersion::kUnknown:
+       NOTREACHED();
+@@ -355,6 +394,7 @@ Response WebAuthnHandler::AddVirtualAuthenticator(
    authenticator->set_user_verified(
        options->GetIsUserVerified(/*defaultValue=*/false));
    observations_.AddObservation(authenticator);
@@ -70,7 +108,7 @@ index 6a047aa..dfd0a8a 100644
  
    *out_authenticator_id = authenticator->unique_id();
    return Response::Success();
-@@ -371,6 +398,7 @@ Response WebAuthnHandler::RemoveVirtualAuthenticator(
+@@ -371,6 +411,7 @@ Response WebAuthnHandler::RemoveVirtualAuthenticator(
    if (!authenticator_manager->RemoveAuthenticator(authenticator_id))
      return Response::InvalidParams(kAuthenticatorNotFound);
  
