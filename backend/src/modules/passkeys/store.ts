@@ -110,6 +110,24 @@ export function activePasskeys(sessionId: string) {
   return listPasskeys(sessionId, { status: ['active'] });
 }
 
+export function countPasskeys(sessionId: string): number {
+  const row = sqlite
+    .prepare<[string], { count: number }>('SELECT COUNT(*) AS count FROM session_passkeys WHERE session_id = ?')
+    .get(sessionId);
+  return row?.count ?? 0;
+}
+
+export function countPasskeysBySession(): Map<string, number> {
+  const rows = sqlite
+    .prepare<[], { session_id: string; count: number }>(
+      'SELECT session_id, COUNT(*) AS count FROM session_passkeys GROUP BY session_id',
+    )
+    .all();
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.session_id, row.count);
+  return counts;
+}
+
 export function getPasskey(sessionId: string, id: string) {
   const row = db
     .select()

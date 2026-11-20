@@ -459,8 +459,21 @@ export default function SessionsPage() {
         </DialogContent>
       </Dialog>
 
-      <SessionPasswordsDialog session={passwords} onClose={() => setPasswords(null)} />
-      <SessionPasskeysDialog session={passkeys} onClose={() => setPasskeys(null)} />
+      <SessionPasswordsDialog
+        session={passwords}
+        onClose={() => {
+          setPasswords(null);
+          void load();
+        }}
+      />
+      <SessionPasskeysDialog
+        session={passkeys}
+        onClose={() => {
+          setPasskeys(null);
+          void load();
+        }}
+        onChange={() => void load()}
+      />
 
       <AlertDialog open={Boolean(pendingDelete)} onOpenChange={(v: boolean) => !v && setPendingDelete(null)}>
         <AlertDialogContent>

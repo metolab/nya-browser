@@ -62,6 +62,8 @@ export type SessionTreeProps = {
 };
 
 const INDENT = { pick: 12, manage: 18 } as const;
+const MANAGE_GRID =
+  'grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.1fr)_3.5rem_4.5rem_3.5rem_4rem]';
 
 function matchesQuery(session: Session, query: string) {
   const q = query.trim().toLowerCase();
@@ -223,9 +225,12 @@ function SessionRow({
     );
   }
 
+  const passwordCount = session.passwordCount ?? 0;
+  const passkeyCount = session.passkeyCount ?? 0;
+
   return (
     <div
-      className="group grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)_3.5rem_4rem] items-center gap-2 px-2 py-1.5 text-sm hover:bg-muted/70"
+      className={cn('group grid items-center gap-2 px-2 py-1.5 text-sm hover:bg-muted/70', MANAGE_GRID)}
       style={indentStyle(mode, depth)}
     >
       <div className="min-w-0">
@@ -236,6 +241,38 @@ function SessionRow({
       </div>
       <div className="truncate text-xs text-muted-foreground">{proxyText(session, proxies)}</div>
       <div className="truncate text-xs text-muted-foreground">{localeText(session)}</div>
+      <div className="flex justify-center">
+        <button
+          type="button"
+          title="查看密码"
+          className={cn(
+            'rounded px-1.5 py-0.5 tabular-nums text-xs transition-colors hover:bg-muted hover:text-foreground',
+            passwordCount > 0 ? 'font-medium text-foreground' : 'text-muted-foreground',
+          )}
+          onClick={(e) => {
+            e.stopPropagation();
+            actions.onViewPasswords?.(session);
+          }}
+        >
+          {passwordCount}
+        </button>
+      </div>
+      <div className="flex justify-center">
+        <button
+          type="button"
+          title="查看通行密钥"
+          className={cn(
+            'rounded px-1.5 py-0.5 tabular-nums text-xs transition-colors hover:bg-muted hover:text-foreground',
+            passkeyCount > 0 ? 'font-medium text-foreground' : 'text-muted-foreground',
+          )}
+          onClick={(e) => {
+            e.stopPropagation();
+            actions.onViewPasskeys?.(session);
+          }}
+        >
+          {passkeyCount}
+        </button>
+      </div>
       <div className="text-center tabular-nums text-xs text-muted-foreground">{running}</div>
       <div className="flex justify-end">
         <Button
@@ -489,10 +526,12 @@ export function SessionTree(props: SessionTreeProps) {
         ) : null}
       </div>
       {mode === 'manage' ? (
-        <div className="grid shrink-0 grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.2fr)_3.5rem_4rem] gap-2 border-b px-2 pb-1.5 text-xs text-muted-foreground">
+        <div className={cn('grid shrink-0 gap-2 border-b px-2 pb-1.5 text-xs text-muted-foreground', MANAGE_GRID)}>
           <div>名称</div>
           <div>代理</div>
           <div>时区/语言</div>
+          <div className="text-center">密码</div>
+          <div className="text-center">通行密钥</div>
           <div className="text-center">窗口</div>
           <div />
         </div>

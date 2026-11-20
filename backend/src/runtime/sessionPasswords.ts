@@ -1,12 +1,14 @@
 import type { SessionPassword } from '@nya/shared';
 import { chromeProfileDir, sessionDir } from '../store.js';
 import {
+  countProfilePasswords,
   listProfilePasswords,
   overlayFilePath,
   writePasswordOverlayFile,
 } from './chromePasswords.js';
 
 export {
+  countProfilePasswords,
   listProfilePasswords,
   mergePasswordLists,
   normalizeSessionPasswords,
@@ -22,6 +24,10 @@ function overlayPath(sessionId: string) {
 
 export function listSessionPasswords(sessionId: string): SessionPassword[] {
   return listProfilePasswords(chromeProfileDir(sessionId), overlayPath(sessionId));
+}
+
+export function countSessionPasswords(sessionId: string): number {
+  return countProfilePasswords(chromeProfileDir(sessionId), overlayPath(sessionId));
 }
 
 export function snapshotSessionPasswords(sessionId: string): SessionPassword[] {

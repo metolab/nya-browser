@@ -81,7 +81,15 @@ function parseImport(text: string): unknown[] {
   return [data];
 }
 
-export function SessionPasskeysDialog({ session, onClose }: { session: Session | null; onClose: () => void }) {
+export function SessionPasskeysDialog({
+  session,
+  onClose,
+  onChange,
+}: {
+  session: Session | null;
+  onClose: () => void;
+  onChange?: () => void;
+}) {
   const [rows, setRows] = useState<Passkey[]>([]);
   const [events, setEvents] = useState<PasskeyEvent[]>([]);
   const [config, setConfig] = useState<WebAuthnConfig | null>(null);
@@ -152,6 +160,7 @@ export function SessionPasskeysDialog({ session, onClose }: { session: Session |
       toast.success(`已导入 ${r.passkeys.length} 个通行密钥`);
       setImportText(null);
       await reload();
+      onChange?.();
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -163,6 +172,7 @@ export function SessionPasskeysDialog({ session, onClose }: { session: Session |
       await api.deletePasskey(session.id, pendingDelete.id);
       toast.success('已删除');
       await reload();
+      onChange?.();
     } catch (err) {
       toast.error((err as Error).message);
     } finally {

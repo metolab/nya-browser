@@ -11,6 +11,9 @@ const OSCRYPT_KEY_LEN = 16;
 const OSCRYPT_ITERATIONS = 1;
 const OSCRYPT_PASSWORD = 'peanuts';
 const LOGIN_DB_NAMES = ['Login Data', 'Login Data For Account'] as const;
+const LOGIN_DB_SIDECARS = ['', '-wal', '-shm', '-journal'] as const;
+const PASSWORD_COUNT_CACHE_MAX = 2000;
+const passwordCountCache = new Map<string, { sig: string; count: number }>();
 
 export function passwordKey(origin: string, username: string) {
   return `${origin}\n${username}`;
@@ -208,4 +211,90 @@ export function listProfilePasswords(profileDir: string, overlayFile: string): S
   const merged = mergePasswordLists(chrome, overlay);
   if (chrome.length) writePasswordOverlayFile(overlayFile, merged);
   return merged;
+}
+
+function statSignature(file: string) {
+  try {
+    const st = fs.statSync(file, { bigint: true });
+    return `${st.ino}:${st.size}:${st.mtimeNs}`;
+  } catch {
+    return '';
+  }
+}
+
+function passwordSourceSignature(profileDir: string, overlayFile: string) {
+  const parts: string[] = [];
+  const overlaySig = statSignature(overlayFile);
+  if (overlaySig) parts.push(`o:${overlaySig}`);
+  const defaultDir = path.join(profileDir, 'Default');
+  for (const name of LOGIN_DB_NAMES) {
+    for (const suffix of LOGIN_DB_SIDECARS) {
+      const sig = statSignature(path.join(defaultDir, `${name}${suffix}`));
+      if (sig) parts.push(`${name}${suffix}:${sig}`);
+    }
+  }
+  return parts.length ? parts.join('|') : null;
+}
+
+function readLoginDatabaseKeys(dbPath: string): string[] {
+  if (!fs.existsSync(dbPath)) return [];
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 2000 });
+  try {
+    if (!tableExists(db, 'logins')) return [];
+    const cols = columnNames(db, 'logins');
+    const fields = ['origin_url', 'username_value'];
+    if (cols.has('blacklisted_by_user')) fields.push('blacklisted_by_user');
+    const rows = db.prepare(`SELECT ${fields.join(', ')} FROM logins`).all() as Record<string, unknown>[];
+    const keys: string[] = [];
+    for (const row of rows) {
+      if (Number(row.blacklisted_by_user || 0) === 1) continue;
+      const origin = String(row.origin_url || '').trim();
+      if (!origin) continue;
+      keys.push(passwordKey(origin, String(row.username_value || '')));
+    }
+    return keys;
+  } finally {
+    db.close();
+  }
+}
+
+function readChromeProfilePasswordKeys(profileDir: string): string[] {
+  const defaultDir = path.join(profileDir, 'Default');
+  const existing = LOGIN_DB_NAMES.filter((name) => fs.existsSync(path.join(defaultDir, name)));
+  if (!existing.length) return [];
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nya-logins-'));
+  try {
+    const keys: string[] = [];
+    for (const name of existing) {
+      const copied = copyLoginDb(defaultDir, name, tmp);
+      if (!copied) continue;
+      keys.push(...readLoginDatabaseKeys(copied));
+    }
+    return keys;
+  } catch {
+    return [];
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+export function countProfilePasswords(profileDir: string, overlayFile: string): number {
+  const sig = passwordSourceSignature(profileDir, overlayFile);
+  const cacheKey = `${profileDir}\0${overlayFile}`;
+  if (!sig) {
+    passwordCountCache.delete(cacheKey);
+    return 0;
+  }
+  const cached = passwordCountCache.get(cacheKey);
+  if (cached && cached.sig === sig) return cached.count;
+  const keys = new Set<string>();
+  for (const entry of readPasswordOverlayFile(overlayFile)) {
+    keys.add(passwordKey(entry.origin, entry.username));
+  }
+  for (const key of readChromeProfilePasswordKeys(profileDir)) {
+    keys.add(key);
+  }
+  if (passwordCountCache.size >= PASSWORD_COUNT_CACHE_MAX) passwordCountCache.clear();
+  passwordCountCache.set(cacheKey, { sig, count: keys.size });
+  return keys.size;
 }

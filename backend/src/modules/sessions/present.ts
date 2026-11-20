@@ -8,14 +8,20 @@ import {
   type SessionRecord,
 } from '../../store.js';
 import { getRuntimePublic, listWindows } from '../../runtime/sessionManager.js';
+import { countSessionPasswords } from '../../runtime/sessionPasswords.js';
 import { getUserById, toPublicUser } from '../auth/service.js';
+import { countPasskeys, countPasskeysBySession } from '../passkeys/store.js';
 
 function redactProxy<T extends { password: string }>(proxy: T, admin: boolean): T {
   if (admin) return { ...proxy };
   return { ...proxy, password: proxy.password ? '***' : '' };
 }
 
-export function presentSession(session: SessionRecord, user: UserPublic | undefined): Session {
+export function presentSession(
+  session: SessionRecord,
+  user: UserPublic | undefined,
+  counts?: { passkeys?: Map<string, number> },
+): Session {
   const admin = user?.role === 'admin';
   const live = getRuntimePublic(session.id);
   const runtime = {
@@ -51,6 +57,10 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
   if (admin) {
     base.notepad = session.notepad;
     base.grants = listSessionGrants(session.id);
+    base.passwordCount = countSessionPasswords(session.id);
+    base.passkeyCount = counts?.passkeys
+      ? (counts.passkeys.get(session.id) ?? 0)
+      : countPasskeys(session.id);
   }
   if (!admin && runtime.windows && user) {
     runtime.windows = runtime.windows.filter((w) => w.ownerUserId === user.id);
@@ -62,7 +72,8 @@ export function presentSession(session: SessionRecord, user: UserPublic | undefi
 export function presentSessions(req: Request): Session[] {
   const user = req.user!;
   const all = user.role === 'admin' ? listSessions() : listAccessibleSessions(user.id);
-  return all.map((s) => presentSession(s, user));
+  const counts = user.role === 'admin' ? { passkeys: countPasskeysBySession() } : undefined;
+  return all.map((s) => presentSession(s, user, counts));
 }
 
 export function visibleWindows(sessionId: string, user: UserPublic) {

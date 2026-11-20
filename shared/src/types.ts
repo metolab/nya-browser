@@ -159,6 +159,8 @@ export interface Session {
   createdAt: string;
   updatedAt: string;
   runtime: RuntimeInfo;
+  passwordCount?: number;
+  passkeyCount?: number;
   grants?: AccessGrant[];
 }
 
