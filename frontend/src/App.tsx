@@ -14,6 +14,7 @@ import UsersPage from './pages/admin/UsersPage';
 import ProxiesPage from './pages/admin/ProxiesPage';
 import AuditPage from './pages/admin/AuditPage';
 import MonitorPage from './pages/admin/MonitorPage';
+import CachePage from './pages/admin/CachePage';
 import BackupsPage from './pages/admin/BackupsPage';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Toaster } from '@/components/ui/sonner';
@@ -61,6 +62,7 @@ export default function App() {
                   <Route path="proxies" element={<ProxiesPage />} />
                   <Route path="audit" element={<AuditPage />} />
                   <Route path="monitor" element={<MonitorPage />} />
+                  <Route path="cache" element={<CachePage />} />
                   <Route path="backups" element={<BackupsPage />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/" replace />} />

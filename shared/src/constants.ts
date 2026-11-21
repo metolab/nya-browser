@@ -54,4 +54,7 @@ export const AUDIT_ACTIONS = {
   passkeyImport: 'passkey.import',
   passkeyUpdate: 'passkey.update',
   passkeyDelete: 'passkey.delete',
+  cacheConfigUpdate: 'cache.config',
+  cacheRefresh: 'cache.refresh',
+  cachePurge: 'cache.purge',
 } as const;

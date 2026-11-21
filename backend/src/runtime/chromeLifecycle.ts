@@ -12,6 +12,7 @@ import {
   webauthnWantsPause,
   type SessionWebAuthn,
 } from './webauthn.js';
+import { attachSessionAssetCache, type SessionAssetCacheHook } from './assetCache/cdpHook.js';
 
 type TargetInfo = {
   targetId?: string;
@@ -36,6 +37,7 @@ type CdpMessage = {
     targetId?: string;
     sessionId?: string;
     result?: { value?: unknown };
+    [key: string]: unknown;
   };
 };
 
@@ -55,6 +57,7 @@ type LifecycleState = {
   pending: Map<number, PendingCall>;
   closed: boolean;
   webauthn: SessionWebAuthn;
+  assetCache: SessionAssetCacheHook | null;
 };
 
 const attached = new Map<string, LifecycleState>();
@@ -318,6 +321,7 @@ function connectBrowser(sessionId: string, url: string) {
     state.webauthn = webauthnAttachBrowser(sessionId, {
       call: (method, params, cdpSessionId, timeoutMs) => call(state, method, params, cdpSessionId, timeoutMs),
     });
+    state.assetCache = null;
     attached.set(sessionId, state);
     const done = () => resolve();
     ws.once('open', () => {
@@ -325,6 +329,10 @@ function connectBrowser(sessionId: string, url: string) {
       send(state, {
         method: 'Target.setDiscoverTargets',
         params: { discover: true },
+      });
+      state.assetCache = attachSessionAssetCache(sessionId, {
+        send: (method, params) => send(state, params ? { method, params } : { method }),
+        call: (method, params, timeoutMs) => call(state, method, params || {}, undefined, timeoutMs),
       });
       // Auto-attach covers existing pages; this only catches ones it missed.
       setTimeout(() => send(state, { method: 'Target.getTargets' }), 1000);
@@ -343,6 +351,10 @@ function connectBrowser(sessionId: string, url: string) {
         return;
       }
       settle(state, msg);
+      if (!msg.sessionId && msg.method?.startsWith('Fetch.')) {
+        state.assetCache?.onEvent(msg.method, (msg.params || {}) as Record<string, unknown>);
+        return;
+      }
       if (msg.sessionId && msg.method?.startsWith('WebAuthn.')) {
         state.webauthn.event(msg.sessionId, msg.method, msg.params || {});
         return;
@@ -410,6 +422,8 @@ function connectBrowser(sessionId: string, url: string) {
     });
     ws.on('close', () => {
       rejectAll(state, new Error('cdp closed'));
+      state.assetCache?.detach();
+      state.assetCache = null;
       webauthnDetachBrowser(sessionId, state.webauthn);
       if (attached.get(sessionId) === state) attached.delete(sessionId);
     });
@@ -435,6 +449,8 @@ export function stopChromeLifecycle(sessionId: string) {
   if (!state) return;
   state.closed = true;
   attached.delete(sessionId);
+  state.assetCache?.detach();
+  state.assetCache = null;
   webauthnDetachBrowser(sessionId, state.webauthn);
   rejectAll(state, new Error('cdp closed'));
   try {

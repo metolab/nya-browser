@@ -14,6 +14,7 @@ import { auditRouter } from './modules/audit/routes.js';
 import { liveRouter, monitorRouter } from './modules/monitor/routes.js';
 import { groupsRouter } from './modules/groups/routes.js';
 import { backupRouter } from './modules/backup/routes.js';
+import { cacheRouter } from './modules/cache/routes.js';
 import { logger } from './logger.js';
 
 function sendIndex(_req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -51,6 +52,7 @@ export function createApp() {
   routed.use('/api/live', liveRouter);
   routed.use('/api/groups', groupsRouter);
   routed.use('/api', backupRouter);
+  routed.use('/api/cache', cacheRouter);
   routed.use('/api/sessions', sessionsRouter);
 
   routed.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -11,6 +11,7 @@ import { resolveToken } from './modules/auth/service.js';
 import { writeAudit } from './modules/audit/service.js';
 import { getSession, userCanAccessSession } from './store.js';
 import { startSampler } from './modules/monitor/sampler.js';
+import { assetCacheStore } from './runtime/assetCache/store.js';
 import { handleCdpUpgrade } from './modules/cdp/gateway.js';
 import {
   canAccessWindow,
@@ -24,6 +25,7 @@ import {
 
 migrate();
 await bootstrap();
+assetCacheStore.init();
 startSampler();
 
 const app = createApp();
@@ -265,6 +267,7 @@ server.listen(PORT, HOST, () => {
 async function shutdown() {
   console.log('Shutting down...');
   await stopAllSessions();
+  assetCacheStore.shutdown();
   server.close();
   process.exit(0);
 }

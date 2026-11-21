@@ -115,6 +115,33 @@ const STATEMENTS = [
     actor TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE INDEX IF NOT EXISTS idx_passkey_events_session ON passkey_events(session_id, seq)`,
+  `CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS asset_cache_entries (
+    cache_key TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    host TEXT NOT NULL,
+    origin_bucket TEXT NOT NULL,
+    vary_lang TEXT NOT NULL DEFAULT '',
+    resource_type TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    response_headers TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    immutable INTEGER NOT NULL DEFAULT 0,
+    hits INTEGER NOT NULL DEFAULT 0,
+    saved_bytes INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    last_hit_at INTEGER NOT NULL,
+    soft_expires_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_asset_cache_host ON asset_cache_entries(host)`,
+  `CREATE INDEX IF NOT EXISTS idx_asset_cache_lru ON asset_cache_entries(last_hit_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_asset_cache_exp ON asset_cache_entries(expires_at)`,
 ];
 
 function tableColumns(table: string) {

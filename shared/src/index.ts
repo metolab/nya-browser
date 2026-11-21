@@ -17,3 +17,4 @@ export * from './clipboardText.js';
 export * from './proxy.js';
 export * from './singboxConfig.js';
 export * from './webauthn.js';
+export * from './assetCache.js';

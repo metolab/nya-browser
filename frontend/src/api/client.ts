@@ -1,6 +1,9 @@
 import {
   emptyProxy,
   type ApiKey,
+  type AssetCacheConfig,
+  type AssetCacheEntrySummary,
+  type AssetCacheStats,
   type AuditLog,
   type FileEntry,
   type LiveSession,
@@ -485,6 +488,62 @@ export const api = {
       `/api/audit${q ? `?${q}` : ''}`,
     );
   },
+  getAssetCache: () =>
+    request<{ config: AssetCacheConfig; stats: AssetCacheStats; builtinBlacklist: string[] }>(
+      '/api/cache',
+    ),
+  updateAssetCacheConfig: (patch: Partial<AssetCacheConfig>) =>
+    request<{ config: AssetCacheConfig; stats: AssetCacheStats; builtinBlacklist: string[] }>(
+      '/api/cache/config',
+      { method: 'PUT', body: JSON.stringify(patch) },
+    ),
+  listAssetCacheEntries: (query: {
+    q?: string;
+    host?: string;
+    sort?: 'hits' | 'size' | 'updated' | 'ttl';
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (query.q) params.set('q', query.q);
+    if (query.host) params.set('host', query.host);
+    if (query.sort) params.set('sort', query.sort);
+    if (query.limit) params.set('limit', String(query.limit));
+    if (query.offset) params.set('offset', String(query.offset));
+    const qs = params.toString();
+    return request<{ entries: AssetCacheEntrySummary[]; total: number; limit: number; offset: number }>(
+      `/api/cache/entries${qs ? `?${qs}` : ''}`,
+    );
+  },
+  refreshAssetCache: (payload: { scope: 'all' | 'host' | 'key'; host?: string; key?: string }) =>
+    request<{
+      ok: boolean;
+      affected: number;
+      config: AssetCacheConfig;
+      stats: AssetCacheStats;
+      builtinBlacklist: string[];
+    }>('/api/cache/refresh', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  purgeAssetCache: (payload: { scope: 'all' | 'host' | 'key'; host?: string; key?: string }) =>
+    request<{
+      ok: boolean;
+      affected: number;
+      config: AssetCacheConfig;
+      stats: AssetCacheStats;
+      builtinBlacklist: string[];
+    }>('/api/cache/purge', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  resetAssetCacheStats: () =>
+    request<{
+      ok: boolean;
+      config: AssetCacheConfig;
+      stats: AssetCacheStats;
+      builtinBlacklist: string[];
+    }>('/api/cache/stats/reset', { method: 'POST' }),
   exportUrl: (id: string) => withBase(`/api/sessions/${id}/export`),
   importSession: async (file: File) => {
     const form = new FormData();

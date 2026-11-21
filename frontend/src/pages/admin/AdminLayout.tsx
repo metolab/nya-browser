@@ -4,6 +4,7 @@ import {
   ActivityIcon,
   BotIcon,
   CloudIcon,
+  DatabaseIcon,
   GlobeIcon,
   LaptopIcon,
   LogOutIcon,
@@ -27,6 +28,7 @@ const items = [
   { key: '/admin/proxies', icon: GlobeIcon, label: '代理', title: '代理管理' },
   { key: '/admin/audit', icon: ScrollTextIcon, label: '审计', title: '审计日志' },
   { key: '/admin/monitor', icon: ActivityIcon, label: '监控', title: '系统监控' },
+  { key: '/admin/cache', icon: DatabaseIcon, label: '缓存', title: '共享缓存池' },
   { key: '/admin/backups', icon: CloudIcon, label: '备份', title: '备份与恢复' },
 ];
 

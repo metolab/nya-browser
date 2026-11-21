@@ -120,3 +120,29 @@ export const passkeyEvents = sqliteTable('passkey_events', {
   url: text('url').notNull(),
   actor: text('actor').notNull(),
 });
+
+export const appSettings = sqliteTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const assetCacheEntries = sqliteTable('asset_cache_entries', {
+  cacheKey: text('cache_key').primaryKey(),
+  url: text('url').notNull(),
+  host: text('host').notNull(),
+  originBucket: text('origin_bucket').notNull(),
+  varyLang: text('vary_lang').notNull(),
+  resourceType: text('resource_type').notNull(),
+  contentType: text('content_type').notNull(),
+  responseHeaders: text('response_headers').notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  immutable: integer('immutable').notNull(),
+  hits: integer('hits').notNull(),
+  savedBytes: integer('saved_bytes').notNull(),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+  lastHitAt: integer('last_hit_at').notNull(),
+  softExpiresAt: integer('soft_expires_at').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+});
